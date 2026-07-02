@@ -152,6 +152,9 @@ const jobs: Job[] = [
 const filters = ["Location", "Remote", "Salary", "Experience", "Job Type", "AI Match"];
 const tabs = ["Overview", "Company", "AI Match", "Reviews", "Similar Jobs"];
 type View = "Dashboard" | "Jobs";
+type ParserSearchStatus = "idle" | "loading" | "ready" | "error";
+
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const navItems: Array<{ label: string; icon: typeof Home; href: string; view?: View }> = [
   { label: "Dashboard", icon: Home, href: "#dashboard", view: "Dashboard" },
@@ -225,7 +228,21 @@ export default function HomePage() {
   const [sortBy, setSortBy] = useState("Best Match");
   const [alertsEnabled, setAlertsEnabled] = useState(false);
   const [isParserDialogOpen, setIsParserDialogOpen] = useState(false);
-  const [parserRunState, setParserRunState] = useState<"idle" | "ready">("idle");
+  const [parserSearchStatus, setParserSearchStatus] = useState<ParserSearchStatus>("idle");
+  const [parserSearchMessage, setParserSearchMessage] = useState("");
+  const [parserSearchForm, setParserSearchForm] = useState({
+    keywords: "",
+    location: "",
+    remote: "Any",
+    experienceLevel: "Any",
+    jobType: "Any",
+    datePosted: "Any time",
+    resultsLimit: "100",
+    country: "Any",
+    deduplicate: true,
+    searchName: "",
+    folder: "",
+  });
 
   const filteredJobs = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -270,8 +287,53 @@ export default function HomePage() {
     setActiveFilters((current) => (current.includes(filter) ? current.filter((item) => item !== filter) : [...current, filter]));
   }
 
-  function runParsers() {
-    setParserRunState("ready");
+  function updateParserSearchForm<Field extends keyof typeof parserSearchForm>(
+    field: Field,
+    value: (typeof parserSearchForm)[Field],
+  ) {
+    setParserSearchForm((current) => ({ ...current, [field]: value }));
+    setParserSearchStatus("idle");
+    setParserSearchMessage("");
+  }
+
+  async function runParsers() {
+    setParserSearchStatus("loading");
+    setParserSearchMessage("");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/parsers/linkedin/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          keywords: parserSearchForm.keywords,
+          location: parserSearchForm.location,
+          remote: parserSearchForm.remote,
+          experience_level: parserSearchForm.experienceLevel,
+          job_type: parserSearchForm.jobType,
+          date_posted: parserSearchForm.datePosted,
+          results_limit: Number.parseInt(parserSearchForm.resultsLimit, 10) || 100,
+          country: parserSearchForm.country,
+          deduplicate: parserSearchForm.deduplicate,
+          search_name: parserSearchForm.searchName,
+          folder: parserSearchForm.folder,
+        }),
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail ?? "LinkedIn parser request failed");
+      }
+
+      setParserSearchStatus("ready");
+      setParserSearchMessage(
+        data.status === "queued"
+          ? `Bright Data snapshot queued: ${data.snapshot_id}`
+          : `Found ${data.jobs?.length ?? 0} LinkedIn vacancies`,
+      );
+    } catch (error) {
+      setParserSearchStatus("error");
+      setParserSearchMessage(error instanceof Error ? error.message : "LinkedIn parser request failed");
+    }
   }
 
   return (
@@ -301,7 +363,8 @@ export default function HomePage() {
             <Button
               className="h-10 rounded-md border border-[#9f7aea]/60 bg-[#7c3aed] px-4 text-[13px] text-white shadow-[0_12px_28px_rgba(124,58,237,0.28)] hover:bg-[#8b5cf6] 2xl:h-12 2xl:px-5 2xl:text-sm"
               onClick={() => {
-                setParserRunState("idle");
+                setParserSearchStatus("idle");
+                setParserSearchMessage("");
                 setIsParserDialogOpen(true);
               }}
             >
@@ -523,7 +586,27 @@ export default function HomePage() {
                   <section className="p-4 lg:border-l lg:border-border 2xl:p-5">
                     <div className="flex items-center justify-between gap-3">
                       <h3 className="text-sm font-bold text-white">2. Configure parser settings</h3>
-                      <button type="button" className="inline-flex items-center gap-2 text-xs font-bold text-muted transition hover:text-white">
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-2 text-xs font-bold text-muted transition hover:text-white"
+                        onClick={() => {
+                          setParserSearchForm({
+                            keywords: "",
+                            location: "",
+                            remote: "Any",
+                            experienceLevel: "Any",
+                            jobType: "Any",
+                            datePosted: "Any time",
+                            resultsLimit: "100",
+                            country: "Any",
+                            deduplicate: true,
+                            searchName: "",
+                            folder: "",
+                          });
+                          setParserSearchStatus("idle");
+                          setParserSearchMessage("");
+                        }}
+                      >
                         <RotateCcw className="h-4 w-4" />
                         Reset to defaults
                       </button>
@@ -533,6 +616,8 @@ export default function HomePage() {
                       <label className="grid gap-2">
                         <span className="text-xs font-bold text-[#d8dee8]">Job title or keywords</span>
                         <input
+                          value={parserSearchForm.keywords}
+                          onChange={(event) => updateParserSearchForm("keywords", event.target.value)}
                           placeholder="e.g. Product Designer, UX Designer, Design System"
                           className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
                         />
@@ -543,6 +628,8 @@ export default function HomePage() {
                         <label className="grid gap-2">
                           <span className="text-xs font-bold text-[#d8dee8]">Location</span>
                           <input
+                            value={parserSearchForm.location}
+                            onChange={(event) => updateParserSearchForm("location", event.target.value)}
                             placeholder="e.g. Remote, United States, Europe"
                             className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
                           />
@@ -551,7 +638,11 @@ export default function HomePage() {
 
                         <label className="grid gap-2">
                           <span className="text-xs font-bold text-[#d8dee8]">Remote</span>
-                          <select className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70">
+                          <select
+                            value={parserSearchForm.remote}
+                            onChange={(event) => updateParserSearchForm("remote", event.target.value)}
+                            className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                          >
                             <option>Any</option>
                             <option>Remote only</option>
                             <option>Hybrid</option>
@@ -562,7 +653,11 @@ export default function HomePage() {
 
                         <label className="grid gap-2">
                           <span className="text-xs font-bold text-[#d8dee8]">Experience level</span>
-                          <select className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70">
+                          <select
+                            value={parserSearchForm.experienceLevel}
+                            onChange={(event) => updateParserSearchForm("experienceLevel", event.target.value)}
+                            className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                          >
                             <option>Any</option>
                             <option>Entry level</option>
                             <option>Associate</option>
@@ -574,7 +669,11 @@ export default function HomePage() {
 
                         <label className="grid gap-2">
                           <span className="text-xs font-bold text-[#d8dee8]">Job type</span>
-                          <select className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70">
+                          <select
+                            value={parserSearchForm.jobType}
+                            onChange={(event) => updateParserSearchForm("jobType", event.target.value)}
+                            className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                          >
                             <option>Any</option>
                             <option>Full-time</option>
                             <option>Part-time</option>
@@ -586,7 +685,11 @@ export default function HomePage() {
 
                         <label className="grid gap-2">
                           <span className="text-xs font-bold text-[#d8dee8]">Date posted</span>
-                          <select className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70">
+                          <select
+                            value={parserSearchForm.datePosted}
+                            onChange={(event) => updateParserSearchForm("datePosted", event.target.value)}
+                            className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                          >
                             <option>Any time</option>
                             <option>Past 24 hours</option>
                             <option>Past week</option>
@@ -605,7 +708,11 @@ export default function HomePage() {
                           <label className="grid gap-2">
                             <span className="text-xs font-bold text-[#d8dee8]">Results limit</span>
                             <input
-                              defaultValue="100"
+                              type="number"
+                              min="1"
+                              max="1000"
+                              value={parserSearchForm.resultsLimit}
+                              onChange={(event) => updateParserSearchForm("resultsLimit", event.target.value)}
                               className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
                             />
                             <span className="text-xs font-medium text-muted">Maximum number of vacancies to fetch (max 1000)</span>
@@ -613,7 +720,11 @@ export default function HomePage() {
 
                           <label className="grid gap-2">
                             <span className="text-xs font-bold text-[#d8dee8]">Country</span>
-                            <select className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70">
+                            <select
+                              value={parserSearchForm.country}
+                              onChange={(event) => updateParserSearchForm("country", event.target.value)}
+                              className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                            >
                               <option>Any</option>
                               <option>United States</option>
                               <option>United Kingdom</option>
@@ -628,9 +739,13 @@ export default function HomePage() {
                           <button
                             type="button"
                             aria-label="Deduplicate results"
-                            className="relative mt-0.5 h-5 w-9 rounded-full bg-accent shadow-[0_0_14px_rgba(255,90,0,0.22)]"
+                            onClick={() => updateParserSearchForm("deduplicate", !parserSearchForm.deduplicate)}
+                            className={cn(
+                              "relative mt-0.5 h-5 w-9 rounded-full transition",
+                              parserSearchForm.deduplicate ? "bg-accent shadow-[0_0_14px_rgba(255,90,0,0.22)]" : "bg-white/15",
+                            )}
                           >
-                            <span className="absolute right-0.5 top-0.5 h-4 w-4 rounded-full bg-white" />
+                            <span className={cn("absolute top-0.5 h-4 w-4 rounded-full bg-white transition", parserSearchForm.deduplicate ? "right-0.5" : "left-0.5")} />
                           </button>
                           <div>
                             <div className="flex items-center gap-2">
@@ -651,6 +766,8 @@ export default function HomePage() {
                     <label className="grid gap-2">
                       <span className="text-xs font-bold text-[#d8dee8]">Search name</span>
                       <input
+                        value={parserSearchForm.searchName}
+                        onChange={(event) => updateParserSearchForm("searchName", event.target.value)}
                         placeholder="e.g. Product Designer Remote Jobs"
                         className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
                       />
@@ -659,8 +776,12 @@ export default function HomePage() {
 
                     <label className="grid gap-2">
                       <span className="text-xs font-bold text-[#d8dee8]">Save to folder</span>
-                      <select className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-muted outline-none focus:border-accent/70">
-                        <option>Select folder (optional)</option>
+                      <select
+                        value={parserSearchForm.folder}
+                        onChange={(event) => updateParserSearchForm("folder", event.target.value)}
+                        className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-muted outline-none focus:border-accent/70"
+                      >
+                        <option value="">Select folder (optional)</option>
                         <option>Design roles</option>
                         <option>Remote jobs</option>
                         <option>High match</option>
@@ -673,7 +794,11 @@ export default function HomePage() {
               <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm font-semibold text-muted">
                   Parser: <span className="text-white">LinkedIn</span>
-                  {parserRunState === "ready" && <span className="ml-2 text-accent">Search queued in visual mode</span>}
+                  {parserSearchMessage && (
+                    <span className={cn("ml-2", parserSearchStatus === "error" ? "text-[#ff7a7a]" : "text-accent")}>
+                      {parserSearchMessage}
+                    </span>
+                  )}
                 </p>
                 <div className="flex gap-2">
                   <Button
@@ -685,10 +810,11 @@ export default function HomePage() {
                   </Button>
                   <Button
                     className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12]"
+                    disabled={parserSearchStatus === "loading"}
                     onClick={runParsers}
                   >
                     <Search className="h-4 w-4" />
-                    Start search
+                    {parserSearchStatus === "loading" ? "Searching..." : "Start search"}
                   </Button>
                 </div>
               </div>
