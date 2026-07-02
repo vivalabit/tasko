@@ -20,6 +20,8 @@ import {
   Mail,
   MoreHorizontal,
   Plus,
+  Info,
+  RotateCcw,
   Search,
   Share2,
   SlidersHorizontal,
@@ -27,6 +29,7 @@ import {
   Star,
   Settings,
   Target,
+  X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -221,6 +224,8 @@ export default function HomePage() {
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState("Best Match");
   const [alertsEnabled, setAlertsEnabled] = useState(false);
+  const [isParserDialogOpen, setIsParserDialogOpen] = useState(false);
+  const [parserRunState, setParserRunState] = useState<"idle" | "ready">("idle");
 
   const filteredJobs = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -265,6 +270,10 @@ export default function HomePage() {
     setActiveFilters((current) => (current.includes(filter) ? current.filter((item) => item !== filter) : [...current, filter]));
   }
 
+  function runParsers() {
+    setParserRunState("ready");
+  }
+
   return (
     <main className="h-screen overflow-hidden bg-background text-foreground">
       <div className="fixed inset-0 bg-[radial-gradient(circle_at_16%_8%,rgba(255,90,0,0.12),transparent_26%),radial-gradient(circle_at_80%_0%,rgba(52,120,246,0.10),transparent_28%)]" />
@@ -289,6 +298,16 @@ export default function HomePage() {
           </label>
 
           <div className="flex flex-wrap gap-2 xl:justify-end">
+            <Button
+              className="h-10 rounded-md border border-[#9f7aea]/60 bg-[#7c3aed] px-4 text-[13px] text-white shadow-[0_12px_28px_rgba(124,58,237,0.28)] hover:bg-[#8b5cf6] 2xl:h-12 2xl:px-5 2xl:text-sm"
+              onClick={() => {
+                setParserRunState("idle");
+                setIsParserDialogOpen(true);
+              }}
+            >
+              <Search className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
+              Search vacancies
+            </Button>
             <Button
               variant="ghost"
               className="h-10 rounded-md border border-border bg-white/[0.03] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm"
@@ -461,8 +480,223 @@ export default function HomePage() {
             </div>
           </section>
         </div>
-        </section>
+
+        {isParserDialogOpen && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+            <div className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[940px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] sm:p-5">
+              <div className="flex shrink-0 items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[24px]">Search vacancies</h2>
+                  <p className="mt-1 text-sm font-medium text-muted">Choose parser and configure search settings</p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Close parser settings"
+                  onClick={() => setIsParserDialogOpen(false)}
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto rounded-md border border-border">
+                <div className="grid min-h-0 lg:grid-cols-[334px_minmax(0,1fr)] lg:items-start">
+                  <section className="border-b border-border p-4 lg:self-start lg:border-b-0 2xl:p-5">
+                    <h3 className="text-sm font-bold text-white">1. Choose parser</h3>
+                    <div className="mt-4 rounded-md border border-accent bg-white/[0.035] p-3 shadow-[0_0_0_1px_rgba(255,90,0,0.18)]">
+                      <div className="flex items-center gap-3">
+                        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-[#0a66c2] text-lg font-black text-white">in</div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <h4 className="text-sm font-bold text-white">LinkedIn</h4>
+                            <span className="rounded bg-success/18 px-2 py-0.5 text-[11px] font-bold text-success">Recommended</span>
+                          </div>
+                          <p className="mt-1 text-xs font-medium text-muted">Extract jobs from LinkedIn</p>
+                        </div>
+                        <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full border-2 border-accent">
+                          <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                        </span>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="p-4 lg:border-l lg:border-border 2xl:p-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="text-sm font-bold text-white">2. Configure parser settings</h3>
+                      <button type="button" className="inline-flex items-center gap-2 text-xs font-bold text-muted transition hover:text-white">
+                        <RotateCcw className="h-4 w-4" />
+                        Reset to defaults
+                      </button>
+                    </div>
+
+                    <div className="mt-4 grid gap-4">
+                      <label className="grid gap-2">
+                        <span className="text-xs font-bold text-[#d8dee8]">Job title or keywords</span>
+                        <input
+                          placeholder="e.g. Product Designer, UX Designer, Design System"
+                          className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+                        />
+                        <span className="text-xs font-medium text-muted">Use keywords to find relevant vacancies</span>
+                      </label>
+
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <label className="grid gap-2">
+                          <span className="text-xs font-bold text-[#d8dee8]">Location</span>
+                          <input
+                            placeholder="e.g. Remote, United States, Europe"
+                            className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+                          />
+                          <span className="text-xs font-medium text-muted">Leave empty to search worldwide</span>
+                        </label>
+
+                        <label className="grid gap-2">
+                          <span className="text-xs font-bold text-[#d8dee8]">Remote</span>
+                          <select className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70">
+                            <option>Any</option>
+                            <option>Remote only</option>
+                            <option>Hybrid</option>
+                            <option>On-site</option>
+                          </select>
+                          <span className="text-xs font-medium text-muted">Filter by remote work options</span>
+                        </label>
+
+                        <label className="grid gap-2">
+                          <span className="text-xs font-bold text-[#d8dee8]">Experience level</span>
+                          <select className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70">
+                            <option>Any</option>
+                            <option>Entry level</option>
+                            <option>Associate</option>
+                            <option>Mid-Senior level</option>
+                            <option>Director</option>
+                          </select>
+                          <span className="text-xs font-medium text-muted">Filter by experience level</span>
+                        </label>
+
+                        <label className="grid gap-2">
+                          <span className="text-xs font-bold text-[#d8dee8]">Job type</span>
+                          <select className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70">
+                            <option>Any</option>
+                            <option>Full-time</option>
+                            <option>Part-time</option>
+                            <option>Contract</option>
+                            <option>Internship</option>
+                          </select>
+                          <span className="text-xs font-medium text-muted">Full-time, Part-time, Contract, etc.</span>
+                        </label>
+
+                        <label className="grid gap-2">
+                          <span className="text-xs font-bold text-[#d8dee8]">Date posted</span>
+                          <select className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70">
+                            <option>Any time</option>
+                            <option>Past 24 hours</option>
+                            <option>Past week</option>
+                            <option>Past month</option>
+                          </select>
+                          <span className="text-xs font-medium text-muted">Filter by job posting date</span>
+                        </label>
+                      </div>
+
+                      <div className="rounded-md border border-border bg-white/[0.018] p-3">
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-sm font-bold text-white">Additional settings</h4>
+                          <ChevronDown className="h-4 w-4 rotate-180 text-muted" />
+                        </div>
+                        <div className="mt-4 grid gap-4 md:grid-cols-2">
+                          <label className="grid gap-2">
+                            <span className="text-xs font-bold text-[#d8dee8]">Results limit</span>
+                            <input
+                              defaultValue="100"
+                              className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                            />
+                            <span className="text-xs font-medium text-muted">Maximum number of vacancies to fetch (max 1000)</span>
+                          </label>
+
+                          <label className="grid gap-2">
+                            <span className="text-xs font-bold text-[#d8dee8]">Country</span>
+                            <select className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70">
+                              <option>Any</option>
+                              <option>United States</option>
+                              <option>United Kingdom</option>
+                              <option>Germany</option>
+                              <option>Switzerland</option>
+                            </select>
+                            <span className="text-xs font-medium text-muted">Filter by country</span>
+                          </label>
+                        </div>
+
+                        <div className="mt-4 flex items-start gap-3">
+                          <button
+                            type="button"
+                            aria-label="Deduplicate results"
+                            className="relative mt-0.5 h-5 w-9 rounded-full bg-accent shadow-[0_0_14px_rgba(255,90,0,0.22)]"
+                          >
+                            <span className="absolute right-0.5 top-0.5 h-4 w-4 rounded-full bg-white" />
+                          </button>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-bold text-white">Deduplicate results</p>
+                              <Info className="h-3.5 w-3.5 text-muted" />
+                            </div>
+                            <p className="mt-1 text-xs font-medium text-muted">Remove duplicate vacancies</p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+                </div>
+
+                <section className="border-t border-border p-4 2xl:p-5">
+                  <h3 className="text-sm font-bold text-white">3. Save search (optional)</h3>
+                  <div className="mt-4 grid gap-4 md:grid-cols-[minmax(0,1fr)_320px]">
+                    <label className="grid gap-2">
+                      <span className="text-xs font-bold text-[#d8dee8]">Search name</span>
+                      <input
+                        placeholder="e.g. Product Designer Remote Jobs"
+                        className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+                      />
+                      <span className="text-xs font-medium text-muted">Save this search to run it again later</span>
+                    </label>
+
+                    <label className="grid gap-2">
+                      <span className="text-xs font-bold text-[#d8dee8]">Save to folder</span>
+                      <select className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-muted outline-none focus:border-accent/70">
+                        <option>Select folder (optional)</option>
+                        <option>Design roles</option>
+                        <option>Remote jobs</option>
+                        <option>High match</option>
+                      </select>
+                    </label>
+                  </div>
+                </section>
+              </div>
+
+              <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm font-semibold text-muted">
+                  Parser: <span className="text-white">LinkedIn</span>
+                  {parserRunState === "ready" && <span className="ml-2 text-accent">Search queued in visual mode</span>}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    variant="ghost"
+                    className="h-10 rounded-md border border-border bg-transparent px-6 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+                    onClick={() => setIsParserDialogOpen(false)}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12]"
+                    onClick={runParsers}
+                  >
+                    <Search className="h-4 w-4" />
+                    Start search
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
         )}
+      </section>
+      )}
       </div>
     </main>
   );
