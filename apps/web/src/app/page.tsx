@@ -46,7 +46,7 @@ type Job = {
   experience: string;
   department: string;
   match: number;
-  logo: "stripe" | "figma";
+  logo: "stripe" | "figma" | "linkedin";
   overview: string;
   responsibilities: string[];
   requirements: string[];
@@ -58,6 +58,18 @@ type Job = {
   companyInfo: string;
   reviews: string[];
   similarJobs: string[];
+};
+
+type ParsedJob = {
+  title?: string | null;
+  company?: string | null;
+  location?: string | null;
+  url?: string | null;
+  apply_url?: string | null;
+  posted_at?: string | null;
+  employment_type?: string | null;
+  seniority?: string | null;
+  description?: string | null;
 };
 
 const jobs: Job[] = [
@@ -218,8 +230,52 @@ function getViewFromHash(): View {
   return window.location.hash === "#jobs" ? "Jobs" : "Dashboard";
 }
 
+function createParsedJobId(job: ParsedJob, index: number) {
+  const source = job.url || `${job.title ?? "linkedin-job"}-${job.company ?? "company"}-${job.location ?? "location"}-${index}`;
+  return `linkedin-${source.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 96)}`;
+}
+
+function mapParsedJobToJob(job: ParsedJob, index: number): Job {
+  const title = job.title?.trim() || "LinkedIn vacancy";
+  const company = job.company?.trim() || "LinkedIn";
+  const location = job.location?.trim() || "Not specified";
+  const type = job.employment_type?.trim() || "Not specified";
+  const experience = job.seniority?.trim() || "Not specified";
+  const overview = job.description?.trim() || "Imported from LinkedIn via Bright Data. Open the source vacancy to review the full description and apply details.";
+
+  return {
+    id: createParsedJobId(job, index),
+    company,
+    title,
+    location,
+    type,
+    salary: "Not specified",
+    posted: job.posted_at?.trim() || "LinkedIn",
+    experience,
+    department: "LinkedIn import",
+    match: 72,
+    logo: "linkedin",
+    overview,
+    responsibilities: ["Review the LinkedIn vacancy details", "Compare requirements with your profile", "Decide whether to save or apply"],
+    requirements: [experience, type, location].filter((item) => item !== "Not specified"),
+    skills: ["LinkedIn", "Imported"],
+    salaryAverage: "N/A",
+    salaryMin: "N/A",
+    salaryMax: "N/A",
+    recommendations: [
+      { text: "Open the original LinkedIn posting", gain: "source" },
+      { text: "Check the company and role requirements", gain: "review" },
+      { text: "Save strong matches before applying", gain: "workflow" },
+    ],
+    companyInfo: `${company} vacancy imported from LinkedIn${job.url ? `: ${job.url}` : "."}`,
+    reviews: ["This vacancy was imported automatically and has not been reviewed yet."],
+    similarJobs: [],
+  };
+}
+
 export default function HomePage() {
   const [activeView, setActiveView] = useState<View>("Dashboard");
+  const [jobList, setJobList] = useState<Job[]>(jobs);
   const [selectedJobId, setSelectedJobId] = useState(jobs[0].id);
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState(tabs[0]);
@@ -247,21 +303,25 @@ export default function HomePage() {
   const filteredJobs = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
     const results = normalizedQuery
-      ? jobs.filter((job) =>
+      ? jobList.filter((job) =>
           [job.title, job.company, job.location, job.type, job.salary].some((value) =>
             value.toLowerCase().includes(normalizedQuery),
           ),
         )
-      : jobs;
+      : jobList;
 
     return [...results].sort((a, b) => {
       if (sortBy === "Newest") return a.posted.localeCompare(b.posted);
-      if (sortBy === "Salary") return Number.parseInt(b.salaryAverage.replace(/\D/g, ""), 10) - Number.parseInt(a.salaryAverage.replace(/\D/g, ""), 10);
+      if (sortBy === "Salary") {
+        const aSalary = Number.parseInt(a.salaryAverage.replace(/\D/g, ""), 10) || 0;
+        const bSalary = Number.parseInt(b.salaryAverage.replace(/\D/g, ""), 10) || 0;
+        return bSalary - aSalary;
+      }
       return b.match - a.match;
     });
-  }, [query, sortBy]);
+  }, [jobList, query, sortBy]);
 
-  const selectedJob = filteredJobs.find((job) => job.id === selectedJobId) ?? filteredJobs[0] ?? jobs[0];
+  const selectedJob = filteredJobs.find((job) => job.id === selectedJobId) ?? filteredJobs[0] ?? jobList[0];
   const isSelectedSaved = savedJobs.includes(selectedJob.id);
 
   useEffect(() => {
@@ -324,11 +384,24 @@ export default function HomePage() {
         throw new Error(data.detail ?? "LinkedIn parser request failed");
       }
 
+      const importedJobs: Job[] = Array.isArray(data.jobs)
+        ? data.jobs.map((job: ParsedJob, index: number) => mapParsedJobToJob(job, index))
+        : [];
+
+      if (importedJobs.length > 0) {
+        setJobList((currentJobs) => {
+          const importedIds = new Set(importedJobs.map((job) => job.id));
+          return [...importedJobs, ...currentJobs.filter((job) => !importedIds.has(job.id))];
+        });
+        setSelectedJobId(importedJobs[0].id);
+        setActiveTab("Overview");
+      }
+
       setParserSearchStatus("ready");
       setParserSearchMessage(
         data.status === "queued"
           ? `Bright Data snapshot queued: ${data.snapshot_id}`
-          : `Found ${data.jobs?.length ?? 0} LinkedIn vacancies`,
+          : `Added ${importedJobs.length} LinkedIn vacancies to Jobs`,
       );
     } catch (error) {
       setParserSearchStatus("error");
@@ -1284,6 +1357,14 @@ function InfoStat({ label, value }: { label: string; value: string }) {
 
 function CompanyLogo({ logo, large = false }: { logo: Job["logo"]; large?: boolean }) {
   const sizeClass = large ? "h-16 w-16 2xl:h-[88px] 2xl:w-[88px]" : "h-11 w-11 2xl:h-14 2xl:w-14";
+
+  if (logo === "linkedin") {
+    return (
+      <div className={cn("grid shrink-0 place-items-center rounded-md bg-[#0a66c2] font-black text-white", large ? "text-2xl 2xl:text-3xl" : "text-lg 2xl:text-xl", sizeClass)}>
+        in
+      </div>
+    );
+  }
 
   if (logo === "figma") {
     return (
