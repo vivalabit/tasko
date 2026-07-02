@@ -1,0 +1,126 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #080c11;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+a {
+  text-decoration: none;
+}
+
+@layer components {
+  .panel {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.015)),
+      rgba(16, 22, 29, 0.82);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+
+  .tag {
+    display: inline-flex;
+    min-height: 22px;
+    align-items: center;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.08);
+    padding: 0 8px;
+    color: #b8c0cc;
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  .app-sidebar {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+  }
+
+  .app-sidebar::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .app-sidebar::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.18);
+  }
+}
+
+.overview-ring {
+  background: conic-gradient(
+    #ff5a00 0deg 180deg,
+    #ff9f1a 180deg 255deg,
+    #2f80ed 255deg 302deg,
+    #4a9d35 302deg 331deg,
+    #d94d4d 331deg 360deg
+  );
+}
+
+@media (max-width: 640px) {
+  .panel {
+    border-radius: 8px;
+  }
+}
+
+@media (max-height: 760px) {
+  .app-sidebar {
+    padding-top: 18px;
+    padding-bottom: 18px;
+  }
+
+  .app-sidebar-brand {
+    margin-bottom: 22px;
+  }
+
+  .app-sidebar-nav {
+    gap: 6px;
+  }
+
+  .app-sidebar-nav-item {
+    height: 44px;
+  }
+
+  .app-sidebar-footer {
+    padding-top: 12px;
+  }
+
+  .app-sidebar-profile {
+    margin-bottom: 8px;
+  }
+
+  .app-sidebar-mark {
+    height: 44px;
+    width: 36px;
+  }
+}
+
+@media (max-height: 660px) {
+  .app-sidebar-brand {
+    margin-bottom: 16px;
+  }
+
+  .app-sidebar-mark {
+    height: 40px;
+    width: 34px;
+  }
+
+  .app-sidebar-profile p:last-child {
+    display: none;
+  }
+}

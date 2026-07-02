@@ -1,0 +1,22 @@
+[project]
+name = "tasko-api"
+version = "0.1.0"
+description = "FastAPI backend for the tasko personal job search assistant."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.34.0",
+  "pydantic-settings>=2.8.0",
+  "sqlalchemy>=2.0.0",
+  "psycopg[binary]>=3.2.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3.0",
+  "ruff>=0.9.0"
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"

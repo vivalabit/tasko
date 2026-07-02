@@ -1,0 +1,15 @@
+{
+  "name": "tasko",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "dev:web": "pnpm --filter @tasko/web dev",
+    "build:web": "pnpm --filter @tasko/web build",
+    "lint:web": "pnpm --filter @tasko/web lint",
+    "typecheck:web": "pnpm --filter @tasko/web typecheck"
+  },
+  "devDependencies": {
+    "prettier": "^3.5.3"
+  }
+}
