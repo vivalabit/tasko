@@ -1,22 +1,32 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Bell,
   Bookmark,
   BriefcaseBusiness,
+  Bot,
+  Calendar,
+  CalendarDays,
   Check,
   ChevronDown,
   ChevronRight,
+  CircleDot,
+  Command,
   ExternalLink,
+  FileText,
   Heart,
   Home,
   Mail,
+  MoreHorizontal,
+  Plus,
   Search,
   Share2,
   SlidersHorizontal,
   Sparkles,
+  Star,
   Settings,
+  Target,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -138,14 +148,72 @@ const jobs: Job[] = [
 
 const filters = ["Location", "Remote", "Salary", "Experience", "Job Type", "AI Match"];
 const tabs = ["Overview", "Company", "AI Match", "Reviews", "Similar Jobs"];
-const navItems = [
-  { label: "Dashboard", icon: Home },
-  { label: "Jobs", icon: BriefcaseBusiness, active: true },
-  { label: "Applications", icon: Mail },
-  { label: "AI Assistant", icon: Sparkles },
+type View = "Dashboard" | "Jobs";
+
+const navItems: Array<{ label: string; icon: typeof Home; href: string; view?: View }> = [
+  { label: "Dashboard", icon: Home, href: "#dashboard", view: "Dashboard" },
+  { label: "Jobs", icon: BriefcaseBusiness, href: "#jobs", view: "Jobs" },
+  { label: "Applications", icon: Mail, href: "#" },
+  { label: "AI Assistant", icon: Sparkles, href: "#" },
 ];
 
+const stats = [
+  {
+    label: "Applications",
+    value: "24",
+    note: "Total applied",
+    delta: "20%",
+    icon: FileText,
+    color: "orange",
+    chart: "M0,42 C22,42 26,36 42,38 C58,40 62,28 78,32 C95,36 101,18 120,24 C137,30 144,16 160,20 C178,25 187,11 205,17 C221,22 231,5 250,10",
+  },
+  {
+    label: "Interviews",
+    value: "5",
+    note: "Upcoming",
+    delta: "25%",
+    icon: CalendarDays,
+    color: "orange",
+    chart: "M0,42 C24,43 33,36 49,39 C66,42 75,33 92,35 C112,38 121,17 138,18 C157,19 158,36 178,34 C196,31 203,12 221,13 C236,14 238,24 250,21",
+  },
+  {
+    label: "Offers",
+    value: "2",
+    note: "Received",
+    delta: "100%",
+    icon: BriefcaseBusiness,
+    color: "green",
+    chart: "M0,42 C19,42 24,31 40,34 C59,37 66,32 82,38 C101,45 110,23 130,28 C150,32 160,25 178,30 C196,35 200,4 216,13 C232,22 238,31 250,24",
+  },
+  {
+    label: "Match Score",
+    value: "78%",
+    note: "Average",
+    delta: "12%",
+    icon: Target,
+    color: "orange",
+    progress: true,
+  },
+];
+
+const overview = [
+  { label: "Applied", value: "12 (50%)", color: "bg-[#ff5a00]" },
+  { label: "Interview", value: "5 (21%)", color: "bg-[#ff9f1a]" },
+  { label: "Assessment", value: "3 (13%)", color: "bg-[#2f80ed]" },
+  { label: "Offer", value: "2 (8%)", color: "bg-[#4a9d35]" },
+  { label: "Rejected", value: "2 (8%)", color: "bg-[#d94d4d]" },
+];
+
+function getViewFromHash(): View {
+  if (typeof window === "undefined") {
+    return "Dashboard";
+  }
+
+  return window.location.hash === "#jobs" ? "Jobs" : "Dashboard";
+}
+
 export default function HomePage() {
+  const [activeView, setActiveView] = useState<View>("Dashboard");
   const [selectedJobId, setSelectedJobId] = useState(jobs[0].id);
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState(tabs[0]);
@@ -174,6 +242,21 @@ export default function HomePage() {
   const selectedJob = filteredJobs.find((job) => job.id === selectedJobId) ?? filteredJobs[0] ?? jobs[0];
   const isSelectedSaved = savedJobs.includes(selectedJob.id);
 
+  useEffect(() => {
+    const syncViewFromHash = () => {
+      setActiveView(getViewFromHash());
+    };
+
+    syncViewFromHash();
+    window.addEventListener("hashchange", syncViewFromHash);
+    return () => window.removeEventListener("hashchange", syncViewFromHash);
+  }, []);
+
+  function changeView(view: View) {
+    setActiveView(view);
+    window.history.replaceState(null, "", view === "Jobs" ? "#jobs" : "#dashboard");
+  }
+
   function toggleSaved(jobId: string) {
     setSavedJobs((current) => (current.includes(jobId) ? current.filter((id) => id !== jobId) : [...current, jobId]));
   }
@@ -186,8 +269,11 @@ export default function HomePage() {
     <main className="h-screen overflow-hidden bg-background text-foreground">
       <div className="fixed inset-0 bg-[radial-gradient(circle_at_16%_8%,rgba(255,90,0,0.12),transparent_26%),radial-gradient(circle_at_80%_0%,rgba(52,120,246,0.10),transparent_28%)]" />
       <div className="relative mx-auto flex h-full max-w-[1536px] overflow-hidden rounded-none border-border bg-[#0a0f15]/96 shadow-panel lg:rounded-[14px] lg:border">
-        <AppSidebar />
+        <AppSidebar activeView={activeView} onChangeView={changeView} />
 
+        {activeView === "Dashboard" ? (
+          <DashboardView onOpenJobs={() => changeView("Jobs")} />
+        ) : (
         <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
         <header className="grid shrink-0 gap-3 xl:grid-cols-[112px_minmax(260px,520px)_1fr] 2xl:grid-cols-[140px_minmax(280px,560px)_1fr] xl:items-center">
           <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">Jobs</h1>
@@ -376,12 +462,200 @@ export default function HomePage() {
           </section>
         </div>
         </section>
+        )}
       </div>
     </main>
   );
 }
 
-function AppSidebar() {
+function DashboardView({ onOpenJobs }: { onOpenJobs: () => void }) {
+  return (
+    <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
+      <header className="mb-3 flex shrink-0 flex-col gap-3 md:flex-row md:items-start md:justify-between 2xl:mb-4 2xl:gap-4">
+        <div>
+          <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">
+            Good morning, Alex!
+          </h1>
+          <p className="mt-1 text-[13px] text-muted 2xl:mt-1.5 2xl:text-base">Let's find the right opportunity for you today.</p>
+        </div>
+        <Button
+          size="lg"
+          className="h-10 w-full justify-center rounded-md bg-gradient-to-r from-[#ff5a00] to-[#dd3d00] text-[13px] md:w-auto 2xl:h-11 2xl:text-sm"
+          onClick={onOpenJobs}
+        >
+          <Plus className="h-4 w-4 2xl:h-5 2xl:w-5" />
+          New Search
+          <span className="ml-1.5 inline-flex items-center gap-1 rounded-md bg-white/10 px-2 py-1 text-[11px] 2xl:ml-2 2xl:text-xs">
+            <Command className="h-3 w-3" /> K
+          </span>
+        </Button>
+      </header>
+
+      <div className="grid shrink-0 gap-2.5 sm:grid-cols-2 xl:grid-cols-4 2xl:gap-3">
+        {stats.map((stat) => (
+          <article key={stat.label} className="panel min-h-[118px] p-3 2xl:min-h-[142px] 2xl:p-4">
+            <div className="mb-2 flex items-start gap-2.5 2xl:gap-3">
+              <div
+                className={cn(
+                  "grid h-9 w-9 shrink-0 place-items-center rounded-md 2xl:h-11 2xl:w-11",
+                  stat.color === "green" ? "bg-success/20 text-success" : "bg-accent/20 text-accent",
+                )}
+              >
+                <stat.icon className="h-5 w-5 2xl:h-6 2xl:w-6" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs text-[#d6dbe4] 2xl:text-sm">{stat.label}</p>
+                <p className="mt-0.5 text-[24px] font-bold leading-none 2xl:mt-1 2xl:text-[28px]">{stat.value}</p>
+                <p className="mt-0.5 text-xs text-muted 2xl:mt-1 2xl:text-sm">{stat.note}</p>
+              </div>
+              <MoreHorizontal className="h-4 w-4 text-muted" />
+            </div>
+            {stat.progress ? (
+              <div className="mt-4 h-2 rounded-full bg-white/[0.06] 2xl:mt-5">
+                <div className="h-full w-[78%] rounded-full bg-gradient-to-r from-[#ff5a00] to-[#ff7a1a]" />
+              </div>
+            ) : (
+              <svg viewBox="0 0 250 54" className="h-8 w-full 2xl:h-10" aria-hidden="true">
+                <path d={stat.chart} fill="none" stroke={stat.color === "green" ? "#58d532" : "#ff5a00"} strokeWidth="2.4" />
+                <path d={`${stat.chart} L250,54 L0,54 Z`} fill={stat.color === "green" ? "rgba(88,213,50,0.10)" : "rgba(255,90,0,0.10)"} />
+              </svg>
+            )}
+            <p className="mt-2 text-xs text-muted 2xl:mt-3 2xl:text-sm">
+              <span className="mr-2 font-bold text-success">up {stat.delta}</span>vs last 30 days
+            </p>
+          </article>
+        ))}
+      </div>
+
+      <div className="mt-2.5 grid min-h-0 flex-1 gap-2.5 xl:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.95fr)] 2xl:mt-3 2xl:gap-3">
+        <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_92px] gap-2.5 2xl:grid-rows-[minmax(0,1fr)_100px] 2xl:gap-3">
+          <section className="panel flex min-h-0 flex-col overflow-hidden p-3 2xl:p-4">
+            <div className="mb-2.5 flex items-center justify-between 2xl:mb-3">
+              <div className="flex items-center gap-2.5 2xl:gap-3">
+                <Star className="h-4 w-4 text-accent 2xl:h-5 2xl:w-5" />
+                <h2 className="text-base font-bold 2xl:text-lg">Recommended Jobs</h2>
+              </div>
+              <button className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-accent 2xl:gap-2 2xl:text-sm" onClick={onOpenJobs}>
+                View all jobs <ChevronRight className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-border">
+              {jobs.map((job) => (
+                <button
+                  key={job.id}
+                  className="grid min-h-[56px] w-full grid-cols-[46px_minmax(0,1fr)_86px_24px] items-center gap-2.5 border-b border-border px-3 py-2 text-left last:border-0 2xl:min-h-[64px] 2xl:grid-cols-[58px_minmax(0,1fr)_104px_28px] 2xl:gap-3"
+                  onClick={onOpenJobs}
+                >
+                  <CompanyLogo logo={job.logo} />
+                  <div className="min-w-0">
+                    <h3 className="truncate text-sm font-semibold 2xl:text-base">{job.title}</h3>
+                    <p className="text-xs text-muted">{job.company}</p>
+                    <div className="mt-1 flex gap-2">
+                      <span className="tag">Remote</span>
+                      <span className="tag">Full-time</span>
+                    </div>
+                  </div>
+                  <div className="hidden text-left sm:block">
+                    <p className="text-xs font-semibold text-success 2xl:text-sm">{job.match}% match</p>
+                    <p className="mt-0.5 text-xs text-muted 2xl:mt-1">{job.posted}</p>
+                  </div>
+                  <Bookmark className="h-[18px] w-[18px] text-muted 2xl:h-5 2xl:w-5" />
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="panel p-2.5 2xl:p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <div className="flex items-center gap-2.5 2xl:gap-3">
+                <Calendar className="h-4 w-4 text-muted" />
+                <h2 className="text-sm font-bold 2xl:text-base">Upcoming Interviews</h2>
+              </div>
+              <a className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-accent 2xl:gap-2 2xl:text-sm" href="#">
+                View all <ChevronRight className="h-4 w-4" />
+              </a>
+            </div>
+            <div className="grid gap-2 rounded-md border border-border px-3 py-2 sm:grid-cols-[42px_1fr_120px_auto_18px] sm:items-center 2xl:grid-cols-[48px_1fr_132px_auto_18px]">
+              <div className="text-center">
+                <p className="text-[11px] font-bold uppercase text-accent 2xl:text-xs">May</p>
+                <p className="text-lg font-bold leading-tight 2xl:text-xl">24</p>
+                <p className="text-[11px] text-accent 2xl:text-xs">Fri</p>
+              </div>
+              <div className="flex items-center gap-2.5 2xl:gap-3">
+                <div className="grid h-8 w-8 place-items-center rounded-full bg-white text-lg font-bold text-[#4285f4] 2xl:h-9 2xl:w-9 2xl:text-xl">G</div>
+                <div>
+                  <p className="text-sm font-semibold">Google</p>
+                  <p className="text-xs text-muted">Senior Product Designer</p>
+                </div>
+              </div>
+              <div className="space-y-1 text-[11px] text-muted 2xl:text-xs">
+                <p className="flex items-center gap-1.5 2xl:gap-2"><Calendar className="h-3.5 w-3.5 2xl:h-4 2xl:w-4" /> May 24, 2024</p>
+                <p className="flex items-center gap-1.5 2xl:gap-2"><CircleDot className="h-3.5 w-3.5 2xl:h-4 2xl:w-4" /> 10:00 AM</p>
+              </div>
+              <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]">Video Interview</Button>
+              <MoreHorizontal className="hidden h-5 w-5 text-muted sm:block" />
+            </div>
+          </section>
+        </div>
+
+        <aside className="grid min-h-0 grid-rows-[minmax(0,1fr)_158px] gap-2.5 2xl:grid-rows-[minmax(0,1fr)_172px] 2xl:gap-3">
+          <section className="panel p-3 2xl:p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-base font-bold 2xl:text-lg">Application Overview</h2>
+              <Button variant="ghost" size="sm" className="h-7 border border-border px-2 text-[11px] 2xl:text-xs">Last 30 days</Button>
+            </div>
+            <div className="grid items-center gap-3 sm:grid-cols-[124px_1fr] 2xl:grid-cols-[150px_minmax(0,1fr)] 2xl:gap-4">
+              <div className="overview-ring relative mx-auto h-[118px] w-[118px] rounded-full 2xl:h-[138px] 2xl:w-[138px]">
+                <div className="absolute inset-[30px] grid place-items-center rounded-full bg-[#131920] 2xl:inset-[34px]">
+                  <p className="text-center text-xl font-bold 2xl:text-2xl">24<br /><span className="text-[11px] font-normal text-muted 2xl:text-xs">Total</span></p>
+                </div>
+              </div>
+              <div className="space-y-2.5 2xl:space-y-3">
+                {overview.map((item) => (
+                  <div key={item.label} className="flex items-center gap-2.5 text-[13px] 2xl:gap-3 2xl:text-sm">
+                    <span className={cn("h-3 w-3 rounded-full 2xl:h-3.5 2xl:w-3.5", item.color)} />
+                    <span className="flex-1 text-muted">{item.label}</span>
+                    <span className="text-[#cbd2dd]">{item.value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <a className="mt-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-accent 2xl:gap-2 2xl:text-sm" href="#">
+              View full report <ChevronRight className="h-4 w-4" />
+            </a>
+          </section>
+
+          <section className="panel p-2.5 2xl:p-3">
+            <div className="mb-2 flex items-center justify-between">
+              <h2 className="text-sm font-bold 2xl:text-base">AI Assistant</h2>
+              <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]">New Chat</Button>
+            </div>
+            <div className="rounded-md border border-border p-2.5">
+              <div className="grid gap-2 sm:grid-cols-[30px_1fr] 2xl:sm:grid-cols-[34px_1fr]">
+                <div className="grid h-8 w-8 place-items-center rounded-full bg-accent/20 text-accent">
+                  <Bot className="h-4 w-4" />
+                </div>
+                <div className="space-y-1 text-[11px] leading-tight text-muted">
+                  <p>Hi Alex! I can help you with:</p>
+                  <div className="grid grid-cols-2 gap-x-2.5 gap-y-1 2xl:gap-x-3">
+                    {["Resume optimization", "Cover letter writing", "Interview preparation", "Job search strategy"].map((item) => (
+                      <p key={item} className="flex items-center gap-1.5"><Check className="h-3 w-3 text-accent" /> {item}</p>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <Button className="mt-2 h-8 w-full rounded-md bg-gradient-to-r from-[#ff5a00] to-[#e63e00] text-xs">
+              Start a conversation <Sparkles className="ml-auto h-5 w-5" />
+            </Button>
+          </section>
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function AppSidebar({ activeView, onChangeView }: { activeView: View; onChangeView: (view: View) => void }) {
   return (
     <aside className="app-sidebar hidden h-screen w-[190px] shrink-0 overflow-y-auto border-r border-border bg-white/[0.025] px-2.5 py-4 lg:flex lg:flex-col 2xl:w-[220px] 2xl:px-3 2xl:py-5">
       <div className="app-sidebar-brand mb-5 flex items-center gap-2.5 px-2 2xl:mb-7 2xl:gap-3">
@@ -402,13 +676,20 @@ function AppSidebar() {
       <nav className="app-sidebar-nav space-y-1.5 2xl:space-y-2">
         {navItems.map((item) => (
           <a
-            href="#"
+            href={item.href}
             key={item.label}
+            onClick={() => {
+              if (item.view) {
+                onChangeView(item.view);
+              }
+            }}
             className={cn(
-              "app-sidebar-nav-item group flex h-10 items-center gap-2.5 rounded-md px-3 text-[14px] text-[#d9dee7] transition 2xl:h-11 2xl:gap-3 2xl:px-4 2xl:text-[15px]",
-              item.active
+              "app-sidebar-nav-item group flex h-10 w-full items-center gap-2.5 rounded-md px-3 text-left text-[14px] text-[#d9dee7] transition 2xl:h-11 2xl:gap-3 2xl:px-4 2xl:text-[15px]",
+              item.view === activeView
                 ? "border border-white/[0.12] bg-white/10 text-white shadow-[inset_4px_0_0_#ff5a00]"
-                : "hover:bg-white/[0.055] hover:text-white",
+                : item.view
+                  ? "hover:bg-white/[0.055] hover:text-white"
+                  : "cursor-default opacity-70",
             )}
           >
             <item.icon className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
