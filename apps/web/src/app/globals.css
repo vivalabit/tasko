@@ -60,6 +60,21 @@ a {
     border-radius: 999px;
     background: rgba(255, 255, 255, 0.18);
   }
+
+  .job-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  }
+
+  .job-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .job-scroll::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.18);
+  }
 }
 
 .overview-ring {
