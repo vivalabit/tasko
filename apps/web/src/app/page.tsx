@@ -185,60 +185,60 @@ export default function HomePage() {
   return (
     <main className="h-screen overflow-hidden bg-background text-foreground">
       <div className="fixed inset-0 bg-[radial-gradient(circle_at_16%_8%,rgba(255,90,0,0.12),transparent_26%),radial-gradient(circle_at_80%_0%,rgba(52,120,246,0.10),transparent_28%)]" />
-      <div className="relative mx-auto flex h-full max-w-[1536px] overflow-hidden rounded-none border-border bg-[#0a0f15]/96 shadow-panel lg:rounded-[18px] lg:border">
+      <div className="relative mx-auto flex h-full max-w-[1536px] overflow-hidden rounded-none border-border bg-[#0a0f15]/96 shadow-panel lg:rounded-[14px] lg:border">
         <AppSidebar />
 
-        <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-4 py-4 sm:px-5 xl:px-5">
-        <header className="grid shrink-0 gap-4 xl:grid-cols-[150px_minmax(280px,560px)_1fr] xl:items-center">
-          <h1 className="text-[27px] font-bold leading-tight tracking-normal text-white sm:text-[31px]">Jobs</h1>
+        <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
+        <header className="grid shrink-0 gap-3 xl:grid-cols-[112px_minmax(260px,520px)_1fr] 2xl:grid-cols-[140px_minmax(280px,560px)_1fr] xl:items-center">
+          <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">Jobs</h1>
 
-          <label className="flex h-12 min-w-0 items-center gap-3 rounded-md border border-border bg-white/[0.075] px-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] focus-within:border-accent/70">
-            <Search className="h-5 w-5 shrink-0 text-muted" />
+          <label className="flex h-10 min-w-0 items-center gap-2.5 rounded-md border border-border bg-white/[0.075] px-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] focus-within:border-accent/70 2xl:h-12 2xl:px-4">
+            <Search className="h-[18px] w-[18px] shrink-0 text-muted 2xl:h-5 2xl:w-5" />
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder="Search jobs..."
-              className="h-full min-w-0 flex-1 bg-transparent text-sm font-medium text-white outline-none placeholder:text-muted"
+              className="h-full min-w-0 flex-1 bg-transparent text-[13px] font-medium text-white outline-none placeholder:text-muted 2xl:text-sm"
             />
           </label>
 
           <div className="flex flex-wrap gap-2 xl:justify-end">
             <Button
               variant="ghost"
-              className="h-12 rounded-md border border-border bg-white/[0.03] px-5 text-[#e6ebf3] hover:bg-white/[0.075]"
+              className="h-10 rounded-md border border-border bg-white/[0.03] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm"
               onClick={() => setActiveTab("Overview")}
             >
-              <Heart className={cn("h-5 w-5", savedJobs.length > 0 && "fill-accent text-accent")} />
+              <Heart className={cn("h-[18px] w-[18px] 2xl:h-5 2xl:w-5", savedJobs.length > 0 && "fill-accent text-accent")} />
               Saved Jobs
             </Button>
             <Button
               variant="ghost"
               className={cn(
-                "h-12 rounded-md border border-border bg-white/[0.03] px-5 text-[#e6ebf3] hover:bg-white/[0.075]",
+                "h-10 rounded-md border border-border bg-white/[0.03] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
                 alertsEnabled && "border-accent/70 text-white",
               )}
               onClick={() => setAlertsEnabled((enabled) => !enabled)}
             >
-              <Bell className="h-5 w-5" />
+              <Bell className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
               Job Alerts
             </Button>
           </div>
         </header>
 
-        <div className="mt-5 flex shrink-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap gap-2.5">
+        <div className="mt-4 flex shrink-0 flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between 2xl:mt-5 2xl:gap-3">
+          <div className="flex flex-wrap gap-2">
             {filters.map((filter) => (
               <button
                 key={filter}
                 type="button"
                 onClick={() => toggleFilter(filter)}
                 className={cn(
-                  "inline-flex h-10 items-center gap-2 rounded-md border border-transparent bg-white/[0.055] px-4 text-sm font-semibold text-[#d8dee8] transition hover:bg-white/[0.09]",
+                  "inline-flex h-9 items-center gap-2 rounded-md border border-transparent bg-white/[0.055] px-3 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.09] 2xl:h-10 2xl:px-4 2xl:text-sm",
                   activeFilters.includes(filter) && "border-accent/70 bg-accent/15 text-white",
                 )}
               >
                 {filter}
-                <ChevronDown className="h-4 w-4 text-muted" />
+                <ChevronDown className="h-3.5 w-3.5 text-muted 2xl:h-4 2xl:w-4" />
               </button>
             ))}
             <button
@@ -248,7 +248,7 @@ export default function HomePage() {
                 setActiveFilters([]);
                 setSortBy("Best Match");
               }}
-              className="inline-flex h-10 items-center rounded-md border border-border bg-white/[0.09] px-5 text-sm font-semibold text-[#d8dee8] transition hover:bg-white/[0.13]"
+              className="inline-flex h-9 items-center rounded-md border border-border bg-white/[0.09] px-4 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.13] 2xl:h-10 2xl:px-5 2xl:text-sm"
             >
               Reset
             </button>
@@ -257,18 +257,18 @@ export default function HomePage() {
           <button
             type="button"
             onClick={() => setSortBy((current) => (current === "Best Match" ? "Newest" : current === "Newest" ? "Salary" : "Best Match"))}
-            className="inline-flex h-10 w-fit items-center gap-2 whitespace-nowrap rounded-md bg-white/[0.045] px-4 text-sm font-semibold text-[#d8dee8] transition hover:bg-white/[0.08]"
+            className="inline-flex h-9 w-fit items-center gap-2 whitespace-nowrap rounded-md bg-white/[0.045] px-3 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.08] 2xl:h-10 2xl:px-4 2xl:text-sm"
           >
-            <SlidersHorizontal className="h-4 w-4 text-muted" />
+            <SlidersHorizontal className="h-3.5 w-3.5 text-muted 2xl:h-4 2xl:w-4" />
             Sort by: {sortBy}
-            <ChevronDown className="h-4 w-4 text-muted" />
+            <ChevronDown className="h-3.5 w-3.5 text-muted 2xl:h-4 2xl:w-4" />
           </button>
         </div>
 
-        <div className="mt-4 grid min-h-0 flex-1 gap-4 xl:grid-cols-[390px_minmax(0,1fr)] 2xl:grid-cols-[440px_minmax(0,1fr)]">
+        <div className="mt-3 grid min-h-0 flex-1 gap-3 xl:grid-cols-[350px_minmax(0,1fr)] 2xl:mt-4 2xl:grid-cols-[420px_minmax(0,1fr)] 2xl:gap-4">
           <aside className="flex min-h-0 flex-col overflow-hidden rounded-md bg-white/[0.02]">
-            <p className="shrink-0 px-1 pb-4 pt-5 text-base font-semibold text-muted">{filteredJobs.length} jobs found</p>
-            <div className="job-scroll min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+            <p className="shrink-0 px-1 pb-3 pt-3 text-sm font-semibold text-muted 2xl:pb-4 2xl:pt-5 2xl:text-base">{filteredJobs.length} jobs found</p>
+            <div className="job-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 2xl:space-y-3">
               {filteredJobs.map((job) => (
                 <button
                   key={job.id}
@@ -278,7 +278,7 @@ export default function HomePage() {
                     setActiveTab("Overview");
                   }}
                   className={cn(
-                    "grid w-full grid-cols-[56px_minmax(0,1fr)_88px_24px] items-center gap-3 rounded-md border p-4 text-left transition 2xl:grid-cols-[62px_minmax(0,1fr)_104px_28px] 2xl:gap-4",
+                    "grid w-full grid-cols-[46px_minmax(0,1fr)_78px_22px] items-center gap-3 rounded-md border p-3 text-left transition 2xl:grid-cols-[58px_minmax(0,1fr)_96px_26px] 2xl:p-4",
                     selectedJob.id === job.id
                       ? "border-accent bg-white/[0.055] shadow-[0_0_0_1px_rgba(255,90,0,0.12)]"
                       : "border-transparent bg-white/[0.035] hover:border-white/[0.13] hover:bg-white/[0.055]",
@@ -286,73 +286,73 @@ export default function HomePage() {
                 >
                   <CompanyLogo logo={job.logo} />
                   <div className="min-w-0">
-                    <h2 className="truncate text-base font-bold text-white">{job.title}</h2>
-                    <p className="mt-1 text-sm font-semibold text-[#cdd4df]">{job.company}</p>
-                    <p className="mt-1 text-sm text-muted">
+                    <h2 className="truncate text-sm font-bold text-white 2xl:text-base">{job.title}</h2>
+                    <p className="mt-0.5 text-xs font-semibold text-[#cdd4df] 2xl:mt-1 2xl:text-sm">{job.company}</p>
+                    <p className="mt-0.5 text-xs text-muted 2xl:mt-1 2xl:text-sm">
                       {job.location} <span className="text-white/30">•</span> {job.type}
                     </p>
-                    <p className="mt-2 text-sm text-muted">
+                    <p className="mt-1.5 text-xs text-muted 2xl:mt-2 2xl:text-sm">
                       {job.salary} <span className="mx-2 text-white/15">|</span> {job.posted}
                     </p>
                   </div>
-                  <p className="justify-self-end whitespace-nowrap text-sm font-bold text-success">{job.match}% match</p>
+                  <p className="justify-self-end whitespace-nowrap text-xs font-bold text-success 2xl:text-sm">{job.match}% match</p>
                   <Bookmark
                     onClick={(event) => {
                       event.stopPropagation();
                       toggleSaved(job.id);
                     }}
-                    className={cn("h-5 w-5 justify-self-end text-muted", savedJobs.includes(job.id) && "fill-accent text-accent")}
+                    className={cn("h-[18px] w-[18px] justify-self-end text-muted 2xl:h-5 2xl:w-5", savedJobs.includes(job.id) && "fill-accent text-accent")}
                   />
                 </button>
               ))}
             </div>
           </aside>
 
-          <section className="panel job-scroll min-h-0 overflow-y-auto p-4 md:p-5">
-            <div className="grid gap-5 lg:grid-cols-[1fr_188px]">
-              <div className="flex min-w-0 items-start gap-4">
+          <section className="panel job-scroll min-h-0 overflow-y-auto p-3 md:p-4 2xl:p-5">
+            <div className="grid gap-4 lg:grid-cols-[1fr_170px] 2xl:gap-5 2xl:grid-cols-[1fr_188px]">
+              <div className="flex min-w-0 items-start gap-3 2xl:gap-4">
                 <CompanyLogo logo={selectedJob.logo} large />
                 <div className="min-w-0 pt-0.5">
-                  <h2 className="text-[25px] font-bold leading-tight text-white md:text-[29px]">{selectedJob.title}</h2>
-                  <p className="mt-2 text-base font-semibold text-muted">
+                  <h2 className="text-[22px] font-bold leading-tight text-white md:text-[24px] 2xl:text-[29px]">{selectedJob.title}</h2>
+                  <p className="mt-1.5 text-sm font-semibold text-muted 2xl:mt-2 2xl:text-base">
                     {selectedJob.company} <span className="text-white/35">•</span> {selectedJob.location} <span className="text-white/35">•</span> {selectedJob.type}
                   </p>
-                  <p className="mt-3 text-base font-semibold text-muted">{selectedJob.salary}</p>
+                  <p className="mt-2 text-sm font-semibold text-muted 2xl:mt-3 2xl:text-base">{selectedJob.salary}</p>
                 </div>
               </div>
 
               <div className="grid gap-2">
-                <Button className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00]">
+                <Button className="h-9 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] text-[13px] 2xl:h-10 2xl:text-sm">
                   <ExternalLink className="h-4 w-4" />
                   Apply Now
                 </Button>
                 <Button
                   variant="ghost"
-                  className="h-10 rounded-md border border-border bg-transparent text-[#e6ebf3] hover:bg-white/[0.06]"
+                  className="h-9 rounded-md border border-border bg-transparent text-[13px] text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-10 2xl:text-sm"
                   onClick={() => toggleSaved(selectedJob.id)}
                 >
-                  <Heart className={cn("h-5 w-5", isSelectedSaved && "fill-accent text-accent")} />
+                  <Heart className={cn("h-[18px] w-[18px] 2xl:h-5 2xl:w-5", isSelectedSaved && "fill-accent text-accent")} />
                   {isSelectedSaved ? "Saved" : "Save Job"}
                 </Button>
                 <Button
                   variant="ghost"
-                  className="h-10 rounded-md border border-border bg-transparent text-[#e6ebf3] hover:bg-white/[0.06]"
+                  className="h-9 rounded-md border border-border bg-transparent text-[13px] text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-10 2xl:text-sm"
                   onClick={() => navigator.clipboard?.writeText(`${selectedJob.title} at ${selectedJob.company}`)}
                 >
-                  <Share2 className="h-5 w-5" />
+                  <Share2 className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
                   Share Job
                 </Button>
               </div>
             </div>
 
-            <div className="mt-7 flex gap-4 overflow-x-auto border-b border-border">
+            <div className="mt-5 flex gap-2 overflow-x-auto border-b border-border 2xl:mt-7 2xl:gap-4">
               {tabs.map((tab) => (
                 <button
                   key={tab}
                   type="button"
                   onClick={() => setActiveTab(tab)}
                   className={cn(
-                    "relative h-11 min-w-fit px-5 text-sm font-bold text-muted transition hover:text-white",
+                    "relative h-10 min-w-fit px-4 text-[13px] font-bold text-muted transition hover:text-white 2xl:h-11 2xl:px-5 2xl:text-sm",
                     activeTab === tab && "text-white after:absolute after:bottom-[-1px] after:left-0 after:h-0.5 after:w-full after:bg-accent",
                   )}
                 >
@@ -361,13 +361,13 @@ export default function HomePage() {
               ))}
             </div>
 
-            <div className="mt-5 grid gap-4 2xl:grid-cols-[minmax(0,1.12fr)_minmax(320px,0.9fr)]">
-              <div className="grid gap-4">
+            <div className="mt-4 grid gap-3 min-[1800px]:grid-cols-[minmax(0,1.12fr)_minmax(320px,0.9fr)] 2xl:mt-5 2xl:gap-4">
+              <div className="grid gap-3 2xl:gap-4">
                 <JobMainPanel job={selectedJob} tab={activeTab} />
                 <SalaryInsights job={selectedJob} />
               </div>
 
-              <div className="grid content-start gap-4">
+              <div className="grid content-start gap-3 2xl:gap-4">
                 <MatchPanel job={selectedJob} />
                 <RecommendationsPanel job={selectedJob} />
                 <JobDetails job={selectedJob} />
@@ -383,58 +383,58 @@ export default function HomePage() {
 
 function AppSidebar() {
   return (
-    <aside className="app-sidebar hidden h-screen w-[220px] shrink-0 overflow-y-auto border-r border-border bg-white/[0.025] px-3 py-5 lg:flex lg:flex-col 2xl:w-[250px]">
-      <div className="app-sidebar-brand mb-7 flex items-center gap-3 px-2">
+    <aside className="app-sidebar hidden h-screen w-[190px] shrink-0 overflow-y-auto border-r border-border bg-white/[0.025] px-2.5 py-4 lg:flex lg:flex-col 2xl:w-[220px] 2xl:px-3 2xl:py-5">
+      <div className="app-sidebar-brand mb-5 flex items-center gap-2.5 px-2 2xl:mb-7 2xl:gap-3">
         <img
           src="/brand/tasko-mark.png"
           alt=""
-          className="app-sidebar-mark h-10 w-9 object-contain"
+          className="app-sidebar-mark h-8 w-8 object-contain 2xl:h-10 2xl:w-9"
           aria-hidden="true"
         />
         <div className="min-w-0">
-          <p className="bg-gradient-to-b from-[#ff8a1f] to-[#ff4d00] bg-clip-text text-[22px] font-black leading-none text-transparent">
+          <p className="bg-gradient-to-b from-[#ff8a1f] to-[#ff4d00] bg-clip-text text-[19px] font-black leading-none text-transparent 2xl:text-[22px]">
             tasko
           </p>
-          <p className="mt-1 text-xs text-muted">AI Career Assistant</p>
+          <p className="mt-0.5 text-[11px] text-muted 2xl:mt-1 2xl:text-xs">AI Career Assistant</p>
         </div>
       </div>
 
-      <nav className="app-sidebar-nav space-y-2">
+      <nav className="app-sidebar-nav space-y-1.5 2xl:space-y-2">
         {navItems.map((item) => (
           <a
             href="#"
             key={item.label}
             className={cn(
-              "app-sidebar-nav-item group flex h-11 items-center gap-3 rounded-md px-4 text-[15px] text-[#d9dee7] transition",
+              "app-sidebar-nav-item group flex h-10 items-center gap-2.5 rounded-md px-3 text-[14px] text-[#d9dee7] transition 2xl:h-11 2xl:gap-3 2xl:px-4 2xl:text-[15px]",
               item.active
                 ? "border border-white/[0.12] bg-white/10 text-white shadow-[inset_4px_0_0_#ff5a00]"
                 : "hover:bg-white/[0.055] hover:text-white",
             )}
           >
-            <item.icon className="h-5 w-5" />
+            <item.icon className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
             <span>{item.label}</span>
           </a>
         ))}
       </nav>
 
-      <div className="app-sidebar-footer mt-auto border-t border-border pt-4">
-        <div className="app-sidebar-profile mb-3 flex items-center gap-3 rounded-md px-2 py-2">
-          <div className="grid h-10 w-10 place-items-center rounded-full bg-white text-xs font-bold text-slate-900">
+      <div className="app-sidebar-footer mt-auto border-t border-border pt-3 2xl:pt-4">
+        <div className="app-sidebar-profile mb-2 flex items-center gap-2.5 rounded-md px-2 py-2 2xl:mb-3 2xl:gap-3">
+          <div className="grid h-9 w-9 place-items-center rounded-full bg-white text-[11px] font-bold text-slate-900 2xl:h-10 2xl:w-10 2xl:text-xs">
             AJ
           </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate font-medium">Alex Johnson</p>
-            <p className="text-sm text-muted">Product Designer</p>
+            <p className="truncate text-sm font-medium 2xl:text-base">Alex Johnson</p>
+            <p className="text-xs text-muted 2xl:text-sm">Product Designer</p>
           </div>
-          <ChevronRight className="h-5 w-5 text-muted" />
+          <ChevronRight className="h-[18px] w-[18px] text-muted 2xl:h-5 2xl:w-5" />
         </div>
         <a
           href="#"
-          className="app-sidebar-settings flex h-11 items-center gap-3 rounded-md px-3 text-muted hover:bg-white/[0.055] hover:text-white"
+          className="app-sidebar-settings flex h-10 items-center gap-2.5 rounded-md px-3 text-sm text-muted hover:bg-white/[0.055] hover:text-white 2xl:h-11 2xl:gap-3 2xl:text-base"
         >
-          <Settings className="h-5 w-5" />
+          <Settings className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
           <span>Settings</span>
-          <ChevronRight className="ml-auto h-5 w-5" />
+          <ChevronRight className="ml-auto h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
         </a>
       </div>
     </aside>
@@ -444,10 +444,10 @@ function AppSidebar() {
 function JobMainPanel({ job, tab }: { job: Job; tab: string }) {
   if (tab === "Company") {
     return (
-      <article className="panel p-4">
-        <h3 className="text-lg font-bold">Company</h3>
-        <p className="mt-4 text-sm leading-6 text-muted">{job.companyInfo}</p>
-        <div className="mt-5 grid gap-3 sm:grid-cols-3">
+      <article className="panel p-3 2xl:p-4">
+        <h3 className="text-base font-bold 2xl:text-lg">Company</h3>
+        <p className="mt-3 text-[13px] leading-5 text-muted 2xl:mt-4 2xl:text-sm 2xl:leading-6">{job.companyInfo}</p>
+        <div className="mt-4 grid gap-2.5 sm:grid-cols-3 2xl:mt-5 2xl:gap-3">
           <InfoStat label="Team" value={job.department} />
           <InfoStat label="Location" value={job.location} />
           <InfoStat label="Role" value={job.type} />
@@ -458,18 +458,18 @@ function JobMainPanel({ job, tab }: { job: Job; tab: string }) {
 
   if (tab === "AI Match") {
     return (
-      <article className="panel p-4">
-        <h3 className="text-lg font-bold">AI Match Analysis</h3>
-        <p className="mt-4 text-sm leading-6 text-muted">
+      <article className="panel p-3 2xl:p-4">
+        <h3 className="text-base font-bold 2xl:text-lg">AI Match Analysis</h3>
+        <p className="mt-3 text-[13px] leading-5 text-muted 2xl:mt-4 2xl:text-sm 2xl:leading-6">
           Your profile is a strong fit for this role because the portfolio signals, seniority, and product design keywords align with the job description.
         </p>
-        <div className="mt-5 space-y-3">
+        <div className="mt-4 space-y-2.5 2xl:mt-5 2xl:space-y-3">
           {["Portfolio relevance", "Experience level", "Skill alignment", "Culture fit"].map((item, index) => (
             <div key={item} className="flex items-center gap-3">
               <div className="h-2 flex-1 rounded-full bg-white/[0.08]">
                 <div className="h-full rounded-full bg-success" style={{ width: `${job.match - index * 5}%` }} />
               </div>
-              <span className="w-36 text-sm text-muted">{item}</span>
+              <span className="w-32 text-[13px] text-muted 2xl:w-36 2xl:text-sm">{item}</span>
             </div>
           ))}
         </div>
@@ -479,11 +479,11 @@ function JobMainPanel({ job, tab }: { job: Job; tab: string }) {
 
   if (tab === "Reviews") {
     return (
-      <article className="panel p-4">
-        <h3 className="text-lg font-bold">Reviews</h3>
-        <div className="mt-4 space-y-3">
+      <article className="panel p-3 2xl:p-4">
+        <h3 className="text-base font-bold 2xl:text-lg">Reviews</h3>
+        <div className="mt-3 space-y-2.5 2xl:mt-4 2xl:space-y-3">
           {job.reviews.map((review) => (
-            <p key={review} className="rounded-md border border-border bg-white/[0.025] p-3 text-sm leading-6 text-muted">
+            <p key={review} className="rounded-md border border-border bg-white/[0.025] p-3 text-[13px] leading-5 text-muted 2xl:text-sm 2xl:leading-6">
               {review}
             </p>
           ))}
@@ -494,12 +494,12 @@ function JobMainPanel({ job, tab }: { job: Job; tab: string }) {
 
   if (tab === "Similar Jobs") {
     return (
-      <article className="panel p-4">
-        <h3 className="text-lg font-bold">Similar Jobs</h3>
-        <div className="mt-4 space-y-3">
+      <article className="panel p-3 2xl:p-4">
+        <h3 className="text-base font-bold 2xl:text-lg">Similar Jobs</h3>
+        <div className="mt-3 space-y-2.5 2xl:mt-4 2xl:space-y-3">
           {job.similarJobs.map((similarJob) => (
             <div key={similarJob} className="flex items-center justify-between rounded-md border border-border bg-white/[0.025] p-3">
-              <p className="text-sm font-semibold text-[#d8dee8]">{similarJob}</p>
+              <p className="text-[13px] font-semibold text-[#d8dee8] 2xl:text-sm">{similarJob}</p>
               <ChevronDown className="h-4 w-4 -rotate-90 text-muted" />
             </div>
           ))}
@@ -509,12 +509,12 @@ function JobMainPanel({ job, tab }: { job: Job; tab: string }) {
   }
 
   return (
-    <article className="panel p-4">
-      <h3 className="text-lg font-bold">Job Description</h3>
-      <p className="mt-4 text-sm leading-6 text-muted">{job.overview}</p>
+    <article className="panel p-3 2xl:p-4">
+      <h3 className="text-base font-bold 2xl:text-lg">Job Description</h3>
+      <p className="mt-3 text-[13px] leading-5 text-muted 2xl:mt-4 2xl:text-sm 2xl:leading-6">{job.overview}</p>
 
-      <h4 className="mt-7 text-base font-bold">Key Responsibilities</h4>
-      <ul className="mt-3 space-y-2 text-sm leading-5 text-muted">
+      <h4 className="mt-5 text-sm font-bold 2xl:mt-7 2xl:text-base">Key Responsibilities</h4>
+      <ul className="mt-2.5 space-y-1.5 text-[13px] leading-5 text-muted 2xl:mt-3 2xl:space-y-2 2xl:text-sm">
         {job.responsibilities.map((item) => (
           <li key={item} className="flex gap-2">
             <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-muted" />
@@ -523,8 +523,8 @@ function JobMainPanel({ job, tab }: { job: Job; tab: string }) {
         ))}
       </ul>
 
-      <h4 className="mt-7 text-base font-bold">Requirements</h4>
-      <ul className="mt-3 space-y-2 text-sm leading-5 text-muted">
+      <h4 className="mt-5 text-sm font-bold 2xl:mt-7 2xl:text-base">Requirements</h4>
+      <ul className="mt-2.5 space-y-1.5 text-[13px] leading-5 text-muted 2xl:mt-3 2xl:space-y-2 2xl:text-sm">
         {job.requirements.map((item) => (
           <li key={item} className="flex gap-2">
             <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-muted" />
@@ -533,7 +533,7 @@ function JobMainPanel({ job, tab }: { job: Job; tab: string }) {
         ))}
       </ul>
 
-      <div className="mt-7 flex flex-wrap gap-2">
+      <div className="mt-5 flex flex-wrap gap-2 2xl:mt-7">
         {job.skills.map((skill) => (
           <span key={skill} className="tag font-semibold">
             {skill}
@@ -546,14 +546,14 @@ function JobMainPanel({ job, tab }: { job: Job; tab: string }) {
 
 function MatchPanel({ job }: { job: Job }) {
   return (
-    <article className="panel p-5">
-      <h3 className="text-lg font-bold">AI Match Score</h3>
-      <p className="mt-4 text-[40px] font-bold leading-none text-success">{job.match}%</p>
-      <div className="mt-3 h-2 rounded-full bg-white/[0.09]">
+    <article className="panel p-4 2xl:p-5">
+      <h3 className="text-base font-bold 2xl:text-lg">AI Match Score</h3>
+      <p className="mt-3 text-[34px] font-bold leading-none text-success 2xl:mt-4 2xl:text-[40px]">{job.match}%</p>
+      <div className="mt-2.5 h-2 rounded-full bg-white/[0.09] 2xl:mt-3">
         <div className="h-full rounded-full bg-success" style={{ width: `${job.match}%` }} />
       </div>
-      <h4 className="mt-7 text-sm font-bold">Why this match?</h4>
-      <ul className="mt-3 space-y-2 text-sm text-muted">
+      <h4 className="mt-5 text-[13px] font-bold 2xl:mt-7 2xl:text-sm">Why this match?</h4>
+      <ul className="mt-2.5 space-y-1.5 text-[13px] text-muted 2xl:mt-3 2xl:space-y-2 2xl:text-sm">
         {["Strong portfolio match", "Relevant experience", "Skills alignment", "Company culture fit"].map((item) => (
           <li key={item} className="flex items-center gap-2">
             <Check className="h-4 w-4 text-success" />
@@ -561,7 +561,7 @@ function MatchPanel({ job }: { job: Job }) {
           </li>
         ))}
       </ul>
-      <a className="mt-5 inline-flex items-center gap-2 text-sm font-bold text-accent" href="#">
+      <a className="mt-4 inline-flex items-center gap-2 text-[13px] font-bold text-accent 2xl:mt-5 2xl:text-sm" href="#">
         Review full analysis <span aria-hidden="true">-&gt;</span>
       </a>
     </article>
@@ -570,17 +570,17 @@ function MatchPanel({ job }: { job: Job }) {
 
 function RecommendationsPanel({ job }: { job: Job }) {
   return (
-    <article className="panel p-5">
-      <h3 className="text-lg font-bold">AI Recommendations</h3>
+    <article className="panel p-4 2xl:p-5">
+      <h3 className="text-base font-bold 2xl:text-lg">AI Recommendations</h3>
       <div className="mt-3 divide-y divide-border">
         {job.recommendations.map((recommendation) => (
-          <div key={recommendation.text} className="flex items-center justify-between gap-4 py-2.5 text-sm">
+          <div key={recommendation.text} className="flex items-center justify-between gap-4 py-2 text-[13px] 2xl:py-2.5 2xl:text-sm">
             <p className="text-muted">{recommendation.text}</p>
             <p className="shrink-0 font-bold text-success">{recommendation.gain}</p>
           </div>
         ))}
       </div>
-      <a className="mt-3 inline-flex items-center gap-2 text-sm font-bold text-accent" href="#">
+      <a className="mt-3 inline-flex items-center gap-2 text-[13px] font-bold text-accent 2xl:text-sm" href="#">
         View all recommendations <span aria-hidden="true">-&gt;</span>
       </a>
     </article>
@@ -589,16 +589,16 @@ function RecommendationsPanel({ job }: { job: Job }) {
 
 function SalaryInsights({ job }: { job: Job }) {
   return (
-    <article className="panel p-4">
-      <h3 className="text-lg font-bold">Salary Insights</h3>
-      <p className="mt-6 text-[30px] font-bold leading-none">{job.salaryAverage}</p>
-      <p className="mt-2 text-sm text-muted">Average total compensation</p>
-      <div className="mt-8">
+    <article className="panel p-3 2xl:p-4">
+      <h3 className="text-base font-bold 2xl:text-lg">Salary Insights</h3>
+      <p className="mt-4 text-[26px] font-bold leading-none 2xl:mt-6 2xl:text-[30px]">{job.salaryAverage}</p>
+      <p className="mt-1.5 text-[13px] text-muted 2xl:mt-2 2xl:text-sm">Average total compensation</p>
+      <div className="mt-6 2xl:mt-8">
         <div className="relative h-2 rounded-full bg-white/[0.10]">
           <div className="absolute left-0 top-0 h-full w-1/2 rounded-full bg-accent" />
           <span className="absolute left-1/2 top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent" />
         </div>
-        <div className="mt-4 flex justify-between text-sm font-semibold text-muted">
+        <div className="mt-3 flex justify-between text-[13px] font-semibold text-muted 2xl:mt-4 2xl:text-sm">
           <span>{job.salaryMin}</span>
           <span>{job.salaryAverage}</span>
           <span>{job.salaryMax}</span>
@@ -618,11 +618,11 @@ function JobDetails({ job }: { job: Job }) {
   ];
 
   return (
-    <article className="panel p-5">
-      <h3 className="text-lg font-bold">Job Details</h3>
-      <dl className="mt-5 space-y-3">
+    <article className="panel p-4 2xl:p-5">
+      <h3 className="text-base font-bold 2xl:text-lg">Job Details</h3>
+      <dl className="mt-4 space-y-2.5 2xl:mt-5 2xl:space-y-3">
         {details.map(([label, value]) => (
-          <div key={label} className="grid grid-cols-[130px_1fr] gap-4 text-sm">
+          <div key={label} className="grid grid-cols-[112px_1fr] gap-3 text-[13px] 2xl:grid-cols-[130px_1fr] 2xl:gap-4 2xl:text-sm">
             <dt className="text-muted">{label}</dt>
             <dd className="font-semibold text-[#d8dee8]">{value}</dd>
           </div>
@@ -634,20 +634,20 @@ function JobDetails({ job }: { job: Job }) {
 
 function InfoStat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-border bg-white/[0.025] p-3">
+    <div className="rounded-md border border-border bg-white/[0.025] p-2.5 2xl:p-3">
       <p className="text-xs font-semibold uppercase text-muted">{label}</p>
-      <p className="mt-2 text-sm font-bold text-white">{value}</p>
+      <p className="mt-1.5 text-[13px] font-bold text-white 2xl:mt-2 2xl:text-sm">{value}</p>
     </div>
   );
 }
 
 function CompanyLogo({ logo, large = false }: { logo: Job["logo"]; large?: boolean }) {
-  const sizeClass = large ? "h-[88px] w-[88px]" : "h-14 w-14 2xl:h-[62px] 2xl:w-[62px]";
+  const sizeClass = large ? "h-16 w-16 2xl:h-[88px] 2xl:w-[88px]" : "h-11 w-11 2xl:h-14 2xl:w-14";
 
   if (logo === "figma") {
     return (
       <div className={cn("grid shrink-0 place-items-center rounded-md bg-black", sizeClass)}>
-        <div className={cn("grid grid-cols-2", large ? "scale-150" : "")}>
+        <div className={cn("grid grid-cols-2", large ? "scale-125 2xl:scale-150" : "scale-90 2xl:scale-100")}>
           <span className="h-4 w-4 rounded-l-full bg-[#ff7262]" />
           <span className="h-4 w-4 rounded-r-full bg-[#f24e1e]" />
           <span className="h-4 w-4 rounded-l-full bg-[#a259ff]" />
@@ -659,7 +659,7 @@ function CompanyLogo({ logo, large = false }: { logo: Job["logo"]; large?: boole
   }
 
   return (
-    <div className={cn("grid shrink-0 place-items-center rounded-md bg-black font-black text-white", large ? "text-2xl" : "text-xl", sizeClass)}>
+    <div className={cn("grid shrink-0 place-items-center rounded-md bg-black font-black text-white", large ? "text-xl 2xl:text-2xl" : "text-base 2xl:text-xl", sizeClass)}>
       stripe
     </div>
   );
