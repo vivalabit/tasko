@@ -1,5 +1,6 @@
 from fastapi.testclient import TestClient
 
+from app.core.settings import get_settings
 from app.main import app
 from app.models.parsers import LinkedInSearchRequest
 from app.services.parsers.linkedin import LinkedInJobsParser
@@ -48,23 +49,72 @@ def test_linkedin_parser_normalizes_job_record() -> None:
     assert job.raw["job_title"] == "Senior Product Designer"
 
 
-def test_linkedin_search_requires_brightdata_key() -> None:
+def test_linkedin_snapshot_returns_queued_when_download_is_not_ready(monkeypatch) -> None:
+    parser = LinkedInJobsParser(api_key="key", api_url="https://api.example.test")
+
+    monkeypatch.setattr(parser, "get_snapshot_progress", lambda snapshot_id: {})
+    monkeypatch.setattr(parser, "download_snapshot", lambda snapshot_id: None)
+
+    response = parser.get_snapshot("snapshot-123")
+
+    assert response.status == "queued"
+    assert response.snapshot_id == "snapshot-123"
+    assert response.jobs == []
+
+
+def test_linkedin_snapshot_normalizes_downloaded_records(monkeypatch) -> None:
+    parser = LinkedInJobsParser(api_key="key", api_url="https://api.example.test")
+
+    monkeypatch.setattr(parser, "get_snapshot_progress", lambda snapshot_id: {"status": "ready"})
+    monkeypatch.setattr(
+        parser,
+        "download_snapshot",
+        lambda snapshot_id: [
+            {
+                "job_title": "Senior Product Designer",
+                "company_name": "Stripe",
+                "job_location": "Remote",
+                "url": "https://www.linkedin.com/jobs/view/123",
+            },
+            {
+                "job_title": "Senior Product Designer",
+                "company_name": "Stripe",
+                "job_location": "Remote",
+                "url": "https://www.linkedin.com/jobs/view/123",
+            },
+        ],
+    )
+
+    response = parser.get_snapshot("snapshot-123", results_limit=10, deduplicate=True)
+
+    assert response.status == "completed"
+    assert response.snapshot_id == "snapshot-123"
+    assert len(response.jobs) == 1
+    assert response.jobs[0].title == "Senior Product Designer"
+
+
+def test_linkedin_search_requires_brightdata_key(monkeypatch) -> None:
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "")
+    get_settings.cache_clear()
     client = TestClient(app)
 
-    response = client.post(
-        "/parsers/linkedin/search",
-        json={
-            "keywords": "Product Designer",
-            "location": "Europe",
-            "remote": "Remote only",
-            "experience_level": "Any",
-            "job_type": "Any",
-            "date_posted": "Any time",
-            "results_limit": 10,
-            "country": "Any",
-            "deduplicate": True,
-        },
-    )
+    try:
+        response = client.post(
+            "/parsers/linkedin/search",
+            json={
+                "keywords": "Product Designer",
+                "location": "Europe",
+                "remote": "Remote only",
+                "experience_level": "Any",
+                "job_type": "Any",
+                "date_posted": "Any time",
+                "results_limit": 10,
+                "country": "Any",
+                "deduplicate": True,
+            },
+        )
+    finally:
+        get_settings.cache_clear()
 
     assert response.status_code == 503
     assert response.json()["detail"] == "BRIGHTDATA_API_KEY is not configured"

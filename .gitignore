@@ -28,6 +28,9 @@ pnpm-debug.log*
 !.env.example
 !.env.local.example
 
+# Local user data
+apps/web/public/parser-search-configs.local.json
+
 # Caches
 .turbo/
 .cache/

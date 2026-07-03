@@ -113,6 +113,97 @@ class LinkedInJobsParser:
             jobs=jobs[: request.results_limit],
         )
 
+    def get_snapshot(
+        self,
+        snapshot_id: str,
+        *,
+        results_limit: int = 100,
+        deduplicate: bool = True,
+    ) -> ParserSearchResponse:
+        if not self.api_key:
+            raise BrightDataConfigurationError("BRIGHTDATA_API_KEY is not configured")
+
+        progress = self.get_snapshot_progress(snapshot_id)
+        status_value = str(progress.get("status", "")).lower() if isinstance(progress, dict) else ""
+        if status_value in {"failed", "error"}:
+            raise BrightDataRequestError(f"Bright Data snapshot {snapshot_id} failed: {status_value}")
+        if status_value and status_value not in {"ready", "completed", "done", "success"}:
+            return ParserSearchResponse(
+                parser=self.parser_id,
+                status="running" if status_value in {"running", "processing", "building"} else "queued",
+                search_url="",
+                snapshot_id=snapshot_id,
+                message=status_value,
+            )
+
+        records = self.download_snapshot(snapshot_id)
+        if records is None:
+            return ParserSearchResponse(
+                parser=self.parser_id,
+                status="queued",
+                search_url="",
+                snapshot_id=snapshot_id,
+                message="snapshot_not_ready",
+            )
+
+        jobs = [self.normalize_job(record) for record in records if isinstance(record, dict)]
+        if deduplicate:
+            jobs = self.deduplicate(jobs)
+
+        return ParserSearchResponse(
+            parser=self.parser_id,
+            status="completed",
+            search_url="",
+            jobs=jobs[:results_limit],
+            snapshot_id=snapshot_id,
+        )
+
+    def get_snapshot_progress(self, snapshot_id: str) -> dict[str, Any]:
+        try:
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                response = client.get(
+                    f"{self.api_url}/progress/{snapshot_id}",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                )
+        except httpx.HTTPError as exc:
+            raise BrightDataRequestError("Bright Data snapshot progress request failed") from exc
+
+        if response.status_code == 404:
+            return {}
+        if response.status_code >= 400:
+            raise BrightDataRequestError(
+                f"Bright Data snapshot progress returned HTTP {response.status_code}: {response.text[:500]}"
+            )
+
+        data = response.json()
+        return data if isinstance(data, dict) else {}
+
+    def download_snapshot(self, snapshot_id: str) -> list[dict[str, Any]] | None:
+        try:
+            with httpx.Client(timeout=self.timeout_seconds) as client:
+                response = client.get(
+                    f"{self.api_url}/snapshot/{snapshot_id}",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    params={"format": "json"},
+                )
+        except httpx.HTTPError as exc:
+            raise BrightDataRequestError("Bright Data snapshot download request failed") from exc
+
+        if response.status_code in {202, 204}:
+            return None
+        if response.status_code >= 400:
+            raise BrightDataRequestError(
+                f"Bright Data snapshot download returned HTTP {response.status_code}: {response.text[:500]}"
+            )
+
+        data = response.json()
+        if isinstance(data, list):
+            return [record for record in data if isinstance(record, dict)]
+        if isinstance(data, dict):
+            records = data.get("data") or data.get("results") or []
+            return [record for record in records if isinstance(record, dict)] if isinstance(records, list) else []
+        return []
+
     @staticmethod
     def build_search_url(request: LinkedInSearchRequest) -> str:
         params: dict[str, str] = {}

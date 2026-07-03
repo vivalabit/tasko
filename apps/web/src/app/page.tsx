@@ -22,6 +22,7 @@ import {
   Plus,
   Info,
   RotateCcw,
+  Save,
   Search,
   Share2,
   SlidersHorizontal,
@@ -29,6 +30,7 @@ import {
   Star,
   Settings,
   Target,
+  Trash2,
   X,
 } from "lucide-react";
 
@@ -70,6 +72,34 @@ type ParsedJob = {
   employment_type?: string | null;
   seniority?: string | null;
   description?: string | null;
+};
+
+type ParserApiResponse = {
+  status: "completed" | "queued" | "running";
+  jobs?: ParsedJob[];
+  snapshot_id?: string | null;
+  message?: string | null;
+};
+
+type ParserSearchForm = {
+  keywords: string;
+  location: string;
+  remote: string;
+  experienceLevel: string;
+  jobType: string;
+  datePosted: string;
+  resultsLimit: string;
+  country: string;
+  deduplicate: boolean;
+  searchName: string;
+  folder: string;
+};
+
+type ParserSearchConfig = {
+  id: string;
+  name: string;
+  form: ParserSearchForm;
+  updatedAt: string;
 };
 
 const jobs: Job[] = [
@@ -167,6 +197,24 @@ type View = "Dashboard" | "Jobs";
 type ParserSearchStatus = "idle" | "loading" | "ready" | "error";
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const snapshotPollDelayMs = 4000;
+const snapshotPollMaxAttempts = 30;
+const parserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v1";
+const parserSearchConfigsLocalUrl = "/parser-search-configs.local.json";
+
+const defaultParserSearchForm: ParserSearchForm = {
+  keywords: "",
+  location: "",
+  remote: "Any",
+  experienceLevel: "Any",
+  jobType: "Any",
+  datePosted: "Any time",
+  resultsLimit: "100",
+  country: "Any",
+  deduplicate: true,
+  searchName: "",
+  folder: "",
+};
 
 const navItems: Array<{ label: string; icon: typeof Home; href: string; view?: View }> = [
   { label: "Dashboard", icon: Home, href: "#dashboard", view: "Dashboard" },
@@ -273,6 +321,36 @@ function mapParsedJobToJob(job: ParsedJob, index: number): Job {
   };
 }
 
+function wait(ms: number) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function createClientId(prefix: string) {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function normalizeParserSearchConfigs(configs: ParserSearchConfig[]) {
+  const normalizedConfigs = configs
+    .filter((config) => config.id && config.name && config.form)
+    .map((config) => ({
+      ...config,
+      form: { ...defaultParserSearchForm, ...config.form },
+    }));
+  const uniqueConfigs = new Map<string, ParserSearchConfig>();
+
+  for (const config of normalizedConfigs) {
+    uniqueConfigs.set(config.id, config);
+  }
+
+  return Array.from(uniqueConfigs.values());
+}
+
 export default function HomePage() {
   const [activeView, setActiveView] = useState<View>("Dashboard");
   const [jobList, setJobList] = useState<Job[]>(jobs);
@@ -286,19 +364,10 @@ export default function HomePage() {
   const [isParserDialogOpen, setIsParserDialogOpen] = useState(false);
   const [parserSearchStatus, setParserSearchStatus] = useState<ParserSearchStatus>("idle");
   const [parserSearchMessage, setParserSearchMessage] = useState("");
-  const [parserSearchForm, setParserSearchForm] = useState({
-    keywords: "",
-    location: "",
-    remote: "Any",
-    experienceLevel: "Any",
-    jobType: "Any",
-    datePosted: "Any time",
-    resultsLimit: "100",
-    country: "Any",
-    deduplicate: true,
-    searchName: "",
-    folder: "",
-  });
+  const [parserSearchForm, setParserSearchForm] = useState<ParserSearchForm>(defaultParserSearchForm);
+  const [parserSearchConfigs, setParserSearchConfigs] = useState<ParserSearchConfig[]>([]);
+  const [selectedParserSearchConfigId, setSelectedParserSearchConfigId] = useState("");
+  const [isParserSearchConfigsLoaded, setIsParserSearchConfigsLoaded] = useState(false);
 
   const filteredJobs = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -334,6 +403,55 @@ export default function HomePage() {
     return () => window.removeEventListener("hashchange", syncViewFromHash);
   }, []);
 
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadParserSearchConfigs() {
+      const configs: ParserSearchConfig[] = [];
+
+      try {
+        const rawConfigs = window.localStorage.getItem(parserSearchConfigsStorageKey);
+        if (rawConfigs) {
+          const parsedConfigs = JSON.parse(rawConfigs) as ParserSearchConfig[];
+          if (Array.isArray(parsedConfigs)) {
+            configs.push(...parsedConfigs);
+          }
+        }
+      } catch {
+        configs.length = 0;
+      }
+
+      try {
+        const response = await fetch(parserSearchConfigsLocalUrl, { cache: "no-store" });
+        if (response.ok) {
+          const localConfigs = (await response.json()) as ParserSearchConfig[];
+          if (Array.isArray(localConfigs)) {
+            configs.push(...localConfigs);
+          }
+        }
+      } catch {
+        // Local config file is optional.
+      }
+
+      if (!isMounted) return;
+
+      setParserSearchConfigs(normalizeParserSearchConfigs(configs));
+      setIsParserSearchConfigsLoaded(true);
+    }
+
+    loadParserSearchConfigs();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isParserSearchConfigsLoaded) return;
+
+    window.localStorage.setItem(parserSearchConfigsStorageKey, JSON.stringify(parserSearchConfigs));
+  }, [isParserSearchConfigsLoaded, parserSearchConfigs]);
+
   function changeView(view: View) {
     setActiveView(view);
     window.history.replaceState(null, "", view === "Jobs" ? "#jobs" : "#dashboard");
@@ -354,6 +472,97 @@ export default function HomePage() {
     setParserSearchForm((current) => ({ ...current, [field]: value }));
     setParserSearchStatus("idle");
     setParserSearchMessage("");
+  }
+
+  function saveParserSearchConfig() {
+    const configName = parserSearchForm.searchName.trim();
+    if (!configName) {
+      setParserSearchStatus("error");
+      setParserSearchMessage("Enter a config name before saving");
+      return;
+    }
+
+    const updatedAt = new Date().toISOString();
+    const formToSave = { ...parserSearchForm, searchName: configName };
+    const configId = selectedParserSearchConfigId || createClientId("parser-config");
+
+    setParserSearchConfigs((currentConfigs) => {
+      const configExists = currentConfigs.some((config) => config.id === configId);
+      const nextConfig: ParserSearchConfig = {
+        id: configId,
+        name: configName,
+        form: formToSave,
+        updatedAt,
+      };
+
+      if (configExists) {
+        return currentConfigs.map((config) => (config.id === configId ? nextConfig : config));
+      }
+
+      return [nextConfig, ...currentConfigs];
+    });
+    setSelectedParserSearchConfigId(configId);
+    setParserSearchForm(formToSave);
+    setParserSearchStatus("ready");
+    setParserSearchMessage(`Saved config: ${configName}`);
+  }
+
+  function loadParserSearchConfig(configId: string) {
+    const config = parserSearchConfigs.find((item) => item.id === configId);
+    setSelectedParserSearchConfigId(configId);
+
+    if (!config) return;
+
+    setParserSearchForm({ ...defaultParserSearchForm, ...config.form, searchName: config.name });
+    setParserSearchStatus("ready");
+    setParserSearchMessage(`Loaded config: ${config.name}`);
+  }
+
+  function deleteParserSearchConfig() {
+    if (!selectedParserSearchConfigId) return;
+
+    const deletedConfig = parserSearchConfigs.find((config) => config.id === selectedParserSearchConfigId);
+    setParserSearchConfigs((currentConfigs) => currentConfigs.filter((config) => config.id !== selectedParserSearchConfigId));
+    setSelectedParserSearchConfigId("");
+    setParserSearchStatus("ready");
+    setParserSearchMessage(deletedConfig ? `Deleted config: ${deletedConfig.name}` : "Deleted config");
+  }
+
+  function addParsedJobsToList(parsedJobs: ParsedJob[]) {
+    const importedJobs = parsedJobs.map((job, index) => mapParsedJobToJob(job, index));
+
+    if (importedJobs.length > 0) {
+      setJobList((currentJobs) => {
+        const importedIds = new Set(importedJobs.map((job) => job.id));
+        return [...importedJobs, ...currentJobs.filter((job) => !importedIds.has(job.id))];
+      });
+      setSelectedJobId(importedJobs[0].id);
+      setActiveTab("Overview");
+    }
+
+    return importedJobs.length;
+  }
+
+  async function pollLinkedInSnapshot(snapshotId: string): Promise<ParserApiResponse> {
+    for (let attempt = 1; attempt <= snapshotPollMaxAttempts; attempt += 1) {
+      setParserSearchMessage(`Bright Data snapshot queued. Checking ${attempt}/${snapshotPollMaxAttempts}...`);
+      await wait(snapshotPollDelayMs);
+
+      const snapshotResponse = await fetch(
+        `${apiBaseUrl}/parsers/linkedin/snapshots/${encodeURIComponent(snapshotId)}?results_limit=${Number.parseInt(parserSearchForm.resultsLimit, 10) || 100}&deduplicate=${parserSearchForm.deduplicate}`,
+      );
+      const snapshotData = (await snapshotResponse.json()) as ParserApiResponse & { detail?: string };
+
+      if (!snapshotResponse.ok) {
+        throw new Error(snapshotData.detail ?? "LinkedIn snapshot request failed");
+      }
+
+      if (snapshotData.status === "completed") {
+        return snapshotData;
+      }
+    }
+
+    throw new Error("Bright Data snapshot is still not ready. Try again later.");
   }
 
   async function runParsers() {
@@ -378,30 +587,25 @@ export default function HomePage() {
           folder: parserSearchForm.folder,
         }),
       });
-      const data = await response.json();
+      const data = (await response.json()) as ParserApiResponse & { detail?: string };
 
       if (!response.ok) {
         throw new Error(data.detail ?? "LinkedIn parser request failed");
       }
 
-      const importedJobs: Job[] = Array.isArray(data.jobs)
-        ? data.jobs.map((job: ParsedJob, index: number) => mapParsedJobToJob(job, index))
-        : [];
-
-      if (importedJobs.length > 0) {
-        setJobList((currentJobs) => {
-          const importedIds = new Set(importedJobs.map((job) => job.id));
-          return [...importedJobs, ...currentJobs.filter((job) => !importedIds.has(job.id))];
-        });
-        setSelectedJobId(importedJobs[0].id);
-        setActiveTab("Overview");
-      }
+      const finalData =
+        data.status === "completed"
+          ? data
+          : data.snapshot_id
+            ? await pollLinkedInSnapshot(data.snapshot_id)
+            : data;
+      const addedCount = finalData.status === "completed" ? addParsedJobsToList(finalData.jobs ?? []) : 0;
 
       setParserSearchStatus("ready");
       setParserSearchMessage(
-        data.status === "queued"
-          ? `Bright Data snapshot queued: ${data.snapshot_id}`
-          : `Added ${importedJobs.length} LinkedIn vacancies to Jobs`,
+        finalData.status === "completed"
+          ? `Added ${addedCount} LinkedIn vacancies to Jobs`
+          : `Bright Data snapshot queued: ${finalData.snapshot_id ?? data.snapshot_id ?? "waiting"}`,
       );
     } catch (error) {
       setParserSearchStatus("error");
@@ -663,19 +867,8 @@ export default function HomePage() {
                         type="button"
                         className="inline-flex items-center gap-2 text-xs font-bold text-muted transition hover:text-white"
                         onClick={() => {
-                          setParserSearchForm({
-                            keywords: "",
-                            location: "",
-                            remote: "Any",
-                            experienceLevel: "Any",
-                            jobType: "Any",
-                            datePosted: "Any time",
-                            resultsLimit: "100",
-                            country: "Any",
-                            deduplicate: true,
-                            searchName: "",
-                            folder: "",
-                          });
+                          setParserSearchForm(defaultParserSearchForm);
+                          setSelectedParserSearchConfigId("");
                           setParserSearchStatus("idle");
                           setParserSearchMessage("");
                         }}
@@ -834,17 +1027,46 @@ export default function HomePage() {
                 </div>
 
                 <section className="border-t border-border p-4 2xl:p-5">
-                  <h3 className="text-sm font-bold text-white">3. Save search (optional)</h3>
+                  <h3 className="text-sm font-bold text-white">3. Search configs</h3>
                   <div className="mt-4 grid gap-4 md:grid-cols-[minmax(0,1fr)_320px]">
+                    <label className="grid gap-2 md:col-span-2">
+                      <span className="text-xs font-bold text-[#d8dee8]">Existing configs</span>
+                      <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
+                        <select
+                          value={selectedParserSearchConfigId}
+                          onChange={(event) => loadParserSearchConfig(event.target.value)}
+                          className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-muted outline-none focus:border-accent/70"
+                        >
+                          <option value="">Select saved config</option>
+                          {parserSearchConfigs.map((config) => (
+                            <option key={config.id} value={config.id}>
+                              {config.name}
+                            </option>
+                          ))}
+                        </select>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="h-9 rounded-md border border-border bg-transparent px-3 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+                          disabled={!selectedParserSearchConfigId}
+                          onClick={deleteParserSearchConfig}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Delete
+                        </Button>
+                      </div>
+                      <span className="text-xs font-medium text-muted">Saved locally in this browser, outside git</span>
+                    </label>
+
                     <label className="grid gap-2">
-                      <span className="text-xs font-bold text-[#d8dee8]">Search name</span>
+                      <span className="text-xs font-bold text-[#d8dee8]">Config name</span>
                       <input
                         value={parserSearchForm.searchName}
                         onChange={(event) => updateParserSearchForm("searchName", event.target.value)}
                         placeholder="e.g. Product Designer Remote Jobs"
                         className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
                       />
-                      <span className="text-xs font-medium text-muted">Save this search to run it again later</span>
+                      <span className="text-xs font-medium text-muted">Name current settings to run them again later</span>
                     </label>
 
                     <label className="grid gap-2">
@@ -860,6 +1082,30 @@ export default function HomePage() {
                         <option>High match</option>
                       </select>
                     </label>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-9 rounded-md border border-accent/55 bg-accent/12 px-4 text-[13px] text-white hover:bg-accent/18"
+                      onClick={saveParserSearchConfig}
+                    >
+                      <Save className="h-4 w-4" />
+                      Save config
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-9 rounded-md border border-border bg-transparent px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+                      onClick={() => {
+                        setParserSearchForm(defaultParserSearchForm);
+                        setSelectedParserSearchConfigId("");
+                        setParserSearchStatus("idle");
+                        setParserSearchMessage("");
+                      }}
+                    >
+                      New config
+                    </Button>
                   </div>
                 </section>
               </div>

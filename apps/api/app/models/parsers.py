@@ -39,7 +39,7 @@ class ParsedJob(BaseModel):
 
 class ParserSearchResponse(BaseModel):
     parser: str
-    status: Literal["completed", "queued"]
+    status: Literal["completed", "queued", "running"]
     search_url: str
     jobs: list[ParsedJob] = Field(default_factory=list)
     snapshot_id: str | None = None
