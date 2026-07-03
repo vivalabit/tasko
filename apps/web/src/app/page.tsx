@@ -115,6 +115,19 @@ type ParserSearchConfig = {
   updatedAt: string;
 };
 
+type CandidateProfile = {
+  name: string;
+  current_role: string;
+  desired_role: string;
+  location: string;
+  work_format: string;
+  headline: string;
+  linkedin: string;
+  github: string;
+  portfolio: string;
+  personal_site: string;
+};
+
 const jobs: Job[] = [
   {
     id: "stripe-senior-product-designer",
@@ -212,6 +225,7 @@ type ParserSearchStatus = "idle" | "loading" | "ready" | "error";
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const snapshotPollDelayMs = 4000;
 const snapshotPollMaxAttempts = 30;
+const importedJobsStorageKey = "tasko.importedJobs.v1";
 const parserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v1";
 const parserSearchConfigsLocalUrl = "/parser-search-configs.local.json";
 
@@ -235,6 +249,20 @@ const navItems: Array<{ label: string; icon: typeof Home; href: string; view?: V
   { label: "Applications", icon: Mail, href: "#" },
   { label: "AI Assistant", icon: Sparkles, href: "#" },
 ];
+
+const defaultCandidateProfile: CandidateProfile = {
+  name: "Alex Johnson",
+  current_role: "Senior Product Designer",
+  desired_role: "Design Manager",
+  location: "San Francisco, CA, USA",
+  work_format: "Remote, open to hybrid",
+  headline:
+    "Product designer with 7+ years of experience crafting intuitive B2B and B2C digital experiences. Combines user empathy with data-driven design to ship impactful products.",
+  linkedin: "linkedin.com/in/alexjohnson",
+  github: "github.com/alexjohnson",
+  portfolio: "alexjohnson.design",
+  personal_site: "alexjohnson.com",
+};
 
 const stats = [
   {
@@ -368,6 +396,41 @@ function normalizeParserSearchConfigs(configs: ParserSearchConfig[]) {
   return Array.from(uniqueConfigs.values());
 }
 
+function isImportedJob(job: Job) {
+  return job.id.startsWith("linkedin-");
+}
+
+function normalizeStoredJobs(value: unknown) {
+  if (!Array.isArray(value)) return [];
+
+  return value.filter((job): job is Job => {
+    if (!job || typeof job !== "object") return false;
+    const candidate = job as Partial<Job>;
+    return (
+      typeof candidate.id === "string" &&
+      typeof candidate.company === "string" &&
+      typeof candidate.title === "string" &&
+      typeof candidate.location === "string" &&
+      typeof candidate.type === "string" &&
+      typeof candidate.salary === "string" &&
+      typeof candidate.posted === "string" &&
+      typeof candidate.experience === "string" &&
+      typeof candidate.department === "string" &&
+      typeof candidate.match === "number" &&
+      (candidate.logo === "stripe" || candidate.logo === "figma" || candidate.logo === "linkedin") &&
+      typeof candidate.overview === "string" &&
+      Array.isArray(candidate.responsibilities) &&
+      Array.isArray(candidate.requirements) &&
+      Array.isArray(candidate.skills)
+    );
+  });
+}
+
+function mergeJobs(importedJobs: Job[], currentJobs: Job[]) {
+  const importedIds = new Set(importedJobs.map((job) => job.id));
+  return [...importedJobs, ...currentJobs.filter((job) => !importedIds.has(job.id))];
+}
+
 export default function HomePage() {
   const [activeView, setActiveView] = useState<View>("Dashboard");
   const [jobList, setJobList] = useState<Job[]>(jobs);
@@ -385,6 +448,11 @@ export default function HomePage() {
   const [parserSearchConfigs, setParserSearchConfigs] = useState<ParserSearchConfig[]>([]);
   const [selectedParserSearchConfigId, setSelectedParserSearchConfigId] = useState("");
   const [isParserSearchConfigsLoaded, setIsParserSearchConfigsLoaded] = useState(false);
+  const [profile, setProfile] = useState<CandidateProfile>(defaultCandidateProfile);
+  const [profileDraft, setProfileDraft] = useState<CandidateProfile>(defaultCandidateProfile);
+  const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
+  const [profileSaveStatus, setProfileSaveStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [profileSaveMessage, setProfileSaveMessage] = useState("");
 
   const filteredJobs = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -469,6 +537,65 @@ export default function HomePage() {
     window.localStorage.setItem(parserSearchConfigsStorageKey, JSON.stringify(parserSearchConfigs));
   }, [isParserSearchConfigsLoaded, parserSearchConfigs]);
 
+  useEffect(() => {
+    const abortController = new AbortController();
+
+    try {
+      const rawImportedJobs = window.localStorage.getItem(importedJobsStorageKey);
+      const importedJobs = normalizeStoredJobs(rawImportedJobs ? JSON.parse(rawImportedJobs) : []);
+      if (importedJobs.length > 0) {
+        setJobList((currentJobs) => mergeJobs(importedJobs, currentJobs));
+        setSelectedJobId((currentId) => currentId || importedJobs[0].id);
+      }
+    } catch {
+      window.localStorage.removeItem(importedJobsStorageKey);
+    }
+
+    async function loadStoredJobs() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/jobs`, {
+          cache: "no-store",
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) return;
+
+        const storedJobs = (await response.json()) as Array<{ id: string; data: unknown }>;
+        const importedJobs = normalizeStoredJobs(storedJobs.map((job) => job.data));
+        if (importedJobs.length === 0) return;
+
+        setJobList((currentJobs) => mergeJobs(importedJobs, currentJobs));
+        window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(importedJobs));
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      }
+    }
+
+    async function loadProfile() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/profile`, {
+          cache: "no-store",
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) return;
+
+        const loadedProfile = (await response.json()) as CandidateProfile;
+        setProfile(loadedProfile);
+        setProfileDraft(loadedProfile);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      }
+    }
+
+    loadStoredJobs();
+    loadProfile();
+
+    return () => {
+      abortController.abort();
+    };
+  }, []);
+
   function changeView(view: View) {
     setActiveView(view);
     const viewHash: Record<View, string> = {
@@ -550,13 +677,75 @@ export default function HomePage() {
     setParserSearchMessage(deletedConfig ? `Deleted config: ${deletedConfig.name}` : "Deleted config");
   }
 
+  function openProfileEditor() {
+    setProfileDraft(profile);
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+    setIsProfileDialogOpen(true);
+  }
+
+  function updateProfileDraft<Field extends keyof CandidateProfile>(
+    field: Field,
+    value: CandidateProfile[Field],
+  ) {
+    setProfileDraft((current) => ({ ...current, [field]: value }));
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+  }
+
+  async function saveProfile() {
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(profileDraft),
+      });
+
+      const savedProfile = (await response.json()) as CandidateProfile & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedProfile.detail ?? "Profile save failed");
+      }
+
+      setProfile(savedProfile);
+      setProfileDraft(savedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("Saved to database");
+      setIsProfileDialogOpen(false);
+    } catch (error) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(error instanceof Error ? error.message : "Profile save failed");
+    }
+  }
+
+  async function persistImportedJobs(importedJobs: Job[]) {
+    window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(importedJobs));
+
+    try {
+      await fetch(`${apiBaseUrl}/jobs`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobs: importedJobs.map((job) => ({ id: job.id, data: job })),
+        }),
+      });
+    } catch {
+      // localStorage keeps imported jobs available even when the API is offline.
+    }
+  }
+
   function addParsedJobsToList(parsedJobs: ParsedJob[]) {
     const importedJobs = parsedJobs.map((job, index) => mapParsedJobToJob(job, index));
 
     if (importedJobs.length > 0) {
       setJobList((currentJobs) => {
-        const importedIds = new Set(importedJobs.map((job) => job.id));
-        return [...importedJobs, ...currentJobs.filter((job) => !importedIds.has(job.id))];
+        const nextJobs = mergeJobs(importedJobs, currentJobs);
+        const nextImportedJobs = nextJobs.filter(isImportedJob);
+        void persistImportedJobs(nextImportedJobs);
+        return nextJobs;
       });
       setSelectedJobId(importedJobs[0].id);
       setActiveTab("Overview");
@@ -639,12 +828,12 @@ export default function HomePage() {
     <main className="h-screen overflow-hidden bg-background text-foreground">
       <div className="fixed inset-0 bg-[radial-gradient(circle_at_16%_8%,rgba(255,90,0,0.12),transparent_26%),radial-gradient(circle_at_80%_0%,rgba(52,120,246,0.10),transparent_28%)]" />
       <div className="relative mx-auto flex h-full max-w-[1536px] overflow-hidden rounded-none border-border bg-[#0a0f15]/96 shadow-panel lg:rounded-[14px] lg:border">
-        <AppSidebar activeView={activeView} onChangeView={changeView} />
+        <AppSidebar activeView={activeView} onChangeView={changeView} profile={profile} />
 
         {activeView === "Dashboard" ? (
           <DashboardView onOpenJobs={() => changeView("Jobs")} />
         ) : activeView === "Profile" ? (
-          <ProfileView />
+          <ProfileView profile={profile} onEditProfile={openProfileEditor} />
         ) : (
         <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
         <header className="grid shrink-0 gap-3 xl:grid-cols-[112px_minmax(260px,520px)_1fr] 2xl:grid-cols-[140px_minmax(280px,560px)_1fr] xl:items-center">
@@ -1166,6 +1355,16 @@ export default function HomePage() {
         )}
       </section>
       )}
+      {isProfileDialogOpen && (
+        <ProfileEditorDialog
+          profile={profileDraft}
+          status={profileSaveStatus}
+          message={profileSaveMessage}
+          onChange={updateProfileDraft}
+          onClose={() => setIsProfileDialogOpen(false)}
+          onSave={saveProfile}
+        />
+      )}
       </div>
     </main>
   );
@@ -1358,12 +1557,14 @@ function DashboardView({ onOpenJobs }: { onOpenJobs: () => void }) {
   );
 }
 
-const profileLinks = [
-  { label: "LinkedIn", value: "linkedin.com/in/alexjohnson", icon: Linkedin },
-  { label: "GitHub", value: "github.com/alexjohnson", icon: Github },
-  { label: "Portfolio", value: "alexjohnson.design", icon: FileText },
-  { label: "Personal Site", value: "alexjohnson.com", icon: Globe },
-];
+function getProfileLinks(profile: CandidateProfile) {
+  return [
+    { label: "LinkedIn", value: profile.linkedin, icon: Linkedin },
+    { label: "GitHub", value: profile.github, icon: Github },
+    { label: "Portfolio", value: profile.portfolio, icon: FileText },
+    { label: "Personal Site", value: profile.personal_site, icon: Globe },
+  ];
+}
 
 const profileExperience = [
   {
@@ -1459,7 +1660,13 @@ const profileDealbreakers = [
   "No industries: Crypto, Gambling, Adult",
 ];
 
-function ProfileView() {
+function ProfileView({
+  profile,
+  onEditProfile,
+}: {
+  profile: CandidateProfile;
+  onEditProfile: () => void;
+}) {
   return (
     <section className="job-scroll flex h-screen min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
       <header className="mb-4 flex shrink-0 flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -1468,7 +1675,10 @@ function ProfileView() {
           <p className="mt-1 text-[13px] text-muted 2xl:mt-1.5 2xl:text-base">Your professional profile and job preferences</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#e63e00] px-4 text-[13px] text-white 2xl:h-11 2xl:text-sm">
+          <Button
+            className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#e63e00] px-4 text-[13px] text-white 2xl:h-11 2xl:text-sm"
+            onClick={onEditProfile}
+          >
             <Edit3 className="h-4 w-4" />
             Edit Profile
           </Button>
@@ -1482,7 +1692,7 @@ function ProfileView() {
         </div>
       </header>
 
-      <ProfileHero />
+      <ProfileHero profile={profile} />
 
       <div className="mt-4 grid shrink-0 gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] 2xl:gap-5">
         <div className="grid content-start gap-4 2xl:gap-5">
@@ -1505,32 +1715,34 @@ function ProfileView() {
   );
 }
 
-function ProfileHero() {
+function ProfileHero({ profile }: { profile: CandidateProfile }) {
+  const links = getProfileLinks(profile);
+
   return (
     <section className="panel grid shrink-0 overflow-hidden md:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_410px]">
       <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-start sm:p-5 2xl:gap-5 2xl:p-6">
         <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-full bg-white/[0.06] ring-1 ring-white/10 2xl:h-28 2xl:w-28">
-          <img src="/avatars/alex-johnson.svg" alt="Alex Johnson" className="h-full w-full object-cover" />
+          <img src="/avatars/alex-johnson.svg" alt={profile.name} className="h-full w-full object-cover" />
           <span className="absolute bottom-2 right-2 h-3.5 w-3.5 rounded-full border-2 border-[#111820] bg-success" />
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-[24px] font-bold leading-tight text-white 2xl:text-[30px]">Alex Johnson</h2>
+            <h2 className="text-[24px] font-bold leading-tight text-white 2xl:text-[30px]">{profile.name}</h2>
             <span className="inline-flex h-6 items-center gap-1 rounded-md bg-success/14 px-2 text-[11px] font-bold text-success">
               <CheckCircle2 className="h-3.5 w-3.5" />
               Verified
             </span>
           </div>
-          <p className="mt-2 text-base font-semibold text-[#d8dee8] 2xl:text-lg">Senior Product Designer</p>
+          <p className="mt-2 text-base font-semibold text-[#d8dee8] 2xl:text-lg">{profile.current_role}</p>
           <p className="mt-1 text-sm font-semibold text-muted 2xl:text-base">
-            Aspiring: <span className="text-accent">Design Manager</span>
+            Aspiring: <span className="text-accent">{profile.desired_role}</span>
           </p>
           <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[13px] font-medium text-muted 2xl:text-sm">
-            <span className="inline-flex items-center gap-1.5"><MapPin className="h-4 w-4" /> San Francisco, CA, USA</span>
-            <span className="inline-flex items-center gap-1.5"><Globe className="h-4 w-4" /> Remote, open to hybrid</span>
+            <span className="inline-flex items-center gap-1.5"><MapPin className="h-4 w-4" /> {profile.location}</span>
+            <span className="inline-flex items-center gap-1.5"><Globe className="h-4 w-4" /> {profile.work_format}</span>
           </div>
           <p className="mt-4 max-w-[720px] text-[13px] leading-5 text-[#c6ceda] 2xl:text-sm 2xl:leading-6">
-            Product designer with 7+ years of experience crafting intuitive B2B and B2C digital experiences. Combines user empathy with data-driven design to ship impactful products.
+            {profile.headline}
           </p>
         </div>
       </div>
@@ -1538,7 +1750,7 @@ function ProfileHero() {
       <div className="border-t border-border p-4 md:border-l md:border-t-0 sm:p-5 2xl:p-6">
         <h3 className="text-sm font-bold text-white 2xl:text-base">Contact & Links</h3>
         <div className="mt-3 grid gap-2.5 2xl:gap-3">
-          {profileLinks.map((link) => (
+          {links.map((link) => (
             <a key={link.label} href="#" className="grid grid-cols-[36px_minmax(0,1fr)] items-center gap-3 rounded-md border border-transparent p-1.5 transition hover:border-white/[0.10] hover:bg-white/[0.035]">
               <span className="grid h-9 w-9 place-items-center rounded-md border border-border bg-white/[0.035] text-[#d8dee8]">
                 <link.icon className="h-4 w-4" />
@@ -1862,7 +2074,125 @@ function AiProfileGroup({ title, items, icon: Icon, iconClassName }: { title: st
   );
 }
 
-function AppSidebar({ activeView, onChangeView }: { activeView: View; onChangeView: (view: View) => void }) {
+function ProfileEditorDialog({
+  profile,
+  status,
+  message,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  profile: CandidateProfile;
+  status: "idle" | "loading" | "ready" | "error";
+  message: string;
+  onChange: <Field extends keyof CandidateProfile>(
+    field: Field,
+    value: CandidateProfile[Field],
+  ) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const fields: Array<{
+    field: keyof CandidateProfile;
+    label: string;
+    placeholder: string;
+    type?: "input" | "textarea";
+  }> = [
+    { field: "name", label: "Name", placeholder: "Alex Johnson" },
+    { field: "current_role", label: "Current role", placeholder: "Senior Product Designer" },
+    { field: "desired_role", label: "Desired role", placeholder: "Design Manager" },
+    { field: "location", label: "Location", placeholder: "San Francisco, CA, USA" },
+    { field: "work_format", label: "Work format", placeholder: "Remote, hybrid, onsite" },
+    { field: "headline", label: "Headline / summary", placeholder: "Short positioning statement", type: "textarea" },
+    { field: "linkedin", label: "LinkedIn", placeholder: "linkedin.com/in/username" },
+    { field: "github", label: "GitHub", placeholder: "github.com/username" },
+    { field: "portfolio", label: "Portfolio", placeholder: "portfolio.com" },
+    { field: "personal_site", label: "Personal site", placeholder: "your-site.com" },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+      <div className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[820px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] sm:p-5">
+        <div className="flex shrink-0 items-start justify-between gap-4">
+          <div>
+            <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[24px]">Edit Profile</h2>
+            <p className="mt-1 text-sm font-medium text-muted">Changes are saved to the profile database.</p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close profile editor"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto rounded-md border border-border p-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            {fields.map((item) => (
+              <label
+                key={item.field}
+                className={cn("grid gap-2", item.type === "textarea" && "md:col-span-2")}
+              >
+                <span className="text-xs font-bold text-[#d8dee8]">{item.label}</span>
+                {item.type === "textarea" ? (
+                  <textarea
+                    value={profile[item.field]}
+                    onChange={(event) => onChange(item.field, event.target.value)}
+                    placeholder={item.placeholder}
+                    rows={4}
+                    className="min-h-[112px] resize-none rounded-md border border-border bg-[#0d131a] px-3 py-2.5 text-sm font-semibold leading-5 text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+                  />
+                ) : (
+                  <input
+                    value={profile[item.field]}
+                    onChange={(event) => onChange(item.field, event.target.value)}
+                    placeholder={item.placeholder}
+                    className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+                  />
+                )}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
+            {message || "Profile record: default"}
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              className="h-10 rounded-md border border-border bg-transparent px-6 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+              onClick={onClose}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12]"
+              disabled={status === "loading"}
+              onClick={onSave}
+            >
+              <Save className="h-4 w-4" />
+              {status === "loading" ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AppSidebar({
+  activeView,
+  onChangeView,
+  profile,
+}: {
+  activeView: View;
+  onChangeView: (view: View) => void;
+  profile: CandidateProfile;
+}) {
   return (
     <aside className="app-sidebar hidden h-screen w-[190px] shrink-0 overflow-y-auto border-r border-border bg-white/[0.025] px-2.5 py-4 lg:flex lg:flex-col 2xl:w-[220px] 2xl:px-3 2xl:py-5">
       <div className="app-sidebar-brand mb-5 flex items-center gap-2.5 px-2 2xl:mb-7 2xl:gap-3">
@@ -1921,8 +2251,8 @@ function AppSidebar({ activeView, onChangeView }: { activeView: View; onChangeVi
             aria-hidden="true"
           />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-xs font-semibold leading-tight text-white 2xl:text-sm">Alex Johnson</p>
-            <p className="truncate text-[11px] leading-tight text-muted 2xl:text-xs">Senior Product Designer</p>
+            <p className="truncate text-xs font-semibold leading-tight text-white 2xl:text-sm">{profile.name}</p>
+            <p className="truncate text-[11px] leading-tight text-muted 2xl:text-xs">{profile.current_role}</p>
           </div>
           <ChevronRight className="h-4 w-4 shrink-0 text-muted 2xl:h-[18px] 2xl:w-[18px]" />
         </a>
