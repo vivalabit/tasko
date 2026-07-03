@@ -2,22 +2,33 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  Ban,
   Bell,
   Bookmark,
   BriefcaseBusiness,
+  Building2,
   Bot,
   Calendar,
   CalendarDays,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   CircleDot,
   Command,
+  DollarSign,
+  Download,
+  Edit3,
+  Eye,
   ExternalLink,
   FileText,
+  Github,
+  Globe,
   Heart,
   Home,
+  Linkedin,
   Mail,
+  MapPin,
   MoreHorizontal,
   Plus,
   Info,
@@ -25,12 +36,14 @@ import {
   Save,
   Search,
   Share2,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Star,
   Settings,
   Target,
   Trash2,
+  Upload,
   X,
 } from "lucide-react";
 
@@ -193,7 +206,7 @@ const jobs: Job[] = [
 
 const filters = ["Location", "Remote", "Salary", "Experience", "Job Type", "AI Match"];
 const tabs = ["Overview", "Company", "AI Match", "Reviews", "Similar Jobs"];
-type View = "Dashboard" | "Jobs";
+type View = "Dashboard" | "Jobs" | "Profile";
 type ParserSearchStatus = "idle" | "loading" | "ready" | "error";
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -273,6 +286,10 @@ const overview = [
 function getViewFromHash(): View {
   if (typeof window === "undefined") {
     return "Dashboard";
+  }
+
+  if (window.location.hash === "#profile") {
+    return "Profile";
   }
 
   return window.location.hash === "#jobs" ? "Jobs" : "Dashboard";
@@ -454,7 +471,12 @@ export default function HomePage() {
 
   function changeView(view: View) {
     setActiveView(view);
-    window.history.replaceState(null, "", view === "Jobs" ? "#jobs" : "#dashboard");
+    const viewHash: Record<View, string> = {
+      Dashboard: "#dashboard",
+      Jobs: "#jobs",
+      Profile: "#profile",
+    };
+    window.history.replaceState(null, "", viewHash[view]);
   }
 
   function toggleSaved(jobId: string) {
@@ -621,6 +643,8 @@ export default function HomePage() {
 
         {activeView === "Dashboard" ? (
           <DashboardView onOpenJobs={() => changeView("Jobs")} />
+        ) : activeView === "Profile" ? (
+          <ProfileView />
         ) : (
         <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
         <header className="grid shrink-0 gap-3 xl:grid-cols-[112px_minmax(260px,520px)_1fr] 2xl:grid-cols-[140px_minmax(280px,560px)_1fr] xl:items-center">
@@ -1334,6 +1358,510 @@ function DashboardView({ onOpenJobs }: { onOpenJobs: () => void }) {
   );
 }
 
+const profileLinks = [
+  { label: "LinkedIn", value: "linkedin.com/in/alexjohnson", icon: Linkedin },
+  { label: "GitHub", value: "github.com/alexjohnson", icon: Github },
+  { label: "Portfolio", value: "alexjohnson.design", icon: FileText },
+  { label: "Personal Site", value: "alexjohnson.com", icon: Globe },
+];
+
+const profileExperience = [
+  {
+    company: "Stripe",
+    logo: "stripe" as const,
+    title: "Senior Product Designer",
+    dates: "Jan 2021 - Present",
+    duration: "3 yrs 4 mos",
+    achievements: [
+      "Led redesign of billing dashboard used by 100K+ businesses",
+      "Increased activation by 23% and reduced churn by 17%",
+      "Built design system foundations, improving dev speed by 30%",
+    ],
+  },
+  {
+    company: "Figma",
+    logo: "figma" as const,
+    title: "Product Designer",
+    dates: "Jun 2018 - Dec 2020",
+    duration: "2 yrs 6 mos",
+    achievements: [
+      "Designed core collaboration features used by millions",
+      "Improved onboarding engagement by 28% through research-led flows",
+      "Partnered with PMs and engineers across agile product teams",
+    ],
+  },
+  {
+    company: "Airbnb",
+    logo: "airbnb" as const,
+    title: "UX Designer",
+    dates: "Aug 2016 - May 2018",
+    duration: "1 yr 10 mos",
+    achievements: [
+      "Designed host tools that improved task completion by 35%",
+      "Conducted user research and usability testing",
+      "Collaborated with cross-functional teams globally",
+    ],
+  },
+];
+
+const profileSkills = [
+  {
+    group: "Hard Skills",
+    items: [
+      ["Product Design", "Expert"],
+      ["UX Research", "Advanced"],
+      ["Interaction Design", "Advanced"],
+      ["Information Architecture", "Advanced"],
+      ["Design Systems", "Expert"],
+      ["Prototyping", "Advanced"],
+    ],
+  },
+  {
+    group: "Tools",
+    items: [
+      ["Figma", "Expert"],
+      ["Sketch", "Advanced"],
+      ["Adobe XD", "Advanced"],
+      ["Principle", "Intermediate"],
+      ["Jira", "Intermediate"],
+      ["Notion", "Advanced"],
+    ],
+  },
+  {
+    group: "Languages",
+    items: [
+      ["English", "Native"],
+      ["Spanish", "Conversational"],
+    ],
+  },
+];
+
+const profileDocuments = [
+  ["Resume (Base)", "Alex_Johnson_Resume.pdf", "May 20, 2024", "Active"],
+  ["Cover Letter - Design Manager", "Cover_Letter_Design_Manager.pdf", "May 18, 2024", ""],
+  ["Portfolio", "Portfolio_2024.pdf", "May 15, 2024", ""],
+  ["Case Study - Stripe Dashboard", "Stripe_Case_Study.pdf", "May 10, 2024", ""],
+];
+
+const profilePreferences = [
+  { label: "Desired Roles", value: "Design Manager, Senior Product Designer, Lead Designer", icon: BriefcaseBusiness },
+  { label: "Industries", value: "SaaS, FinTech, Healthcare, EdTech", icon: Building2 },
+  { label: "Countries", value: "United States, Canada", icon: MapPin },
+  { label: "Salary Range", value: "$140,000 - $180,000 USD", icon: DollarSign },
+  { label: "Visa / Work Authorization", value: "US Citizen", icon: ShieldCheck },
+  { label: "Relocation", value: "Open to relocation", icon: Home },
+];
+
+const profileDealbreakers = [
+  "No contract or freelance roles",
+  "No roles below $120K base salary",
+  "No roles requiring 100% onsite",
+  "No industries: Crypto, Gambling, Adult",
+];
+
+function ProfileView() {
+  return (
+    <section className="job-scroll flex h-screen min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
+      <header className="mb-4 flex shrink-0 flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div>
+          <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">My Profile</h1>
+          <p className="mt-1 text-[13px] text-muted 2xl:mt-1.5 2xl:text-base">Your professional profile and job preferences</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#e63e00] px-4 text-[13px] text-white 2xl:h-11 2xl:text-sm">
+            <Edit3 className="h-4 w-4" />
+            Edit Profile
+          </Button>
+          <Button variant="ghost" className="h-10 rounded-md border border-border bg-white/[0.03] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-11 2xl:text-sm">
+            <Eye className="h-4 w-4" />
+            Preview
+          </Button>
+          <Button variant="ghost" size="icon" className="h-10 w-10 rounded-md border border-border bg-white/[0.03] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-11 2xl:w-11">
+            <MoreHorizontal className="h-5 w-5" />
+          </Button>
+        </div>
+      </header>
+
+      <ProfileHero />
+
+      <div className="mt-4 grid shrink-0 gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] 2xl:gap-5">
+        <div className="grid content-start gap-4 2xl:gap-5">
+          <ResumePanel />
+          <ExperiencePanel />
+          <SkillsPanel />
+          <EducationPanel />
+          <DocumentsPanel />
+        </div>
+
+        <aside className="grid content-start gap-4 2xl:gap-5">
+          <ActivityPanel />
+          <AiMatchProfilePanel />
+          <PreferencesPanel />
+          <DealbreakersPanel />
+          <AdditionalNotesPanel />
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function ProfileHero() {
+  return (
+    <section className="panel grid shrink-0 overflow-hidden md:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_410px]">
+      <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-start sm:p-5 2xl:gap-5 2xl:p-6">
+        <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-full bg-white/[0.06] ring-1 ring-white/10 2xl:h-28 2xl:w-28">
+          <img src="/avatars/alex-johnson.svg" alt="Alex Johnson" className="h-full w-full object-cover" />
+          <span className="absolute bottom-2 right-2 h-3.5 w-3.5 rounded-full border-2 border-[#111820] bg-success" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-[24px] font-bold leading-tight text-white 2xl:text-[30px]">Alex Johnson</h2>
+            <span className="inline-flex h-6 items-center gap-1 rounded-md bg-success/14 px-2 text-[11px] font-bold text-success">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Verified
+            </span>
+          </div>
+          <p className="mt-2 text-base font-semibold text-[#d8dee8] 2xl:text-lg">Senior Product Designer</p>
+          <p className="mt-1 text-sm font-semibold text-muted 2xl:text-base">
+            Aspiring: <span className="text-accent">Design Manager</span>
+          </p>
+          <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[13px] font-medium text-muted 2xl:text-sm">
+            <span className="inline-flex items-center gap-1.5"><MapPin className="h-4 w-4" /> San Francisco, CA, USA</span>
+            <span className="inline-flex items-center gap-1.5"><Globe className="h-4 w-4" /> Remote, open to hybrid</span>
+          </div>
+          <p className="mt-4 max-w-[720px] text-[13px] leading-5 text-[#c6ceda] 2xl:text-sm 2xl:leading-6">
+            Product designer with 7+ years of experience crafting intuitive B2B and B2C digital experiences. Combines user empathy with data-driven design to ship impactful products.
+          </p>
+        </div>
+      </div>
+
+      <div className="border-t border-border p-4 md:border-l md:border-t-0 sm:p-5 2xl:p-6">
+        <h3 className="text-sm font-bold text-white 2xl:text-base">Contact & Links</h3>
+        <div className="mt-3 grid gap-2.5 2xl:gap-3">
+          {profileLinks.map((link) => (
+            <a key={link.label} href="#" className="grid grid-cols-[36px_minmax(0,1fr)] items-center gap-3 rounded-md border border-transparent p-1.5 transition hover:border-white/[0.10] hover:bg-white/[0.035]">
+              <span className="grid h-9 w-9 place-items-center rounded-md border border-border bg-white/[0.035] text-[#d8dee8]">
+                <link.icon className="h-4 w-4" />
+              </span>
+              <span className="min-w-0">
+                <span className="block text-[13px] font-bold text-white 2xl:text-sm">{link.label}</span>
+                <span className="block truncate text-xs text-muted 2xl:text-[13px]">{link.value}</span>
+              </span>
+            </a>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function ResumePanel() {
+  return (
+    <section className="panel p-4 2xl:p-5">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-base font-bold 2xl:text-lg">Resume / CV</h2>
+        <Button variant="ghost" size="sm" className="h-8 border border-border px-3 text-xs text-[#e6ebf3]">
+          <Download className="h-4 w-4" />
+          Download
+        </Button>
+      </div>
+      <div className="mt-4 grid gap-3 rounded-md border border-border bg-white/[0.025] p-3 sm:grid-cols-[48px_minmax(0,1fr)_auto] sm:items-center">
+        <div className="grid h-12 w-12 place-items-center rounded-md bg-[#ef4444] text-xs font-black text-white">PDF</div>
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate text-sm font-bold text-white">Alex_Johnson_Resume.pdf</p>
+            <span className="rounded bg-success/18 px-2 py-0.5 text-[11px] font-bold text-success">Active</span>
+          </div>
+          <p className="mt-1 text-xs font-medium text-muted">Updated May 20, 2024 • 245 KB</p>
+        </div>
+        <MoreHorizontal className="hidden h-5 w-5 text-muted sm:block" />
+      </div>
+      <div className="mt-4 flex flex-wrap items-center gap-3">
+        <Button variant="ghost" className="h-9 rounded-md border border-border bg-transparent px-3 text-xs text-[#e6ebf3] hover:bg-white/[0.06]">
+          <Upload className="h-4 w-4" />
+          Upload New Version
+        </Button>
+        <p className="text-xs font-medium text-muted">Accepted: PDF, DOCX • Max 5MB</p>
+      </div>
+    </section>
+  );
+}
+
+function ExperiencePanel() {
+  return (
+    <section className="panel p-4 2xl:p-5">
+      <ProfileSectionHeader title="Experience" action="+ Add Experience" />
+      <div className="mt-4 space-y-5">
+        {profileExperience.map((item) => (
+          <div key={`${item.company}-${item.title}`} className="grid grid-cols-[44px_minmax(0,1fr)] gap-3">
+            <CompanyLogo logo={item.logo} />
+            <div className="min-w-0 border-b border-border pb-4 last:border-b-0 last:pb-0">
+              <h3 className="text-sm font-bold text-white 2xl:text-base">{item.title}</h3>
+              <p className="mt-0.5 text-[13px] font-semibold text-[#d8dee8] 2xl:text-sm">{item.company}</p>
+              <p className="mt-1 text-xs text-muted 2xl:text-[13px]">{item.dates} • {item.duration}</p>
+              <ul className="mt-2 space-y-1.5 text-[13px] leading-5 text-muted 2xl:text-sm">
+                {item.achievements.map((achievement) => (
+                  <li key={achievement} className="flex gap-2">
+                    <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-muted" />
+                    {achievement}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        ))}
+      </div>
+      <ProfilePanelLink label="View full experience" />
+    </section>
+  );
+}
+
+function SkillsPanel() {
+  return (
+    <section className="panel p-4 2xl:p-5">
+      <ProfileSectionHeader title="Skills" action="Edit Skills" />
+      <div className="mt-4 divide-y divide-border">
+        {profileSkills.map((group) => (
+          <div key={group.group} className="py-3 first:pt-0 last:pb-0">
+            <h3 className="mb-2.5 text-[13px] font-bold text-[#d8dee8] 2xl:text-sm">{group.group}</h3>
+            <div className="flex flex-wrap gap-2">
+              {group.items.map(([skill, level]) => (
+                <span key={`${skill}-${level}`} className="inline-flex min-h-7 items-center gap-2 rounded-md border border-border bg-white/[0.035] px-2.5 text-xs font-semibold text-[#d8dee8]">
+                  {skill}
+                  <span className={cn("text-[10px] font-bold", level === "Expert" || level === "Native" ? "text-success" : level === "Intermediate" || level === "Conversational" ? "text-[#ffb020]" : "text-success")}>{level}</span>
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+      <ProfilePanelLink label="View all skills" />
+    </section>
+  );
+}
+
+function EducationPanel() {
+  return (
+    <section className="panel p-4 2xl:p-5">
+      <ProfileSectionHeader title="Education & Certifications" action="+ Add" />
+      <div className="mt-4 grid gap-4 md:grid-cols-2">
+        <div className="space-y-3">
+          <EducationItem mark="CMU" title="Master of Human-Computer Interaction" subtitle="Carnegie Mellon University" note="2016 - 2018" />
+          <EducationItem mark="UW" title="Bachelor of Design" subtitle="University of Washington" note="2012 - 2016" />
+        </div>
+        <div className="space-y-3 border-t border-border pt-4 md:border-l md:border-t-0 md:pl-4 md:pt-0">
+          <h3 className="text-xs font-bold uppercase tracking-normal text-muted">Certifications</h3>
+          <EducationItem mark="G" title="Google UX Design Professional Certificate" subtitle="Google" note="2020" />
+          <EducationItem mark="NN" title="NN/g UX Certification" subtitle="Nielsen Norman Group" note="2019" />
+        </div>
+      </div>
+      <ProfilePanelLink label="View all education" />
+    </section>
+  );
+}
+
+function DocumentsPanel() {
+  return (
+    <section className="panel p-4 2xl:p-5">
+      <ProfileSectionHeader title="Documents" action="+ Add Document" />
+      <div className="mt-4 divide-y divide-border rounded-md border border-border">
+        {profileDocuments.map(([title, fileName, date, status]) => (
+          <div key={fileName} className="grid grid-cols-[32px_minmax(0,1fr)_92px_52px] items-center gap-2 px-3 py-2.5 text-xs 2xl:grid-cols-[36px_minmax(0,1fr)_104px_60px] 2xl:text-[13px]">
+            <span className="grid h-8 w-8 place-items-center rounded bg-[#ef4444] text-[9px] font-black text-white">PDF</span>
+            <span className="min-w-0">
+              <span className="block truncate font-bold text-white">{title}</span>
+              <span className="block truncate text-muted">{fileName}</span>
+            </span>
+            <span className="text-muted">{date}</span>
+            {status ? <span className="rounded bg-success/18 px-2 py-0.5 text-center text-[10px] font-bold text-success">{status}</span> : <MoreHorizontal className="ml-auto h-4 w-4 text-muted" />}
+          </div>
+        ))}
+      </div>
+      <ProfilePanelLink label="View all documents" />
+    </section>
+  );
+}
+
+function ActivityPanel() {
+  return (
+    <section className="panel p-4 2xl:p-5">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-base font-bold 2xl:text-lg">Activity Snapshot</h2>
+        <Button variant="ghost" size="sm" className="h-8 border border-border px-2 text-[11px] text-[#e6ebf3]">Last 30 days</Button>
+      </div>
+      <div className="mt-4 grid grid-cols-3 gap-2">
+        <MiniMetric icon={FileText} value="24" label="Applied" color="blue" />
+        <MiniMetric icon={CalendarDays} value="5" label="Interviews" color="orange" />
+        <MiniMetric icon={BriefcaseBusiness} value="3" label="Offers" color="green" />
+      </div>
+      <div className="mt-4 rounded-md border border-border bg-white/[0.025] p-3">
+        <div className="flex items-end gap-3">
+          <p className="text-[28px] font-bold leading-none text-white">78%</p>
+          <p className="pb-1 text-xs font-medium text-muted">Average Match Score</p>
+        </div>
+        <div className="mt-3 h-2 rounded-full bg-white/[0.08]">
+          <div className="h-full w-[78%] rounded-full bg-success" />
+        </div>
+        <p className="mt-2 text-xs font-bold text-success">+12% vs last 30 days</p>
+      </div>
+      <div className="mt-4">
+        <h3 className="text-sm font-bold text-white">Recent Profile Improvements</h3>
+        <div className="mt-3 space-y-2.5 text-xs text-muted 2xl:text-[13px]">
+          {[
+            ["Added 3 case studies", "2 days ago"],
+            ["Updated work experience impact", "5 days ago"],
+            ["Added Design Manager as target role", "1 week ago"],
+          ].map(([text, date]) => (
+            <div key={text} className="flex items-center gap-2">
+              <Check className="h-4 w-4 text-success" />
+              <span className="flex-1">{text}</span>
+              <span>{date}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function AiMatchProfilePanel() {
+  return (
+    <section className="panel p-4 2xl:p-5">
+      <div className="flex items-center gap-2.5">
+        <span className="grid h-8 w-8 place-items-center rounded-full bg-[#2f80ed]/20 text-sm font-black text-[#9cc6ff]">AI</span>
+        <h2 className="text-base font-bold 2xl:text-lg">AI Match Profile</h2>
+      </div>
+      <div className="mt-4 divide-y divide-border rounded-md border border-border">
+        <AiProfileGroup title="Strengths" icon={Check} iconClassName="text-success" items={["Strong product sense and user empathy", "Proven track record in 0-1 and scale", "Design systems and cross-functional leadership"]} />
+        <AiProfileGroup title="Gaps" icon={CircleDot} iconClassName="text-[#ffb020]" items={["People management experience", "Strategic planning and roadmapping", "Advanced data analysis"]} />
+        <AiProfileGroup title="Key Selling Points" icon={Star} iconClassName="text-[#ffb020]" items={["End-to-end product thinking", "Measurable impact and growth metrics", "Strong collaboration and communication"]} />
+        <div className="p-3">
+          <h3 className="text-[13px] font-bold text-white">How to Sell Me</h3>
+          <p className="mt-2 rounded-md border border-border bg-white/[0.025] p-3 text-[13px] leading-5 text-muted">
+            Highlight my ability to bridge user needs with business goals, drive measurable results, and lead design initiatives that scale.
+          </p>
+        </div>
+      </div>
+      <ProfilePanelLink label="View full AI analysis" />
+    </section>
+  );
+}
+
+function PreferencesPanel() {
+  return (
+    <section className="panel p-4 2xl:p-5">
+      <ProfileSectionHeader title="Job Preferences" action="Edit Preferences" />
+      <div className="mt-4 space-y-3">
+        {profilePreferences.map((preference) => (
+          <div key={preference.label} className="grid grid-cols-[28px_minmax(0,1fr)] gap-3">
+            <preference.icon className="mt-0.5 h-5 w-5 text-[#d8dee8]" />
+            <div>
+              <p className="text-xs font-bold text-white 2xl:text-[13px]">{preference.label}</p>
+              <p className="mt-0.5 text-xs text-muted 2xl:text-[13px]">{preference.value}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function DealbreakersPanel() {
+  return (
+    <section className="panel p-4 2xl:p-5">
+      <ProfileSectionHeader title="Dealbreakers" action="Edit Dealbreakers" />
+      <div className="mt-4 space-y-2.5">
+        {profileDealbreakers.map((item) => (
+          <p key={item} className="flex items-center gap-2 text-[13px] text-muted 2xl:text-sm">
+            <Ban className="h-4 w-4 text-[#ff6b6b]" />
+            {item}
+          </p>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function AdditionalNotesPanel() {
+  return (
+    <section className="panel p-4 2xl:p-5">
+      <h2 className="text-base font-bold 2xl:text-lg">Additional Notes</h2>
+      <div className="mt-4 rounded-md border border-border bg-white/[0.025] p-3 text-[13px] leading-5 text-[#d8dee8]">
+        <p>Open to new grad mentor roles</p>
+        <p className="mt-1 text-muted">Passionate about accessibility and inclusive design</p>
+      </div>
+      <div className="mt-5">
+        <div className="mb-2 flex justify-between text-xs font-semibold text-muted">
+          <span>Profile completeness</span>
+          <span className="text-white">92%</span>
+        </div>
+        <div className="h-2 rounded-full bg-white/[0.08]">
+          <div className="h-full w-[92%] rounded-full bg-success" />
+        </div>
+        <p className="mt-2 text-xs text-muted">Profile is looking strong.</p>
+      </div>
+    </section>
+  );
+}
+
+function ProfileSectionHeader({ title, action }: { title: string; action: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <h2 className="text-base font-bold 2xl:text-lg">{title}</h2>
+      <button type="button" className="text-xs font-bold text-accent transition hover:text-[#ff7a1a] 2xl:text-[13px]">
+        {action}
+      </button>
+    </div>
+  );
+}
+
+function ProfilePanelLink({ label }: { label: string }) {
+  return (
+    <a href="#" className="mt-4 inline-flex items-center gap-2 text-[13px] font-bold text-accent 2xl:text-sm">
+      {label} <span aria-hidden="true">-&gt;</span>
+    </a>
+  );
+}
+
+function EducationItem({ mark, title, subtitle, note }: { mark: string; title: string; subtitle: string; note: string }) {
+  return (
+    <div className="grid grid-cols-[42px_minmax(0,1fr)] gap-3">
+      <span className="grid h-10 w-10 place-items-center rounded-md bg-white/[0.08] text-xs font-black text-white">{mark}</span>
+      <div className="min-w-0">
+        <p className="text-xs font-bold text-white 2xl:text-[13px]">{title}</p>
+        <p className="mt-0.5 text-xs text-muted">{subtitle}</p>
+        <p className="mt-0.5 text-xs text-muted">{note}</p>
+      </div>
+    </div>
+  );
+}
+
+function MiniMetric({ icon: Icon, value, label, color }: { icon: typeof FileText; value: string; label: string; color: "blue" | "orange" | "green" }) {
+  return (
+    <div className="rounded-md border border-border bg-white/[0.025] p-3">
+      <Icon className={cn("h-5 w-5", color === "blue" ? "text-[#2f80ed]" : color === "green" ? "text-success" : "text-accent")} />
+      <p className="mt-2 text-xl font-bold leading-none text-white">{value}</p>
+      <p className="mt-1 text-[11px] text-muted">{label}</p>
+    </div>
+  );
+}
+
+function AiProfileGroup({ title, items, icon: Icon, iconClassName }: { title: string; items: string[]; icon: typeof Check; iconClassName: string }) {
+  return (
+    <div className="p-3">
+      <h3 className="text-[13px] font-bold text-white">{title}</h3>
+      <ul className="mt-2 space-y-1.5 text-[13px] text-muted">
+        {items.map((item) => (
+          <li key={item} className="flex items-center gap-2">
+            <Icon className={cn("h-4 w-4", iconClassName)} />
+            {item}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function AppSidebar({ activeView, onChangeView }: { activeView: View; onChangeView: (view: View) => void }) {
   return (
     <aside className="app-sidebar hidden h-screen w-[190px] shrink-0 overflow-y-auto border-r border-border bg-white/[0.025] px-2.5 py-4 lg:flex lg:flex-col 2xl:w-[220px] 2xl:px-3 2xl:py-5">
@@ -1378,19 +1906,26 @@ function AppSidebar({ activeView, onChangeView }: { activeView: View; onChangeVi
       </nav>
 
       <div className="app-sidebar-footer mt-auto border-t border-border pt-3 2xl:pt-4">
-        <div className="app-sidebar-profile mb-2 flex items-center gap-2 rounded-md px-1.5 py-1.5 2xl:mb-3 2xl:gap-2.5">
+        <a
+          href="#profile"
+          onClick={() => onChangeView("Profile")}
+          className={cn(
+            "app-sidebar-profile mb-2 flex items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition hover:bg-white/[0.055] 2xl:mb-3 2xl:gap-2.5",
+            activeView === "Profile" && "border border-white/[0.12] bg-white/10 shadow-[inset_4px_0_0_#ff5a00]",
+          )}
+        >
           <img
-            src="/avatars/pug.svg"
+            src="/avatars/alex-johnson.svg"
             alt=""
             className="h-8 w-8 shrink-0 rounded-full object-cover 2xl:h-9 2xl:w-9"
             aria-hidden="true"
           />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-xs font-semibold leading-tight text-white 2xl:text-sm">no job</p>
-            <p className="truncate text-[11px] leading-tight text-muted 2xl:text-xs">No role selected</p>
+            <p className="truncate text-xs font-semibold leading-tight text-white 2xl:text-sm">Alex Johnson</p>
+            <p className="truncate text-[11px] leading-tight text-muted 2xl:text-xs">Senior Product Designer</p>
           </div>
           <ChevronRight className="h-4 w-4 shrink-0 text-muted 2xl:h-[18px] 2xl:w-[18px]" />
-        </div>
+        </a>
         <a
           href="#"
           className="app-sidebar-settings flex h-10 items-center gap-2.5 rounded-md px-3 text-sm text-muted hover:bg-white/[0.055] hover:text-white 2xl:h-11 2xl:gap-3 2xl:text-base"
@@ -1604,7 +2139,7 @@ function InfoStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CompanyLogo({ logo, large = false }: { logo: Job["logo"]; large?: boolean }) {
+function CompanyLogo({ logo, large = false }: { logo: Job["logo"] | "airbnb"; large?: boolean }) {
   const sizeClass = large ? "h-16 w-16 2xl:h-[88px] 2xl:w-[88px]" : "h-11 w-11 2xl:h-14 2xl:w-14";
 
   if (logo === "linkedin") {
@@ -1625,6 +2160,14 @@ function CompanyLogo({ logo, large = false }: { logo: Job["logo"]; large?: boole
           <span className="h-4 w-4 rounded-r-full bg-[#1abcfe]" />
           <span className="h-4 w-4 rounded-full bg-[#0acf83]" />
         </div>
+      </div>
+    );
+  }
+
+  if (logo === "airbnb") {
+    return (
+      <div className={cn("grid shrink-0 place-items-center rounded-md bg-black text-[#ff385c]", sizeClass)}>
+        <span className={cn("font-black", large ? "text-3xl 2xl:text-4xl" : "text-xl 2xl:text-2xl")}>A</span>
       </div>
     );
   }
