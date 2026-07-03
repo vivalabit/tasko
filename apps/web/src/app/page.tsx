@@ -1378,15 +1378,18 @@ function AppSidebar({ activeView, onChangeView }: { activeView: View; onChangeVi
       </nav>
 
       <div className="app-sidebar-footer mt-auto border-t border-border pt-3 2xl:pt-4">
-        <div className="app-sidebar-profile mb-2 flex items-center gap-2.5 rounded-md px-2 py-2 2xl:mb-3 2xl:gap-3">
-          <div className="grid h-9 w-9 place-items-center rounded-full bg-white text-[11px] font-bold text-slate-900 2xl:h-10 2xl:w-10 2xl:text-xs">
-            AJ
-          </div>
+        <div className="app-sidebar-profile mb-2 flex items-center gap-2 rounded-md px-1.5 py-1.5 2xl:mb-3 2xl:gap-2.5">
+          <img
+            src="/avatars/pug.svg"
+            alt=""
+            className="h-8 w-8 shrink-0 rounded-full object-cover 2xl:h-9 2xl:w-9"
+            aria-hidden="true"
+          />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-medium 2xl:text-base">Alex Johnson</p>
-            <p className="text-xs text-muted 2xl:text-sm">Product Designer</p>
+            <p className="truncate text-xs font-semibold leading-tight text-white 2xl:text-sm">no job</p>
+            <p className="truncate text-[11px] leading-tight text-muted 2xl:text-xs">No role selected</p>
           </div>
-          <ChevronRight className="h-[18px] w-[18px] text-muted 2xl:h-5 2xl:w-5" />
+          <ChevronRight className="h-4 w-4 shrink-0 text-muted 2xl:h-[18px] 2xl:w-[18px]" />
         </div>
         <a
           href="#"

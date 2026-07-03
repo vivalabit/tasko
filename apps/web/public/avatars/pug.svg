@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-labelledby="title desc">
+  <title id="title">Pug avatar</title>
+  <desc id="desc">A simple pug dog avatar.</desc>
+  <rect width="96" height="96" rx="48" fill="#f5efe6"/>
+  <path d="M17 35c-7-6-7-17 1-21 8-4 18 4 18 17L27 48 17 35Z" fill="#2a2020"/>
+  <path d="M79 35c7-6 7-17-1-21-8-4-18 4-18 17l9 17 10-13Z" fill="#2a2020"/>
+  <path d="M22 46c0-19 12-32 26-32s26 13 26 32c0 20-11 35-26 35S22 66 22 46Z" fill="#d7a86d"/>
+  <path d="M29 46c0-11 8-19 19-19s19 8 19 19c0 16-8 27-19 27S29 62 29 46Z" fill="#ecbf86"/>
+  <path d="M29 36c5-9 13-13 19-13s14 4 19 13c-6-4-12-6-19-6s-13 2-19 6Z" fill="#b77f4c" opacity=".55"/>
+  <ellipse cx="38" cy="46" rx="8" ry="9" fill="#2a2020"/>
+  <ellipse cx="58" cy="46" rx="8" ry="9" fill="#2a2020"/>
+  <circle cx="40" cy="43" r="2.3" fill="#fff"/>
+  <circle cx="60" cy="43" r="2.3" fill="#fff"/>
+  <path d="M34 58c2-7 7-11 14-11s12 4 14 11c1 9-5 15-14 15s-15-6-14-15Z" fill="#2a2020"/>
+  <path d="M42 58c2-3 10-3 12 0-1 4-3 6-6 6s-5-2-6-6Z" fill="#121111"/>
+  <path d="M39 68c5 4 13 4 18 0" fill="none" stroke="#f1c9c0" stroke-width="3" stroke-linecap="round"/>
+  <path d="M42 72c4 2 8 2 12 0" fill="none" stroke="#cc8f83" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M31 55c-4-2-7-6-7-10M65 55c4-2 7-6 7-10" fill="none" stroke="#a97855" stroke-width="3" stroke-linecap="round" opacity=".45"/>
+</svg>
