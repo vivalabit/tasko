@@ -2839,8 +2839,11 @@ function SkillsEditorDialog({
   onClose: () => void;
   onSave: () => void;
 }) {
+  const normalizedQuery = skillInput.trim().toLowerCase();
   const availableSuggestions = suggestedSkills.filter(
-    (suggestion) => !skills.some((skill) => skill.toLowerCase() === suggestion.toLowerCase()),
+    (suggestion) =>
+      !skills.some((skill) => skill.toLowerCase() === suggestion.toLowerCase()) &&
+      (!normalizedQuery || suggestion.toLowerCase().includes(normalizedQuery)),
   );
 
   return (
@@ -2877,6 +2880,7 @@ function SkillsEditorDialog({
                 placeholder="e.g. Python, FastAPI, Docker"
                 className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
               />
+              <span className="text-xs font-medium text-muted">Type to search suggestions, then click a chip or press Add.</span>
             </label>
             <Button
               type="submit"
@@ -2914,20 +2918,31 @@ function SkillsEditorDialog({
           </div>
 
           <div className="mt-5">
-            <h3 className="text-sm font-bold text-white">Suggested skills</h3>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {availableSuggestions.map((skill) => (
-                <button
-                  key={skill}
-                  type="button"
-                  className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-border bg-white/[0.025] px-2.5 text-xs font-semibold text-[#d8dee8] transition hover:border-accent/60 hover:bg-accent/10 hover:text-white"
-                  onClick={() => onAddSkill(skill)}
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  {skill}
-                </button>
-              ))}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-bold text-white">Suggested skills</h3>
+              <p className="text-xs font-medium text-muted">
+                {normalizedQuery ? `${availableSuggestions.length} matches` : `${availableSuggestions.length} available`}
+              </p>
             </div>
+            {availableSuggestions.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {availableSuggestions.map((skill) => (
+                  <button
+                    key={skill}
+                    type="button"
+                    className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-border bg-white/[0.025] px-2.5 text-xs font-semibold text-[#d8dee8] transition hover:border-accent/60 hover:bg-accent/10 hover:text-white"
+                    onClick={() => onAddSkill(skill)}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {skill}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 rounded-md border border-dashed border-white/[0.16] bg-white/[0.025] p-3 text-sm text-muted">
+                No suggestions match this search. Press Add to save it as a custom skill.
+              </p>
+            )}
           </div>
         </div>
 
