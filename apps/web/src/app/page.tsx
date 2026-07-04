@@ -10,7 +10,6 @@ import {
   Calendar,
   CalendarDays,
   Check,
-  CheckCircle2,
   ChevronDown,
   ChevronRight,
   CircleDot,
@@ -304,6 +303,240 @@ const defaultExperienceDraft: ExperienceEntry = {
   is_current: false,
   description: "",
 };
+
+const suggestedSkills = [
+  "Agile Development",
+  "AI Agent Development",
+  "AI Application Development",
+  "AI Engineering",
+  "AI Integrations",
+  "AI Literacy",
+  "AI Model Evaluation",
+  "AI Safety",
+  "AI Strategy",
+  "AJAX",
+  "API Design",
+  "API Development",
+  "API Integration",
+  "ASP.NET",
+  "AWS",
+  "AWS Lambda",
+  "Accessibility",
+  "Algorithms",
+  "Angular",
+  "Ansible",
+  "Apache Kafka",
+  "Application Security",
+  "Architecture",
+  "AsyncIO",
+  "Authentication",
+  "Automation",
+  "Azure",
+  "Bash",
+  "Bootstrap",
+  "CI/CD",
+  "CSS",
+  "Celery",
+  "Chatbot Development",
+  "Clean Architecture",
+  "Clean Code",
+  "Cloud Applications",
+  "Cloud Computing",
+  "Cloud Functions",
+  "Cloud Security",
+  "Code Review",
+  "Computer Vision",
+  "Continuous Deployment",
+  "Continuous Integration",
+  "Critical Thinking",
+  "Cybersecurity",
+  "Django",
+  "Django REST Framework",
+  "Docker",
+  "Docker Compose",
+  "Domain-Driven Design",
+  "Elasticsearch",
+  "Express.js",
+  "FastAPI",
+  "Firebase",
+  "Flask",
+  "Frontend Development",
+  "Full-stack Development",
+  "GCP",
+  "Git",
+  "GitHub",
+  "GitHub Actions",
+  "GitLab CI",
+  "Go",
+  "GraphQL",
+  "HTML",
+  "Helm",
+  "Hugging Face",
+  "Java",
+  "JavaScript",
+  "Jenkins",
+  "Jest",
+  "Jira",
+  "Jupyter",
+  "JWT",
+  "Kubernetes",
+  "LangChain",
+  "LangGraph",
+  "Large Language Models",
+  "Linux",
+  "LLM Applications",
+  "LLM Evaluation",
+  "Machine Learning",
+  "Microservices",
+  "MongoDB",
+  "MySQL",
+  "Next.js",
+  "Nginx",
+  "Node.js",
+  "NoSQL",
+  "OAuth",
+  "Object-Oriented Programming",
+  "OpenAI API",
+  "OpenAPI",
+  "PHP",
+  "Pandas",
+  "Performance Optimization",
+  "Playwright",
+  "PostgreSQL",
+  "Postman",
+  "Problem Solving",
+  "Prompt Engineering",
+  "PyTorch",
+  "Pytest",
+  "Python",
+  "QA Automation",
+  "RabbitMQ",
+  "React",
+  "React Native",
+  "Redis",
+  "Refactoring",
+  "Relational Databases",
+  "REST API",
+  "Ruby",
+  "Ruby on Rails",
+  "Rust",
+  "SaaS Development",
+  "Scikit-learn",
+  "Scrum",
+  "Security Best Practices",
+  "Serverless",
+  "Shell Scripting",
+  "Software Architecture",
+  "Software Design",
+  "Software Development",
+  "Software Engineering",
+  "Software Testing",
+  "Spring Boot",
+  "SQL",
+  "SQLite",
+  "System Design",
+  "Tailwind CSS",
+  "Team Collaboration",
+  "TensorFlow",
+  "Terraform",
+  "Test Automation",
+  "Test-Driven Development",
+  "TypeScript",
+  "UI Development",
+  "Unit Testing",
+  "Unix",
+  "UX Basics",
+  "Vector Databases",
+  "Vercel",
+  "Vue.js",
+  "Web APIs",
+  "Web Development",
+  "WebSockets",
+  "Webpack",
+  "WordPress",
+  "XML",
+  "YAML",
+  "Zod",
+  "NumPy",
+  "Data Analysis",
+  "Data Engineering",
+  "Data Structures",
+  "Data Visualization",
+  "ETL",
+  "MLOps",
+  "MLflow",
+  "RAG",
+  "Retrieval-Augmented Generation",
+  "Pinecone",
+  "ChromaDB",
+  "Qdrant",
+  "Supabase",
+  "Prisma",
+  "SQLAlchemy",
+  "ORM",
+  "Pydantic",
+  "Redux",
+  "Zustand",
+  "Svelte",
+  "Nuxt.js",
+  "Vite",
+  "ESLint",
+  "Prettier",
+  "Cypress",
+  "Mocha",
+  "Vitest",
+  "Storybook",
+  "Figma",
+  "Responsive Design",
+  "Mobile Development",
+  "Swift",
+  "Kotlin",
+  "Flutter",
+  "Dart",
+  "C",
+  "C++",
+  "C#",
+  ".NET",
+  "Graph Databases",
+  "Neo4j",
+  "Observability",
+  "Monitoring",
+  "Logging",
+  "Prometheus",
+  "Grafana",
+  "Sentry",
+  "Datadog",
+  "DevOps",
+  "Site Reliability Engineering",
+  "Backend Development",
+  "Infrastructure as Code",
+  "Networking",
+  "HTTP",
+  "DNS",
+  "TCP/IP",
+  "Web Security",
+  "OWASP",
+  "Encryption",
+  "OAuth 2.0",
+  "SAML",
+  "JSON",
+  "gRPC",
+  "Message Queues",
+  "Event-Driven Architecture",
+  "Distributed Systems",
+  "Concurrency",
+  "Multithreading",
+  "Design Patterns",
+  "Technical Documentation",
+  "Debugging",
+  "Troubleshooting",
+  "Production Support",
+  "Product Thinking",
+  "Cross-functional Collaboration",
+  "Communication",
+  "Adaptability",
+  "Agile Problem Solving",
+];
 
 const legacyCandidateProfileValues: Partial<CandidateProfile> = {
   name: "Alex Johnson",
@@ -628,6 +861,9 @@ export default function HomePage() {
   const [isExperienceDialogOpen, setIsExperienceDialogOpen] = useState(false);
   const [isExperienceEditMode, setIsExperienceEditMode] = useState(false);
   const [experienceDraft, setExperienceDraft] = useState<ExperienceEntry>(defaultExperienceDraft);
+  const [isSkillsDialogOpen, setIsSkillsDialogOpen] = useState(false);
+  const [skillsDraft, setSkillsDraft] = useState<string[]>([]);
+  const [skillInput, setSkillInput] = useState("");
   const [profileSaveStatus, setProfileSaveStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [profileSaveMessage, setProfileSaveMessage] = useState("");
 
@@ -869,6 +1105,37 @@ export default function HomePage() {
     setIsExperienceDialogOpen(true);
   }
 
+  function openSkillsEditor() {
+    setSkillsDraft(parseProfileLines(profile.skills));
+    setSkillInput("");
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+    setIsSkillsDialogOpen(true);
+  }
+
+  function addSkillToDraft(skill: string) {
+    const normalizedSkill = skill.trim();
+    if (!normalizedSkill) return;
+
+    setSkillsDraft((currentSkills) => {
+      const existingSkills = new Set(currentSkills.map((item) => item.toLowerCase()));
+      if (existingSkills.has(normalizedSkill.toLowerCase())) {
+        return currentSkills;
+      }
+
+      return [...currentSkills, normalizedSkill];
+    });
+    setSkillInput("");
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+  }
+
+  function removeSkillFromDraft(skill: string) {
+    setSkillsDraft((currentSkills) => currentSkills.filter((item) => item !== skill));
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+  }
+
   function updateProfileDraft<Field extends keyof CandidateProfile>(
     field: Field,
     value: CandidateProfile[Field],
@@ -950,6 +1217,42 @@ export default function HomePage() {
     } catch (error) {
       setProfileSaveStatus("error");
       setProfileSaveMessage(error instanceof Error ? error.message : "Experience save failed");
+    }
+  }
+
+  async function saveSkills() {
+    const normalizedSkills = Array.from(
+      new Map(skillsDraft.map((skill) => [skill.trim().toLowerCase(), skill.trim()])).values(),
+    ).filter(Boolean);
+    const nextProfile = normalizeCandidateProfile({
+      ...profile,
+      skills: normalizedSkills.join("\n"),
+    });
+
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await response.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedProfile.detail ?? "Skills save failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+      setIsSkillsDialogOpen(false);
+    } catch (error) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(error instanceof Error ? error.message : "Skills save failed");
     }
   }
 
@@ -1161,6 +1464,7 @@ export default function HomePage() {
             onAddExperience={() => openExperienceEditor()}
             onEditExperience={openExperienceEditor}
             onDeleteExperience={deleteExperience}
+            onEditSkills={openSkillsEditor}
             onSaveResume={saveResumeFile}
           />
         ) : (
@@ -1709,6 +2013,23 @@ export default function HomePage() {
           onSave={saveExperience}
         />
       )}
+      {isSkillsDialogOpen && (
+        <SkillsEditorDialog
+          skills={skillsDraft}
+          skillInput={skillInput}
+          status={profileSaveStatus}
+          message={profileSaveMessage}
+          onSkillInputChange={(value) => {
+            setSkillInput(value);
+            setProfileSaveStatus("idle");
+            setProfileSaveMessage("");
+          }}
+          onAddSkill={addSkillToDraft}
+          onRemoveSkill={removeSkillFromDraft}
+          onClose={() => setIsSkillsDialogOpen(false)}
+          onSave={saveSkills}
+        />
+      )}
       </div>
     </main>
   );
@@ -1916,6 +2237,7 @@ function ProfileView({
   onAddExperience,
   onEditExperience,
   onDeleteExperience,
+  onEditSkills,
   onSaveResume,
 }: {
   profile: CandidateProfile;
@@ -1923,6 +2245,7 @@ function ProfileView({
   onAddExperience: () => void;
   onEditExperience: (experience: ExperienceEntry) => void;
   onDeleteExperience: (experienceId: string) => void;
+  onEditSkills: () => void;
   onSaveResume: (file: File) => void;
 }) {
   return (
@@ -1961,7 +2284,7 @@ function ProfileView({
             onEditExperience={onEditExperience}
             onDeleteExperience={onDeleteExperience}
           />
-          <SkillsPanel profile={profile} onEditProfile={onEditProfile} />
+          <SkillsPanel profile={profile} onEditSkills={onEditSkills} />
           <EducationPanel profile={profile} onEditProfile={onEditProfile} />
           <DocumentsPanel onEditProfile={onEditProfile} />
         </div>
@@ -1980,7 +2303,6 @@ function ProfileView({
 
 function ProfileHero({ profile, onEditProfile }: { profile: CandidateProfile; onEditProfile: () => void }) {
   const links = getProfileLinks(profile).filter((link) => hasProfileValue(link.value));
-  const isStarted = hasProfileValue(profile.name) || hasProfileValue(profile.current_role) || hasProfileValue(profile.headline);
 
   return (
     <section className="panel grid shrink-0 overflow-hidden md:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_410px]">
@@ -1997,10 +2319,6 @@ function ProfileHero({ profile, onEditProfile }: { profile: CandidateProfile; on
             <h2 className="text-[24px] font-bold leading-tight text-white 2xl:text-[30px]">
               {displayProfileValue(profile.name, "Set up your profile")}
             </h2>
-            <span className={cn("inline-flex h-6 items-center gap-1 rounded-md px-2 text-[11px] font-bold", isStarted ? "bg-success/14 text-success" : "bg-accent/14 text-accent")}>
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              {isStarted ? "Profile started" : "New profile"}
-            </span>
           </div>
           <p className="mt-2 text-base font-semibold text-[#d8dee8] 2xl:text-lg">
             {displayProfileValue(profile.current_role, "Add your current role")}
@@ -2240,12 +2558,12 @@ function ExperiencePanel({
   );
 }
 
-function SkillsPanel({ profile, onEditProfile }: { profile: CandidateProfile; onEditProfile: () => void }) {
+function SkillsPanel({ profile, onEditSkills }: { profile: CandidateProfile; onEditSkills: () => void }) {
   const skillItems = parseProfileLines(profile.skills);
 
   return (
     <section className="panel p-4 2xl:p-5">
-      <ProfileSectionHeader title="Skills" action="Edit Skills" onAction={onEditProfile} />
+      <ProfileSectionHeader title="Skills" action="Edit Skills" onAction={onEditSkills} />
       {skillItems.length > 0 ? (
         <div className="mt-4 flex flex-wrap gap-2">
           {skillItems.map((skill) => (
@@ -2260,7 +2578,7 @@ function SkillsPanel({ profile, onEditProfile }: { profile: CandidateProfile; on
           title="No skills yet"
           description="Add tools, technologies, languages, and strengths. Use one skill per line."
           action="Add skills"
-          onAction={onEditProfile}
+          onAction={onEditSkills}
         />
       )}
     </section>
@@ -2496,6 +2814,146 @@ function AiProfileGroup({ title, items, icon: Icon, iconClassName }: { title: st
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+function SkillsEditorDialog({
+  skills,
+  skillInput,
+  status,
+  message,
+  onSkillInputChange,
+  onAddSkill,
+  onRemoveSkill,
+  onClose,
+  onSave,
+}: {
+  skills: string[];
+  skillInput: string;
+  status: "idle" | "loading" | "ready" | "error";
+  message: string;
+  onSkillInputChange: (value: string) => void;
+  onAddSkill: (skill: string) => void;
+  onRemoveSkill: (skill: string) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const availableSuggestions = suggestedSkills.filter(
+    (suggestion) => !skills.some((skill) => skill.toLowerCase() === suggestion.toLowerCase()),
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+      <div className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[720px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] sm:p-5">
+        <div className="flex shrink-0 items-start justify-between gap-4">
+          <div>
+            <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[24px]">Edit Skills</h2>
+            <p className="mt-1 text-sm font-medium text-muted">Add skills one at a time, similar to LinkedIn.</p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close skills editor"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto rounded-md border border-border p-4">
+          <form
+            className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onAddSkill(skillInput);
+            }}
+          >
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Skill</span>
+              <input
+                value={skillInput}
+                onChange={(event) => onSkillInputChange(event.target.value)}
+                placeholder="e.g. Python, FastAPI, Docker"
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+            <Button
+              type="submit"
+              variant="ghost"
+              className="mt-6 h-10 rounded-md border border-border bg-white/[0.035] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.07]"
+            >
+              <Plus className="h-4 w-4" />
+              Add
+            </Button>
+          </form>
+
+          <div className="mt-5">
+            <h3 className="text-sm font-bold text-white">Selected skills</h3>
+            {skills.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {skills.map((skill) => (
+                  <span key={skill} className="inline-flex min-h-8 items-center gap-2 rounded-md border border-border bg-white/[0.04] px-2.5 text-xs font-semibold text-[#d8dee8]">
+                    {skill}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${skill}`}
+                      className="inline-flex h-5 w-5 items-center justify-center rounded text-muted transition hover:bg-white/[0.08] hover:text-white"
+                      onClick={() => onRemoveSkill(skill)}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 rounded-md border border-dashed border-white/[0.16] bg-white/[0.025] p-3 text-sm text-muted">
+                No skills selected yet.
+              </p>
+            )}
+          </div>
+
+          <div className="mt-5">
+            <h3 className="text-sm font-bold text-white">Suggested skills</h3>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {availableSuggestions.map((skill) => (
+                <button
+                  key={skill}
+                  type="button"
+                  className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-border bg-white/[0.025] px-2.5 text-xs font-semibold text-[#d8dee8] transition hover:border-accent/60 hover:bg-accent/10 hover:text-white"
+                  onClick={() => onAddSkill(skill)}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {skill}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
+            {message || `${skills.length} skills selected`}
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              className="h-10 rounded-md border border-border bg-transparent px-6 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+              onClick={onClose}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12]"
+              disabled={status === "loading"}
+              onClick={onSave}
+            >
+              <Save className="h-4 w-4" />
+              {status === "loading" ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
