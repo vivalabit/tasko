@@ -146,6 +146,12 @@ type ExperienceEntry = {
   description: string;
 };
 
+type ResumeExperienceImportResponse = {
+  experience?: Array<Partial<ExperienceEntry>>;
+  message?: string;
+  detail?: string;
+};
+
 const jobs: Job[] = [
   {
     id: "stripe-senior-product-designer",
@@ -396,7 +402,6 @@ const suggestedSkills = [
   "NoSQL",
   "OAuth",
   "Object-Oriented Programming",
-  "OpenAI API",
   "OpenAPI",
   "PHP",
   "Pandas",
@@ -625,6 +630,29 @@ function parseExperienceEntries(value: string): ExperienceEntry[] {
 
 function serializeExperienceEntries(entries: ExperienceEntry[]) {
   return JSON.stringify(entries.map((entry) => normalizeExperienceEntry(entry)));
+}
+
+function getExperienceFingerprint(entry: ExperienceEntry) {
+  return [entry.title, entry.company, entry.start_date, entry.end_date]
+    .map((value) => value.trim().toLowerCase())
+    .join("|");
+}
+
+function mergeExperienceEntries(currentEntries: ExperienceEntry[], importedEntries: ExperienceEntry[]) {
+  const existingFingerprints = new Set(currentEntries.map(getExperienceFingerprint));
+  const nextEntries = [...currentEntries];
+
+  for (const entry of importedEntries) {
+    const fingerprint = getExperienceFingerprint(entry);
+    if (!entry.title || !entry.company || existingFingerprints.has(fingerprint)) {
+      continue;
+    }
+
+    existingFingerprints.add(fingerprint);
+    nextEntries.push(entry);
+  }
+
+  return nextEntries;
 }
 
 function formatFileSize(size: number) {
@@ -861,6 +889,8 @@ export default function HomePage() {
   const [isExperienceDialogOpen, setIsExperienceDialogOpen] = useState(false);
   const [isExperienceEditMode, setIsExperienceEditMode] = useState(false);
   const [experienceDraft, setExperienceDraft] = useState<ExperienceEntry>(defaultExperienceDraft);
+  const [isExperienceImporting, setIsExperienceImporting] = useState(false);
+  const [experienceImportMessage, setExperienceImportMessage] = useState("");
   const [isSkillsDialogOpen, setIsSkillsDialogOpen] = useState(false);
   const [skillsDraft, setSkillsDraft] = useState<string[]>([]);
   const [skillInput, setSkillInput] = useState("");
@@ -1290,6 +1320,89 @@ export default function HomePage() {
     }
   }
 
+  async function importExperienceFromCv() {
+    if (!profile.resume_data_url || !profile.resume_file_name) {
+      setExperienceImportMessage("Attach a resume first");
+      window.alert("Attach a resume before importing experience.");
+      return;
+    }
+
+    setIsExperienceImporting(true);
+    setExperienceImportMessage("");
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    try {
+      const importResponse = await fetch(`${apiBaseUrl}/profile/import-experience-from-resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resume_file_name: profile.resume_file_name,
+          resume_data_url: profile.resume_data_url,
+        }),
+      });
+      const importResult = (await importResponse.json()) as ResumeExperienceImportResponse;
+
+      if (!importResponse.ok) {
+        throw new Error(importResult.detail ?? "Experience import failed");
+      }
+
+      const importedEntries = (importResult.experience ?? []).map((entry) =>
+        normalizeExperienceEntry({
+          ...entry,
+          id: entry.id || createClientId("cv-experience"),
+        }),
+      );
+
+      if (importedEntries.length === 0) {
+        setProfileSaveStatus("ready");
+        setExperienceImportMessage(importResult.message || "No experience entries were found in the attached CV");
+        return;
+      }
+
+      const currentEntries = parseExperienceEntries(profile.experience);
+      const mergedEntries = mergeExperienceEntries(currentEntries, importedEntries);
+      const addedCount = mergedEntries.length - currentEntries.length;
+
+      if (addedCount === 0) {
+        setProfileSaveStatus("ready");
+        setExperienceImportMessage("No new experience entries found in the attached CV");
+        return;
+      }
+
+      const nextProfile = normalizeCandidateProfile({
+        ...profile,
+        experience: serializeExperienceEntries(mergedEntries),
+      });
+      const saveResponse = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await saveResponse.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!saveResponse.ok) {
+        throw new Error(savedProfile.detail ?? "Experience import save failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+      setExperienceImportMessage(
+        importResult.message || `Imported ${addedCount} experience entr${addedCount === 1 ? "y" : "ies"} from CV`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Experience import failed";
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(message);
+      setExperienceImportMessage(message);
+    } finally {
+      setIsExperienceImporting(false);
+    }
+  }
+
   async function saveResumeFile(file: File) {
     const allowedTypes = new Set([
       "application/pdf",
@@ -1464,6 +1577,9 @@ export default function HomePage() {
             onAddExperience={() => openExperienceEditor()}
             onEditExperience={openExperienceEditor}
             onDeleteExperience={deleteExperience}
+            onImportExperienceFromCv={importExperienceFromCv}
+            isExperienceImporting={isExperienceImporting}
+            experienceImportMessage={experienceImportMessage}
             onEditSkills={openSkillsEditor}
             onSaveResume={saveResumeFile}
           />
@@ -2237,6 +2353,9 @@ function ProfileView({
   onAddExperience,
   onEditExperience,
   onDeleteExperience,
+  onImportExperienceFromCv,
+  isExperienceImporting,
+  experienceImportMessage,
   onEditSkills,
   onSaveResume,
 }: {
@@ -2245,6 +2364,9 @@ function ProfileView({
   onAddExperience: () => void;
   onEditExperience: (experience: ExperienceEntry) => void;
   onDeleteExperience: (experienceId: string) => void;
+  onImportExperienceFromCv: () => void;
+  isExperienceImporting: boolean;
+  experienceImportMessage: string;
   onEditSkills: () => void;
   onSaveResume: (file: File) => void;
 }) {
@@ -2283,6 +2405,9 @@ function ProfileView({
             onAddExperience={onAddExperience}
             onEditExperience={onEditExperience}
             onDeleteExperience={onDeleteExperience}
+            onImportExperienceFromCv={onImportExperienceFromCv}
+            isExperienceImporting={isExperienceImporting}
+            importMessage={experienceImportMessage}
           />
           <SkillsPanel profile={profile} onEditSkills={onEditSkills} />
           <EducationPanel profile={profile} onEditProfile={onEditProfile} />
@@ -2493,17 +2618,49 @@ function ExperiencePanel({
   onAddExperience,
   onEditExperience,
   onDeleteExperience,
+  onImportExperienceFromCv,
+  isExperienceImporting,
+  importMessage,
 }: {
   profile: CandidateProfile;
   onAddExperience: () => void;
   onEditExperience: (experience: ExperienceEntry) => void;
   onDeleteExperience: (experienceId: string) => void;
+  onImportExperienceFromCv: () => void;
+  isExperienceImporting: boolean;
+  importMessage: string;
 }) {
   const experienceItems = parseExperienceEntries(profile.experience);
+  const hasResume = hasProfileValue(profile.resume_data_url) && hasProfileValue(profile.resume_file_name);
 
   return (
     <section className="panel p-4 2xl:p-5">
-      <ProfileSectionHeader title="Experience" action="+ Add Experience" onAction={onAddExperience} />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-base font-bold 2xl:text-lg">Experience</h2>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-xs font-bold text-[#e6ebf3] transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45 2xl:text-[13px]"
+            onClick={onImportExperienceFromCv}
+            disabled={!hasResume || isExperienceImporting}
+            title={hasResume ? "Import experience from attached CV" : "Attach a CV first"}
+          >
+            <FileText className="h-4 w-4" />
+            {isExperienceImporting ? "Importing..." : "Import from CV"}
+          </button>
+          <button
+            type="button"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-bold text-accent transition hover:bg-accent/10 hover:text-[#ff7a1a] 2xl:text-[13px]"
+            onClick={onAddExperience}
+          >
+            <Plus className="h-4 w-4" />
+            Add Experience
+          </button>
+        </div>
+      </div>
+      {importMessage && (
+        <p className="mt-3 text-xs font-semibold text-muted 2xl:text-[13px]">{importMessage}</p>
+      )}
       {experienceItems.length > 0 ? (
         <div className="mt-4 space-y-4">
           {experienceItems.map((item) => (

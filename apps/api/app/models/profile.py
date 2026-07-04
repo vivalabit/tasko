@@ -36,3 +36,24 @@ class ProfilePayload(BaseModel):
     resume_file_size: str = Field(default="", max_length=40)
     resume_updated_at: str = Field(default="", max_length=80)
     resume_data_url: str = Field(default="", max_length=10_000_000)
+
+
+class ResumeExperienceImportRequest(BaseModel):
+    resume_file_name: str = Field(max_length=240)
+    resume_data_url: str = Field(max_length=10_000_000)
+
+
+class ImportedExperienceEntry(BaseModel):
+    title: str = Field(default="", max_length=180)
+    company: str = Field(default="", max_length=180)
+    employment_type: str = Field(default="Full-time", max_length=80)
+    location: str = Field(default="", max_length=180)
+    start_date: str = Field(default="", max_length=20)
+    end_date: str = Field(default="", max_length=20)
+    is_current: bool = False
+    description: str = Field(default="", max_length=2000)
+
+
+class ResumeExperienceImportResponse(BaseModel):
+    experience: list[ImportedExperienceEntry]
+    message: str = ""

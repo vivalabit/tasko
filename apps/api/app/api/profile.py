@@ -4,7 +4,19 @@ from sqlalchemy.orm import Session
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.database import get_db
-from app.models.profile import ProfilePayload, ProfileRecord
+from app.core.settings import Settings, get_settings
+from app.models.profile import (
+    ProfilePayload,
+    ProfileRecord,
+    ResumeExperienceImportRequest,
+    ResumeExperienceImportResponse,
+)
+from app.services.resume_import import (
+    OpenClawResumeImportError,
+    extract_resume_text,
+    parse_experience_from_text,
+    parse_experience_with_openclaw,
+)
 
 router = APIRouter()
 
@@ -86,3 +98,49 @@ def update_profile(payload: ProfilePayload, db: Session = Depends(get_db)) -> Pr
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Profile database is unavailable",
         ) from exc
+
+
+@router.post("/import-experience-from-resume", response_model=ResumeExperienceImportResponse)
+def import_experience_from_resume(
+    payload: ResumeExperienceImportRequest,
+    settings: Settings = Depends(get_settings),
+) -> ResumeExperienceImportResponse:
+    text = extract_resume_text(payload.resume_file_name, payload.resume_data_url)
+    if not text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Could not read text from the attached resume",
+        )
+
+    if settings.openclaw_resume_import_enabled:
+        import_method = "OpenClaw"
+        try:
+            experience = parse_experience_with_openclaw(
+                text=text,
+                command=settings.openclaw_command,
+                agent_id=settings.openclaw_agent_id,
+                thinking=settings.openclaw_resume_import_thinking,
+                timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
+            )
+        except OpenClawResumeImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"OpenClaw resume import failed: {exc}",
+            ) from exc
+    else:
+        experience = parse_experience_from_text(text)
+        import_method = "local parser"
+
+    if not experience:
+        return ResumeExperienceImportResponse(
+            experience=[],
+            message="No structured experience entries were found in the attached resume",
+        )
+
+    return ResumeExperienceImportResponse(
+        experience=experience,
+        message=(
+            f"Imported {len(experience)} experience entr{'y' if len(experience) == 1 else 'ies'} "
+            f"with {import_method}"
+        ),
+    )

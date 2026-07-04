@@ -1,0 +1,551 @@
+from __future__ import annotations
+
+import base64
+import json
+import re
+import shutil
+import subprocess
+import zipfile
+from dataclasses import dataclass
+from io import BytesIO
+from xml.etree import ElementTree
+
+from app.models.profile import ImportedExperienceEntry
+
+EXPERIENCE_HEADINGS = {
+    "experience",
+    "work experience",
+    "professional experience",
+    "employment history",
+    "career history",
+    "relevant experience",
+}
+
+SECTION_STOP_HEADINGS = {
+    "education",
+    "skills",
+    "technical skills",
+    "projects",
+    "certifications",
+    "certificates",
+    "languages",
+    "summary",
+    "profile",
+    "contacts",
+    "contact",
+    "references",
+}
+
+TITLE_HINTS = {
+    "administrator",
+    "analyst",
+    "architect",
+    "consultant",
+    "designer",
+    "developer",
+    "engineer",
+    "founder",
+    "intern",
+    "lead",
+    "manager",
+    "owner",
+    "product",
+    "programmer",
+    "specialist",
+    "technician",
+}
+
+MONTHS = {
+    "jan": "01",
+    "january": "01",
+    "feb": "02",
+    "february": "02",
+    "mar": "03",
+    "march": "03",
+    "apr": "04",
+    "april": "04",
+    "may": "05",
+    "jun": "06",
+    "june": "06",
+    "jul": "07",
+    "july": "07",
+    "aug": "08",
+    "august": "08",
+    "sep": "09",
+    "sept": "09",
+    "september": "09",
+    "oct": "10",
+    "october": "10",
+    "nov": "11",
+    "november": "11",
+    "dec": "12",
+    "december": "12",
+}
+
+DATE_TOKEN = (
+    r"(?:"
+    r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|"
+    r"Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{4}"
+    r"|\d{1,2}/\d{4}"
+    r"|\d{4}"
+    r"|Present|Current|Now"
+    r")"
+)
+DATE_RANGE_RE = re.compile(
+    rf"(?P<start>{DATE_TOKEN})\s*(?:-|–|—|to)\s*(?P<end>{DATE_TOKEN})",
+    re.IGNORECASE,
+)
+
+
+class OpenClawResumeImportError(RuntimeError):
+    pass
+
+
+@dataclass
+class ParsedExperience:
+    title: str = ""
+    company: str = ""
+    employment_type: str = "Full-time"
+    location: str = ""
+    start_date: str = ""
+    end_date: str = ""
+    is_current: bool = False
+    description_lines: list[str] | None = None
+
+    def to_model(self) -> ImportedExperienceEntry:
+        description = "\n".join(self.description_lines or [])
+        return ImportedExperienceEntry(
+            title=self.title.strip(),
+            company=self.company.strip(),
+            employment_type=self.employment_type,
+            location=self.location.strip(),
+            start_date=self.start_date,
+            end_date="" if self.is_current else self.end_date,
+            is_current=self.is_current,
+            description=description.strip(),
+        )
+
+
+def decode_resume_data_url(data_url: str) -> tuple[str, bytes]:
+    header, separator, payload = data_url.partition(",")
+    if not separator:
+        return "", data_url.encode()
+
+    content_type = header.removeprefix("data:").split(";")[0]
+    if ";base64" in header:
+        return content_type, base64.b64decode(payload, validate=False)
+
+    return content_type, payload.encode()
+
+
+def extract_resume_text(file_name: str, data_url: str) -> str:
+    content_type, content = decode_resume_data_url(data_url)
+    lower_name = file_name.lower()
+
+    if lower_name.endswith(".docx") or "wordprocessingml" in content_type:
+        text = extract_docx_text(content)
+        if text:
+            return text
+
+    if lower_name.endswith(".pdf") or content_type == "application/pdf":
+        text = extract_pdf_text(content)
+        if text:
+            return text
+
+    return decode_text_bytes(content)
+
+
+def extract_docx_text(content: bytes) -> str:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            names = [
+                name
+                for name in archive.namelist()
+                if name == "word/document.xml"
+                or name.startswith("word/header")
+                or name.startswith("word/footer")
+            ]
+            parts: list[str] = []
+            for name in names:
+                root = ElementTree.fromstring(archive.read(name))
+                text_nodes = [
+                    node.text or ""
+                    for node in root.iter()
+                    if node.tag.endswith("}t") or node.tag == "t"
+                ]
+                parts.append(" ".join(text_nodes))
+            return "\n".join(parts)
+    except (ElementTree.ParseError, KeyError, OSError, zipfile.BadZipFile):
+        return ""
+
+
+def extract_pdf_text(content: bytes) -> str:
+    try:
+        from pypdf import PdfReader  # type: ignore[import-not-found]
+
+        reader = PdfReader(BytesIO(content))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    except Exception:
+        return extract_pdf_text_fallback(content)
+
+
+def extract_pdf_text_fallback(content: bytes) -> str:
+    decoded = decode_text_bytes(content)
+    literal_strings = re.findall(r"\(([^()]*(?:\\.[^()]*)*)\)\s*Tj", decoded)
+    if not literal_strings:
+        literal_strings = re.findall(r"\(([^()]*(?:\\.[^()]*)*)\)", decoded)
+
+    if literal_strings:
+        return "\n".join(unescape_pdf_string(item) for item in literal_strings)
+
+    return decoded
+
+
+def unescape_pdf_string(value: str) -> str:
+    return (
+        value.replace(r"\(", "(")
+        .replace(r"\)", ")")
+        .replace(r"\\", "\\")
+        .replace(r"\n", "\n")
+        .replace(r"\r", "\n")
+        .replace(r"\t", "\t")
+    )
+
+
+def decode_text_bytes(content: bytes) -> str:
+    for encoding in ("utf-8", "utf-16", "latin-1"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return content.decode("utf-8", errors="ignore")
+
+
+def parse_experience_from_text(text: str) -> list[ImportedExperienceEntry]:
+    lines = normalize_lines(text)
+    section_lines = get_experience_section(lines)
+    if not section_lines:
+        section_lines = lines
+
+    entries = parse_experience_lines(section_lines)
+    return [
+        entry.to_model()
+        for entry in entries
+        if entry.title and entry.company and (entry.start_date or entry.description_lines)
+    ][:12]
+
+
+def parse_experience_with_openclaw(
+    text: str,
+    command: str,
+    agent_id: str,
+    thinking: str,
+    timeout_seconds: int,
+) -> list[ImportedExperienceEntry]:
+    resume_text = text.strip()
+    if not resume_text:
+        return []
+
+    executable = shutil.which(command) or command
+    prompt = build_openclaw_resume_prompt(resume_text[:50000])
+    try:
+        result = subprocess.run(
+            [executable, "agent", "--agent", agent_id, "--message", prompt, "--thinking", thinking, "--json"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except FileNotFoundError as exc:
+        raise OpenClawResumeImportError(f"OpenClaw command was not found: {command}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise OpenClawResumeImportError("OpenClaw resume import timed out") from exc
+    except subprocess.CalledProcessError as exc:
+        error_output = (exc.stderr or exc.stdout or "OpenClaw command failed").strip()
+        raise OpenClawResumeImportError(summarize_openclaw_error(error_output)) from exc
+
+    parsed = extract_openclaw_experience_payload(result.stdout)
+    entries = parsed.get("experience", [])
+    if not isinstance(entries, list):
+        return []
+
+    return [
+        ImportedExperienceEntry.model_validate(entry)
+        for entry in entries
+        if isinstance(entry, dict)
+    ][:12]
+
+
+def summarize_openclaw_error(error_output: str) -> str:
+    if "No API key found" in error_output:
+        return (
+            "OpenClaw model auth is not configured for the selected agent. "
+            "Run `openclaw models status` and configure a usable model/auth profile."
+        )
+
+    if "No target session selected" in error_output:
+        return "OpenClaw needs an agent or session target. Set OPENCLAW_AGENT_ID to a configured agent."
+
+    if "Model override" in error_output and "not allowed" in error_output:
+        return "OpenClaw rejected the configured model override for this agent."
+
+    first_line = next((line.strip() for line in error_output.splitlines() if line.strip()), "")
+    return first_line[:240] or "OpenClaw command failed"
+
+
+def extract_openclaw_experience_payload(value: str) -> dict[str, object]:
+    for payload in extract_json_objects(value):
+        if isinstance(payload.get("experience"), list):
+            return payload
+
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            continue
+
+        final_text = result.get("finalAssistantVisibleText") or result.get("finalAssistantRawText")
+        if isinstance(final_text, str):
+            final_payload = extract_json_object(final_text)
+            if isinstance(final_payload.get("experience"), list):
+                return final_payload
+
+        nested_result = result.get("result")
+        if isinstance(nested_result, dict):
+            final_text = nested_result.get("finalAssistantVisibleText") or nested_result.get("finalAssistantRawText")
+            if isinstance(final_text, str):
+                final_payload = extract_json_object(final_text)
+                if isinstance(final_payload.get("experience"), list):
+                    return final_payload
+
+        payloads = result.get("payloads")
+        if isinstance(payloads, list):
+            for item in payloads:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if not isinstance(text, str):
+                    continue
+                final_payload = extract_json_object(text)
+                if isinstance(final_payload.get("experience"), list):
+                    return final_payload
+
+    return {}
+
+
+def build_openclaw_resume_prompt(resume_text: str) -> str:
+    return (
+        "You are extracting work experience from a resume for a job search app.\n"
+        "Return ONLY one valid JSON object, no markdown and no prose.\n"
+        "JSON shape:\n"
+        "{\n"
+        '  "experience": [\n'
+        "    {\n"
+        '      "title": "string",\n'
+        '      "company": "string",\n'
+        '      "employment_type": "Full-time|Part-time|Internship|Freelance|Contract|Project|string",\n'
+        '      "location": "string",\n'
+        '      "start_date": "YYYY-MM or empty string",\n'
+        '      "end_date": "YYYY-MM or empty string",\n'
+        '      "is_current": true,\n'
+        '      "description": "one responsibility or achievement per line"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "Rules:\n"
+        "- Extract only real work, internship, freelance, contract, and substantial project roles.\n"
+        "- Do not include education, skills, summary, or contact sections.\n"
+        "- Do not merge separate roles into one item.\n"
+        "- Preserve separate companies/projects as separate objects.\n"
+        "- If a field is unknown, use an empty string.\n"
+        "- For current roles, set is_current true and end_date empty.\n"
+        "- Use YYYY-MM when a month is known; for year-only start use YYYY-01, for year-only end use YYYY-12.\n\n"
+        f"Resume text:\n{resume_text}"
+    )
+
+
+def extract_json_object(value: str) -> dict[str, object]:
+    for payload in extract_json_objects(value):
+        return payload
+
+    return {}
+
+
+def extract_json_objects(value: str) -> list[dict[str, object]]:
+    stripped = value.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+        stripped = re.sub(r"\s*```$", "", stripped)
+
+    try:
+        parsed = json.loads(stripped)
+        if isinstance(parsed, dict):
+            return [parsed]
+    except json.JSONDecodeError:
+        pass
+
+    decoder = json.JSONDecoder()
+    payloads: list[dict[str, object]] = []
+    for match in re.finditer(r"{", stripped):
+        try:
+            parsed, _ = decoder.raw_decode(stripped[match.start() :])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            payloads.append(parsed)
+
+    return payloads
+
+
+def normalize_lines(text: str) -> list[str]:
+    return [
+        re.sub(r"\s+", " ", line).strip(" \t-•*")
+        for line in text.replace("\r", "\n").split("\n")
+        if line.strip(" \t-•*")
+    ]
+
+
+def normalize_heading(line: str) -> str:
+    return re.sub(r"[^a-z ]+", "", line.lower()).strip()
+
+
+def get_experience_section(lines: list[str]) -> list[str]:
+    start_index: int | None = None
+    for index, line in enumerate(lines):
+        heading = normalize_heading(line)
+        if heading in EXPERIENCE_HEADINGS:
+            start_index = index + 1
+            break
+
+    if start_index is None:
+        return []
+
+    end_index = len(lines)
+    for index in range(start_index, len(lines)):
+        heading = normalize_heading(lines[index])
+        if heading in SECTION_STOP_HEADINGS:
+            end_index = index
+            break
+
+    return lines[start_index:end_index]
+
+
+def parse_experience_lines(lines: list[str]) -> list[ParsedExperience]:
+    entries: list[ParsedExperience] = []
+    current: ParsedExperience | None = None
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        next_line = lines[index + 1] if index + 1 < len(lines) else ""
+        is_header = looks_like_entry_header(line) or (
+            bool(next_line and DATE_RANGE_RE.search(next_line)) and not looks_like_description(line)
+        )
+
+        if is_header:
+            if current:
+                entries.append(current)
+
+            date_line = next_line if next_line and DATE_RANGE_RE.search(next_line) else ""
+            current = parse_entry_header(line, date_line)
+            index += 2 if date_line else 1
+            continue
+
+        if current:
+            current.description_lines = current.description_lines or []
+            current.description_lines.append(line)
+
+        index += 1
+
+    if current:
+        entries.append(current)
+
+    return entries
+
+
+def looks_like_entry_header(line: str) -> bool:
+    if looks_like_description(line):
+        return False
+
+    lowered = line.lower()
+    has_date = bool(DATE_RANGE_RE.search(line))
+    has_title_hint = any(hint in lowered for hint in TITLE_HINTS)
+    has_separator = bool(re.search(r"\s(?:at|@)\s|[|•–—]", line, re.IGNORECASE))
+    return has_date or (has_title_hint and has_separator)
+
+
+def looks_like_description(line: str) -> bool:
+    lowered = line.lower()
+    return lowered.startswith(("built ", "created ", "developed ", "managed ", "led ", "worked ", "improved "))
+
+
+def parse_entry_header(line: str, date_line: str = "") -> ParsedExperience:
+    combined = f"{line} {date_line}".strip()
+    date_match = DATE_RANGE_RE.search(combined)
+    start_date = ""
+    end_date = ""
+    is_current = False
+
+    if date_match:
+        start_date = normalize_date(date_match.group("start"), is_start=True)
+        end_raw = date_match.group("end")
+        is_current = end_raw.lower().strip(".") in {"present", "current", "now"}
+        end_date = "" if is_current else normalize_date(end_raw, is_start=False)
+
+    cleaned = DATE_RANGE_RE.sub("", line)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -–—|•,")
+    title, company, location = split_title_company_location(cleaned)
+
+    return ParsedExperience(
+        title=title,
+        company=company,
+        location=location,
+        start_date=start_date,
+        end_date=end_date,
+        is_current=is_current,
+        description_lines=[],
+    )
+
+
+def split_title_company_location(value: str) -> tuple[str, str, str]:
+    at_match = re.match(r"(?P<title>.+?)\s+(?:at|@)\s+(?P<company>.+)$", value, re.IGNORECASE)
+    if at_match:
+        return at_match.group("title").strip(), at_match.group("company").strip(), ""
+
+    parts = [part.strip() for part in re.split(r"\s*[|•–—]\s*", value) if part.strip()]
+    if len(parts) < 2:
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+
+    if len(parts) >= 2:
+        first, second = parts[0], parts[1]
+        title, company = infer_title_company(first, second)
+        location = " • ".join(parts[2:])
+        return title, company, location
+
+    return value.strip(), "", ""
+
+
+def infer_title_company(first: str, second: str) -> tuple[str, str]:
+    first_is_title = any(hint in first.lower() for hint in TITLE_HINTS)
+    second_is_title = any(hint in second.lower() for hint in TITLE_HINTS)
+
+    if second_is_title and not first_is_title:
+        return second, first
+
+    return first, second
+
+
+def normalize_date(value: str, is_start: bool) -> str:
+    cleaned = value.strip().strip(".")
+    month_match = re.match(r"(?P<month>[A-Za-z]+)\.?\s+(?P<year>\d{4})", cleaned)
+    if month_match:
+        month = MONTHS.get(month_match.group("month").lower(), "01")
+        return f"{month_match.group('year')}-{month}"
+
+    numeric_match = re.match(r"(?P<month>\d{1,2})/(?P<year>\d{4})", cleaned)
+    if numeric_match:
+        return f"{numeric_match.group('year')}-{int(numeric_match.group('month')):02d}"
+
+    year_match = re.match(r"\d{4}", cleaned)
+    if year_match:
+        return f"{year_match.group(0)}-{'01' if is_start else '12'}"
+
+    return ""

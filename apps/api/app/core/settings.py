@@ -10,7 +10,11 @@ class Settings(BaseSettings):
     app_env: str = "local"
     database_url: str = "postgresql+psycopg://tasko:tasko@localhost:5432/tasko"
     redis_url: str = "redis://localhost:6379/0"
-    openai_api_key: str | None = None
+    openclaw_resume_import_enabled: bool = True
+    openclaw_command: str = "openclaw"
+    openclaw_agent_id: str = "main"
+    openclaw_resume_import_thinking: str = "high"
+    openclaw_resume_import_timeout_seconds: int = 120
     brightdata_api_key: str | None = None
     brightdata_api_url: str = "https://api.brightdata.com/datasets/v3"
     brightdata_linkedin_jobs_dataset_id: str = "gd_lpfll7v5hcqtkxl6l"
