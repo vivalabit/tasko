@@ -26,7 +26,7 @@ class ProfilePayload(BaseModel):
     github: str = Field(default="", max_length=240)
     portfolio: str = Field(default="", max_length=240)
     personal_site: str = Field(default="", max_length=240)
-    experience: str = Field(default="", max_length=4000)
+    experience: str = Field(default="", max_length=12000)
     skills: str = Field(default="", max_length=2000)
     education: str = Field(default="", max_length=2000)
     job_preferences: str = Field(default="", max_length=2000)

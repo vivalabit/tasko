@@ -135,6 +135,18 @@ type CandidateProfile = {
   resume_data_url: string;
 };
 
+type ExperienceEntry = {
+  id: string;
+  title: string;
+  company: string;
+  employment_type: string;
+  location: string;
+  start_date: string;
+  end_date: string;
+  is_current: boolean;
+  description: string;
+};
+
 const jobs: Job[] = [
   {
     id: "stripe-senior-product-designer",
@@ -281,6 +293,18 @@ const defaultCandidateProfile: CandidateProfile = {
   resume_data_url: "",
 };
 
+const defaultExperienceDraft: ExperienceEntry = {
+  id: "",
+  title: "",
+  company: "",
+  employment_type: "Full-time",
+  location: "",
+  start_date: "",
+  end_date: "",
+  is_current: false,
+  description: "",
+};
+
 const legacyCandidateProfileValues: Partial<CandidateProfile> = {
   name: "Alex Johnson",
   current_role: "Senior Product Designer",
@@ -324,6 +348,50 @@ function parseProfileLines(value: string) {
     .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function normalizeExperienceEntry(entry: Partial<ExperienceEntry>): ExperienceEntry {
+  return {
+    ...defaultExperienceDraft,
+    ...entry,
+    id: entry.id || createClientId("experience"),
+    title: entry.title?.trim() ?? "",
+    company: entry.company?.trim() ?? "",
+    employment_type: entry.employment_type?.trim() || "Full-time",
+    location: entry.location?.trim() ?? "",
+    start_date: entry.start_date?.trim() ?? "",
+    end_date: entry.is_current ? "" : entry.end_date?.trim() ?? "",
+    is_current: Boolean(entry.is_current),
+    description: entry.description?.trim() ?? "",
+  };
+}
+
+function parseExperienceEntries(value: string): ExperienceEntry[] {
+  if (!value.trim()) return [];
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter((item): item is Partial<ExperienceEntry> => Boolean(item) && typeof item === "object")
+        .map((item) => normalizeExperienceEntry(item))
+        .filter((item) => item.title || item.company || item.description);
+    }
+  } catch {
+    // Fall back to the previous one-line-per-entry format.
+  }
+
+  return parseProfileLines(value).map((item, index) =>
+    normalizeExperienceEntry({
+      id: `legacy-experience-${index}`,
+      title: item,
+      description: item,
+    }),
+  );
+}
+
+function serializeExperienceEntries(entries: ExperienceEntry[]) {
+  return JSON.stringify(entries.map((entry) => normalizeExperienceEntry(entry)));
 }
 
 function formatFileSize(size: number) {
@@ -557,6 +625,9 @@ export default function HomePage() {
   const [profile, setProfile] = useState<CandidateProfile>(defaultCandidateProfile);
   const [profileDraft, setProfileDraft] = useState<CandidateProfile>(defaultCandidateProfile);
   const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
+  const [isExperienceDialogOpen, setIsExperienceDialogOpen] = useState(false);
+  const [isExperienceEditMode, setIsExperienceEditMode] = useState(false);
+  const [experienceDraft, setExperienceDraft] = useState<ExperienceEntry>(defaultExperienceDraft);
   const [profileSaveStatus, setProfileSaveStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [profileSaveMessage, setProfileSaveMessage] = useState("");
 
@@ -790,6 +861,14 @@ export default function HomePage() {
     setIsProfileDialogOpen(true);
   }
 
+  function openExperienceEditor(experience?: ExperienceEntry) {
+    setExperienceDraft(experience ? normalizeExperienceEntry(experience) : { ...defaultExperienceDraft, id: createClientId("experience") });
+    setIsExperienceEditMode(Boolean(experience));
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+    setIsExperienceDialogOpen(true);
+  }
+
   function updateProfileDraft<Field extends keyof CandidateProfile>(
     field: Field,
     value: CandidateProfile[Field],
@@ -825,6 +904,86 @@ export default function HomePage() {
     } catch (error) {
       setProfileSaveStatus("error");
       setProfileSaveMessage(error instanceof Error ? error.message : "Profile save failed");
+    }
+  }
+
+  async function saveExperience() {
+    const normalizedExperience = normalizeExperienceEntry(experienceDraft);
+
+    if (!normalizedExperience.title || !normalizedExperience.company) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage("Enter role title and company");
+      return;
+    }
+
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    const experienceEntries = parseExperienceEntries(profile.experience);
+    const existingExperience = experienceEntries.some((entry) => entry.id === normalizedExperience.id);
+    const nextExperienceEntries = existingExperience
+      ? experienceEntries.map((entry) => (entry.id === normalizedExperience.id ? normalizedExperience : entry))
+      : [...experienceEntries, normalizedExperience];
+    const nextProfile = normalizeCandidateProfile({
+      ...profile,
+      experience: serializeExperienceEntries(nextExperienceEntries),
+    });
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await response.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedProfile.detail ?? "Experience save failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+      setIsExperienceDialogOpen(false);
+    } catch (error) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(error instanceof Error ? error.message : "Experience save failed");
+    }
+  }
+
+  async function deleteExperience(experienceId: string) {
+    const nextExperienceEntries = parseExperienceEntries(profile.experience).filter((entry) => entry.id !== experienceId);
+    const nextProfile = normalizeCandidateProfile({
+      ...profile,
+      experience: serializeExperienceEntries(nextExperienceEntries),
+    });
+
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await response.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedProfile.detail ?? "Experience delete failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+    } catch (error) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(error instanceof Error ? error.message : "Experience delete failed");
+      window.alert(error instanceof Error ? error.message : "Experience delete failed");
     }
   }
 
@@ -996,7 +1155,14 @@ export default function HomePage() {
         {activeView === "Dashboard" ? (
           <DashboardView onOpenJobs={() => changeView("Jobs")} />
         ) : activeView === "Profile" ? (
-          <ProfileView profile={profile} onEditProfile={openProfileEditor} onSaveResume={saveResumeFile} />
+          <ProfileView
+            profile={profile}
+            onEditProfile={openProfileEditor}
+            onAddExperience={() => openExperienceEditor()}
+            onEditExperience={openExperienceEditor}
+            onDeleteExperience={deleteExperience}
+            onSaveResume={saveResumeFile}
+          />
         ) : (
         <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
         <header className="grid shrink-0 gap-3 xl:grid-cols-[112px_minmax(260px,520px)_1fr] 2xl:grid-cols-[140px_minmax(280px,560px)_1fr] xl:items-center">
@@ -1528,6 +1694,21 @@ export default function HomePage() {
           onSave={saveProfile}
         />
       )}
+      {isExperienceDialogOpen && (
+        <ExperienceEditorDialog
+          experience={experienceDraft}
+          isEditMode={isExperienceEditMode}
+          status={profileSaveStatus}
+          message={profileSaveMessage}
+          onChange={(field, value) => {
+            setExperienceDraft((current) => ({ ...current, [field]: value }));
+            setProfileSaveStatus("idle");
+            setProfileSaveMessage("");
+          }}
+          onClose={() => setIsExperienceDialogOpen(false)}
+          onSave={saveExperience}
+        />
+      )}
       </div>
     </main>
   );
@@ -1732,10 +1913,16 @@ function getProfileLinks(profile: CandidateProfile) {
 function ProfileView({
   profile,
   onEditProfile,
+  onAddExperience,
+  onEditExperience,
+  onDeleteExperience,
   onSaveResume,
 }: {
   profile: CandidateProfile;
   onEditProfile: () => void;
+  onAddExperience: () => void;
+  onEditExperience: (experience: ExperienceEntry) => void;
+  onDeleteExperience: (experienceId: string) => void;
   onSaveResume: (file: File) => void;
 }) {
   return (
@@ -1768,7 +1955,12 @@ function ProfileView({
       <div className="mt-4 grid shrink-0 gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] 2xl:gap-5">
         <div className="grid content-start gap-4 2xl:gap-5">
           <ResumePanel profile={profile} onSaveResume={onSaveResume} />
-          <ExperiencePanel profile={profile} onEditProfile={onEditProfile} />
+          <ExperiencePanel
+            profile={profile}
+            onAddExperience={onAddExperience}
+            onEditExperience={onEditExperience}
+            onDeleteExperience={onDeleteExperience}
+          />
           <SkillsPanel profile={profile} onEditProfile={onEditProfile} />
           <EducationPanel profile={profile} onEditProfile={onEditProfile} />
           <DocumentsPanel onEditProfile={onEditProfile} />
@@ -1813,8 +2005,15 @@ function ProfileHero({ profile, onEditProfile }: { profile: CandidateProfile; on
           <p className="mt-2 text-base font-semibold text-[#d8dee8] 2xl:text-lg">
             {displayProfileValue(profile.current_role, "Add your current role")}
           </p>
-          <p className="mt-1 text-sm font-semibold text-muted 2xl:text-base">
-            Target role: <span className="text-accent">{displayProfileValue(profile.desired_role, "Add the roles you want")}</span>
+          <p className="mt-1 flex flex-wrap items-center gap-1.5 text-sm font-semibold text-muted 2xl:text-base">
+            <span>Target role:</span>
+            <button
+              type="button"
+              className="rounded-sm text-left font-bold text-accent transition hover:text-[#ff7a1a] focus:outline-none focus:ring-2 focus:ring-accent/45"
+              onClick={onEditProfile}
+            >
+              {displayProfileValue(profile.desired_role, "Add the roles you want")}
+            </button>
           </p>
           <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-[13px] font-medium text-muted 2xl:text-sm">
             <span className="inline-flex items-center gap-1.5"><MapPin className="h-4 w-4" /> {displayProfileValue(profile.location, "Add location")}</span>
@@ -1971,25 +2170,70 @@ function ResumePanel({ profile, onSaveResume }: { profile: CandidateProfile; onS
   );
 }
 
-function ExperiencePanel({ profile, onEditProfile }: { profile: CandidateProfile; onEditProfile: () => void }) {
-  const experienceItems = parseProfileLines(profile.experience);
+function ExperiencePanel({
+  profile,
+  onAddExperience,
+  onEditExperience,
+  onDeleteExperience,
+}: {
+  profile: CandidateProfile;
+  onAddExperience: () => void;
+  onEditExperience: (experience: ExperienceEntry) => void;
+  onDeleteExperience: (experienceId: string) => void;
+}) {
+  const experienceItems = parseExperienceEntries(profile.experience);
 
   return (
     <section className="panel p-4 2xl:p-5">
-      <ProfileSectionHeader title="Experience" action="+ Add Experience" onAction={onEditProfile} />
+      <ProfileSectionHeader title="Experience" action="+ Add Experience" onAction={onAddExperience} />
       {experienceItems.length > 0 ? (
-        <div className="mt-4 space-y-3">
+        <div className="mt-4 space-y-4">
           {experienceItems.map((item) => (
-            <ProfileTextItem key={item} icon={BriefcaseBusiness} text={item} />
+            <article key={item.id} className="grid grid-cols-[40px_minmax(0,1fr)_auto] gap-3 rounded-md border border-border bg-white/[0.025] p-3">
+              <span className="grid h-10 w-10 place-items-center rounded-md bg-white/[0.06] text-[#d8dee8]">
+                <BriefcaseBusiness className="h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-white 2xl:text-base">{item.title}</h3>
+                <p className="mt-0.5 text-[13px] font-semibold text-[#d8dee8] 2xl:text-sm">{item.company}</p>
+                <p className="mt-1 text-xs text-muted 2xl:text-[13px]">
+                  {[item.employment_type, item.location].filter(Boolean).join(" • ")}
+                </p>
+                <p className="mt-1 text-xs text-muted 2xl:text-[13px]">
+                  {item.start_date || "Start date"} - {item.is_current ? "Present" : item.end_date || "End date"}
+                </p>
+                {item.description && (
+                  <p className="mt-2 whitespace-pre-line text-[13px] leading-5 text-muted 2xl:text-sm">{item.description}</p>
+                )}
+              </div>
+              <div className="flex shrink-0 gap-1">
+                <button
+                  type="button"
+                  aria-label="Edit experience"
+                  onClick={() => onEditExperience(item)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+                >
+                  <Edit3 className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Delete experience"
+                  onClick={() => onDeleteExperience(item.id)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted transition hover:bg-[#ff6b6b]/12 hover:text-[#ff7a7a]"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            </article>
           ))}
         </div>
       ) : (
         <EmptyProfileState
           className="mt-4"
           title="No experience yet"
-          description="Add one role or achievement per line. Keep each line specific and outcome-focused."
+          description="Add work, internship, freelance, or project experience in a structured format."
           action="Add experience"
-          onAction={onEditProfile}
+          onAction={onAddExperience}
         />
       )}
     </section>
@@ -2075,7 +2319,7 @@ function ActivityPanel({ profile, onEditProfile }: { profile: CandidateProfile; 
         </Button>
       </div>
       <div className="mt-4 grid grid-cols-3 gap-2">
-        <MiniMetric icon={FileText} value={parseProfileLines(profile.experience).length.toString()} label="Experience" color="blue" />
+        <MiniMetric icon={FileText} value={parseExperienceEntries(profile.experience).length.toString()} label="Experience" color="blue" />
         <MiniMetric icon={Star} value={parseProfileLines(profile.skills).length.toString()} label="Skills" color="orange" />
         <MiniMetric icon={Globe} value={getProfileLinks(profile).filter((link) => hasProfileValue(link.value)).length.toString()} label="Links" color="green" />
       </div>
@@ -2256,6 +2500,175 @@ function AiProfileGroup({ title, items, icon: Icon, iconClassName }: { title: st
   );
 }
 
+function ExperienceEditorDialog({
+  experience,
+  isEditMode,
+  status,
+  message,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  experience: ExperienceEntry;
+  isEditMode: boolean;
+  status: "idle" | "loading" | "ready" | "error";
+  message: string;
+  onChange: <Field extends keyof ExperienceEntry>(
+    field: Field,
+    value: ExperienceEntry[Field],
+  ) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+      <div className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[760px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] sm:p-5">
+        <div className="flex shrink-0 items-start justify-between gap-4">
+          <div>
+            <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[24px]">
+              {isEditMode ? "Edit Experience" : "Add Experience"}
+            </h2>
+            <p className="mt-1 text-sm font-medium text-muted">
+              {isEditMode ? "Update this role, internship, freelance project, or relevant IT project." : "Add one role, internship, freelance project, or relevant IT project."}
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close experience editor"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto rounded-md border border-border p-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Role title</span>
+              <input
+                value={experience.title}
+                onChange={(event) => onChange("title", event.target.value)}
+                placeholder="e.g. Junior Python Developer"
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Company / project</span>
+              <input
+                value={experience.company}
+                onChange={(event) => onChange("company", event.target.value)}
+                placeholder="Company name or project name"
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Employment type</span>
+              <select
+                value={experience.employment_type}
+                onChange={(event) => onChange("employment_type", event.target.value)}
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+              >
+                <option>Full-time</option>
+                <option>Part-time</option>
+                <option>Internship</option>
+                <option>Freelance</option>
+                <option>Contract</option>
+                <option>Project</option>
+              </select>
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Location</span>
+              <input
+                value={experience.location}
+                onChange={(event) => onChange("location", event.target.value)}
+                placeholder="Remote, Zurich, Switzerland..."
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Start date</span>
+              <input
+                type="month"
+                value={experience.start_date}
+                onChange={(event) => onChange("start_date", event.target.value)}
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">End date</span>
+              <input
+                type="month"
+                value={experience.end_date}
+                disabled={experience.is_current}
+                onChange={(event) => onChange("end_date", event.target.value)}
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none disabled:opacity-45 focus:border-accent/70"
+              />
+            </label>
+
+            <label className="flex items-start gap-3 rounded-md border border-border bg-white/[0.025] p-3 md:col-span-2">
+              <input
+                type="checkbox"
+                checked={experience.is_current}
+                onChange={(event) => {
+                  onChange("is_current", event.target.checked);
+                  if (event.target.checked) {
+                    onChange("end_date", "");
+                  }
+                }}
+                className="mt-1 h-4 w-4 accent-accent"
+              />
+              <span>
+                <span className="block text-sm font-bold text-white">I currently work here</span>
+                <span className="mt-1 block text-xs text-muted">End date will be shown as Present.</span>
+              </span>
+            </label>
+
+            <label className="grid gap-2 md:col-span-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Description</span>
+              <textarea
+                value={experience.description}
+                onChange={(event) => onChange("description", event.target.value)}
+                placeholder="What did you build, support, automate, or improve?"
+                rows={5}
+                className="min-h-[128px] resize-none rounded-md border border-border bg-[#0d131a] px-3 py-2.5 text-sm font-semibold leading-5 text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
+            {message || "Role title and company are required"}
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              className="h-10 rounded-md border border-border bg-transparent px-6 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+              onClick={onClose}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12]"
+              disabled={status === "loading"}
+              onClick={onSave}
+            >
+              <Save className="h-4 w-4" />
+              {status === "loading" ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProfileEditorDialog({
   profile,
   status,
@@ -2290,12 +2703,6 @@ function ProfileEditorDialog({
     { field: "github", label: "GitHub", placeholder: "github.com/username" },
     { field: "portfolio", label: "Portfolio", placeholder: "portfolio.com" },
     { field: "personal_site", label: "Personal site", placeholder: "your-site.com" },
-    { field: "experience", label: "Experience", placeholder: "One role, project, or achievement per line", type: "textarea" },
-    { field: "skills", label: "Skills", placeholder: "One skill per line", type: "textarea" },
-    { field: "education", label: "Education & certifications", placeholder: "One degree, course, or certificate per line", type: "textarea" },
-    { field: "job_preferences", label: "Job preferences", placeholder: "Desired roles, industries, countries, salary, visa, availability...", type: "textarea" },
-    { field: "dealbreakers", label: "Dealbreakers", placeholder: "One hard limit per line", type: "textarea" },
-    { field: "additional_notes", label: "Additional notes", placeholder: "Anything else the assistant should know", type: "textarea" },
   ];
 
   function handleAvatarFile(file: File | undefined) {
