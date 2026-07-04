@@ -28,13 +28,15 @@ legacy_default_profile = {
 }
 
 
-def is_legacy_default_profile(data: dict[str, object]) -> bool:
-    return all(data.get(field) == value for field, value in legacy_default_profile.items())
-
-
 def normalize_profile_record(profile: ProfileRecord, db: Session) -> ProfilePayload:
-    if is_legacy_default_profile(profile.data):
-        profile.data = default_profile.model_dump()
+    normalized_data = dict(profile.data)
+
+    for field, legacy_value in legacy_default_profile.items():
+        if normalized_data.get(field) == legacy_value:
+            normalized_data[field] = ""
+
+    if normalized_data != profile.data:
+        profile.data = normalized_data
         db.commit()
         db.refresh(profile)
 

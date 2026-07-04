@@ -129,6 +129,10 @@ type CandidateProfile = {
   job_preferences: string;
   dealbreakers: string;
   additional_notes: string;
+  resume_file_name: string;
+  resume_file_size: string;
+  resume_updated_at: string;
+  resume_data_url: string;
 };
 
 const jobs: Job[] = [
@@ -271,6 +275,24 @@ const defaultCandidateProfile: CandidateProfile = {
   job_preferences: "",
   dealbreakers: "",
   additional_notes: "",
+  resume_file_name: "",
+  resume_file_size: "",
+  resume_updated_at: "",
+  resume_data_url: "",
+};
+
+const legacyCandidateProfileValues: Partial<CandidateProfile> = {
+  name: "Alex Johnson",
+  current_role: "Senior Product Designer",
+  desired_role: "Design Manager",
+  location: "San Francisco, CA, USA",
+  work_format: "Remote, open to hybrid",
+  headline:
+    "Product designer with 7+ years of experience crafting intuitive B2B and B2C digital experiences. Combines user empathy with data-driven design to ship impactful products.",
+  linkedin: "linkedin.com/in/alexjohnson",
+  github: "github.com/alexjohnson",
+  portfolio: "alexjohnson.design",
+  personal_site: "alexjohnson.com",
 };
 
 function normalizeCandidateProfile(profile: Partial<CandidateProfile>): CandidateProfile {
@@ -278,6 +300,12 @@ function normalizeCandidateProfile(profile: Partial<CandidateProfile>): Candidat
 
   if (!normalizedProfile.avatar_url || normalizedProfile.avatar_url === "/avatars/pug.svg") {
     normalizedProfile.avatar_url = defaultCandidateProfile.avatar_url;
+  }
+
+  for (const [field, legacyValue] of Object.entries(legacyCandidateProfileValues) as Array<[keyof CandidateProfile, string]>) {
+    if (normalizedProfile[field] === legacyValue) {
+      normalizedProfile[field] = "";
+    }
   }
 
   return normalizedProfile;
@@ -298,6 +326,25 @@ function parseProfileLines(value: string) {
     .filter(Boolean);
 }
 
+function formatFileSize(size: number) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatProfileDate(value: string) {
+  if (!value) return "";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 function getProfileCompletion(profile: CandidateProfile) {
   const fields: Array<keyof CandidateProfile> = [
     "name",
@@ -316,6 +363,7 @@ function getProfileCompletion(profile: CandidateProfile) {
     "job_preferences",
     "dealbreakers",
     "additional_notes",
+    "resume_file_name",
   ];
   const completedFields = fields.filter((field) => hasProfileValue(profile[field]));
 
@@ -780,6 +828,62 @@ export default function HomePage() {
     }
   }
 
+  async function saveResumeFile(file: File) {
+    const allowedTypes = new Set([
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ]);
+    const allowedExtensions = [".pdf", ".doc", ".docx"];
+    const hasAllowedExtension = allowedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension));
+
+    if (!allowedTypes.has(file.type) && !hasAllowedExtension) {
+      window.alert("Upload a PDF, DOC, or DOCX resume.");
+      return;
+    }
+
+    if (file.size > 5_000_000) {
+      window.alert("Resume file must be under 5MB.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async () => {
+      if (typeof reader.result !== "string") return;
+
+      const nextProfile = normalizeCandidateProfile({
+        ...profile,
+        resume_file_name: file.name,
+        resume_file_size: formatFileSize(file.size),
+        resume_updated_at: new Date().toISOString(),
+        resume_data_url: reader.result,
+      });
+
+      setProfile(nextProfile);
+      setProfileDraft(nextProfile);
+
+      try {
+        const response = await fetch(`${apiBaseUrl}/profile`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(nextProfile),
+        });
+        const savedProfile = (await response.json()) as Partial<CandidateProfile> & { detail?: string };
+
+        if (!response.ok) {
+          throw new Error(savedProfile.detail ?? "Resume save failed");
+        }
+
+        const normalizedProfile = normalizeCandidateProfile(savedProfile);
+        setProfile(normalizedProfile);
+        setProfileDraft(normalizedProfile);
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : "Resume save failed");
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+
   async function persistImportedJobs(importedJobs: Job[]) {
     window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(importedJobs));
 
@@ -892,7 +996,7 @@ export default function HomePage() {
         {activeView === "Dashboard" ? (
           <DashboardView onOpenJobs={() => changeView("Jobs")} />
         ) : activeView === "Profile" ? (
-          <ProfileView profile={profile} onEditProfile={openProfileEditor} />
+          <ProfileView profile={profile} onEditProfile={openProfileEditor} onSaveResume={saveResumeFile} />
         ) : (
         <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
         <header className="grid shrink-0 gap-3 xl:grid-cols-[112px_minmax(260px,520px)_1fr] 2xl:grid-cols-[140px_minmax(280px,560px)_1fr] xl:items-center">
@@ -1628,9 +1732,11 @@ function getProfileLinks(profile: CandidateProfile) {
 function ProfileView({
   profile,
   onEditProfile,
+  onSaveResume,
 }: {
   profile: CandidateProfile;
   onEditProfile: () => void;
+  onSaveResume: (file: File) => void;
 }) {
   return (
     <section className="job-scroll flex h-screen min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
@@ -1661,7 +1767,7 @@ function ProfileView({
 
       <div className="mt-4 grid shrink-0 gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] 2xl:gap-5">
         <div className="grid content-start gap-4 2xl:gap-5">
-          <ResumePanel onEditProfile={onEditProfile} />
+          <ResumePanel profile={profile} onSaveResume={onSaveResume} />
           <ExperiencePanel profile={profile} onEditProfile={onEditProfile} />
           <SkillsPanel profile={profile} onEditProfile={onEditProfile} />
           <EducationPanel profile={profile} onEditProfile={onEditProfile} />
@@ -1792,23 +1898,75 @@ function EmptyProfileState({
   );
 }
 
-function ResumePanel({ onEditProfile }: { onEditProfile: () => void }) {
+function ResumeUploadButton({
+  label,
+  onSaveResume,
+  className,
+}: {
+  label: string;
+  onSaveResume: (file: File) => void;
+  className?: string;
+}) {
+  return (
+    <label className={cn("inline-flex cursor-pointer items-center justify-center gap-2 rounded-md border border-border text-[#e6ebf3] transition hover:bg-white/[0.06]", className)}>
+      <Upload className="h-4 w-4" />
+      {label}
+      <input
+        type="file"
+        accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          if (file) {
+            onSaveResume(file);
+          }
+          event.currentTarget.value = "";
+        }}
+      />
+    </label>
+  );
+}
+
+function ResumePanel({ profile, onSaveResume }: { profile: CandidateProfile; onSaveResume: (file: File) => void }) {
+  const hasResume = hasProfileValue(profile.resume_file_name);
+
   return (
     <section className="panel p-4 2xl:p-5">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center gap-3">
         <h2 className="text-base font-bold 2xl:text-lg">Resume / CV</h2>
-        <Button variant="ghost" size="sm" className="h-8 border border-border px-3 text-xs text-[#e6ebf3]" onClick={onEditProfile}>
-          <Upload className="h-4 w-4" />
-          Add
-        </Button>
       </div>
-      <EmptyProfileState
-        className="mt-4"
-        title="No resume uploaded"
-        description="Resume upload is not connected yet. For now, add your summary, experience, and skills in the profile editor."
-        action="Open editor"
-        onAction={onEditProfile}
-      />
+      {hasResume ? (
+        <div className="mt-4 grid gap-3 rounded-md border border-border bg-white/[0.025] p-3 sm:grid-cols-[48px_minmax(0,1fr)_auto] sm:items-center">
+          <div className="grid h-12 w-12 place-items-center rounded-md bg-[#ef4444] text-xs font-black text-white">
+            {profile.resume_file_name.toLowerCase().endsWith(".pdf") ? "PDF" : "DOC"}
+          </div>
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="truncate text-sm font-bold text-white">{profile.resume_file_name}</p>
+              <span className="rounded bg-success/18 px-2 py-0.5 text-[11px] font-bold text-success">Attached</span>
+            </div>
+            <p className="mt-1 text-xs font-medium text-muted">
+              {profile.resume_updated_at ? `Updated ${formatProfileDate(profile.resume_updated_at)}` : "Attached"}
+              {profile.resume_file_size ? ` • ${profile.resume_file_size}` : ""}
+            </p>
+          </div>
+          <ResumeUploadButton
+            label="Replace"
+            onSaveResume={onSaveResume}
+            className="h-9 px-3 text-xs font-semibold"
+          />
+        </div>
+      ) : (
+        <div className="mt-4 rounded-md border border-dashed border-white/[0.16] bg-white/[0.025] p-3">
+          <p className="text-sm font-bold text-white">No resume uploaded</p>
+          <p className="mt-1 text-xs leading-5 text-muted 2xl:text-[13px]">Attach a PDF, DOC, or DOCX resume. Maximum file size is 5MB.</p>
+          <ResumeUploadButton
+            label="Attach resume"
+            onSaveResume={onSaveResume}
+            className="mt-3 h-8 px-3 text-xs font-semibold"
+          />
+        </div>
+      )}
     </section>
   );
 }

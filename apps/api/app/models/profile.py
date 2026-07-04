@@ -32,3 +32,7 @@ class ProfilePayload(BaseModel):
     job_preferences: str = Field(default="", max_length=2000)
     dealbreakers: str = Field(default="", max_length=2000)
     additional_notes: str = Field(default="", max_length=2000)
+    resume_file_name: str = Field(default="", max_length=240)
+    resume_file_size: str = Field(default="", max_length=40)
+    resume_updated_at: str = Field(default="", max_length=80)
+    resume_data_url: str = Field(default="", max_length=10_000_000)
