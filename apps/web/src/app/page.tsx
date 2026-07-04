@@ -15,7 +15,6 @@ import {
   CircleDot,
   Command,
   Edit3,
-  Eye,
   ExternalLink,
   FileText,
   Github,
@@ -579,6 +578,10 @@ function hasProfileValue(value: string | undefined) {
 
 function displayProfileValue(value: string, fallback: string) {
   return hasProfileValue(value) ? value : fallback;
+}
+
+function displayProfileFirstName(value: string, fallback: string) {
+  return hasProfileValue(value) ? value.trim().split(/\s+/)[0] : fallback;
 }
 
 function parseProfileLines(value: string) {
@@ -2377,22 +2380,6 @@ function ProfileView({
           <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">My Profile</h1>
           <p className="mt-1 text-[13px] text-muted 2xl:mt-1.5 2xl:text-base">Your professional profile and job preferences</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Button
-            className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#e63e00] px-4 text-[13px] text-white 2xl:h-11 2xl:text-sm"
-            onClick={onEditProfile}
-          >
-            <Edit3 className="h-4 w-4" />
-            Edit Profile
-          </Button>
-          <Button variant="ghost" className="h-10 rounded-md border border-border bg-white/[0.03] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-11 2xl:text-sm">
-            <Eye className="h-4 w-4" />
-            Preview
-          </Button>
-          <Button variant="ghost" size="icon" className="h-10 w-10 rounded-md border border-border bg-white/[0.03] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-11 2xl:w-11">
-            <MoreHorizontal className="h-5 w-5" />
-          </Button>
-        </div>
       </header>
 
       <ProfileHero profile={profile} onEditProfile={onEditProfile} />
@@ -2431,7 +2418,15 @@ function ProfileHero({ profile, onEditProfile }: { profile: CandidateProfile; on
 
   return (
     <section className="panel grid shrink-0 overflow-hidden md:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_410px]">
-      <div className="flex flex-col gap-4 p-4 sm:flex-row sm:items-start sm:p-5 2xl:gap-5 2xl:p-6">
+      <div className="relative flex flex-col gap-4 p-4 sm:flex-row sm:items-start sm:p-5 2xl:gap-5 2xl:p-6">
+        <Button
+          variant="ghost"
+          className="absolute right-4 top-4 z-10 h-9 rounded-md border border-border bg-white/[0.03] px-3 text-xs font-bold text-[#e6ebf3] hover:bg-white/[0.075] sm:right-5 sm:top-5 2xl:h-10 2xl:px-4 2xl:text-[13px]"
+          onClick={onEditProfile}
+        >
+          <Edit3 className="h-4 w-4" />
+          Edit Profile
+        </Button>
         <div className="relative h-24 w-24 shrink-0 overflow-hidden rounded-full bg-white/[0.06] ring-1 ring-white/10 2xl:h-28 2xl:w-28">
           <img
             src={profile.avatar_url || defaultCandidateProfile.avatar_url}
@@ -3514,25 +3509,25 @@ function AppSidebar({
           href="#profile"
           onClick={() => onChangeView("Profile")}
           className={cn(
-            "app-sidebar-profile mb-2 flex items-center gap-2 rounded-md px-1.5 py-1.5 text-left transition hover:bg-white/[0.055] 2xl:mb-3 2xl:gap-2.5",
+            "app-sidebar-profile mb-2 flex items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left transition hover:bg-white/[0.055] 2xl:mb-3 2xl:gap-2",
             activeView === "Profile" && "border border-white/[0.12] bg-white/10 shadow-[inset_4px_0_0_#ff5a00]",
           )}
         >
           <img
             src={profile.avatar_url || defaultCandidateProfile.avatar_url}
             alt=""
-            className="h-8 w-8 shrink-0 rounded-full object-cover 2xl:h-9 2xl:w-9"
+            className="h-8 w-8 shrink-0 rounded-full object-cover 2xl:h-8 2xl:w-8"
             aria-hidden="true"
           />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-xs font-semibold leading-tight text-white 2xl:text-sm">
-              {displayProfileValue(profile.name, "Set up profile")}
+            <p className="truncate text-[11px] font-semibold leading-tight text-white 2xl:text-xs">
+              {displayProfileFirstName(profile.name, "Set up profile")}
             </p>
-            <p className="truncate text-[11px] leading-tight text-muted 2xl:text-xs">
+            <p className="truncate text-[10px] leading-tight text-muted 2xl:text-[11px]">
               {displayProfileValue(profile.current_role, "Add your role")}
             </p>
           </div>
-          <ChevronRight className="h-4 w-4 shrink-0 text-muted 2xl:h-[18px] 2xl:w-[18px]" />
+          <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted 2xl:h-4 2xl:w-4" />
         </a>
         <a
           href="#"
