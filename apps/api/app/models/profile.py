@@ -29,7 +29,7 @@ class ProfilePayload(BaseModel):
     experience: str = Field(default="", max_length=12000)
     skills: str = Field(default="", max_length=2000)
     education: str = Field(default="", max_length=12000)
-    job_preferences: str = Field(default="", max_length=2000)
+    job_preferences: str = Field(default="", max_length=12000)
     dealbreakers: str = Field(default="", max_length=2000)
     additional_notes: str = Field(default="", max_length=2000)
     documents: str = Field(default="", max_length=20_000_000)

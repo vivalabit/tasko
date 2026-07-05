@@ -173,6 +173,25 @@ type DocumentEntry = {
   data_url: string;
 };
 
+type JobPreferences = {
+  desired_roles: string[];
+  seniority: string[];
+  locations: string[];
+  work_formats: string[];
+  employment_types: string[];
+  industries: string[];
+  salary_min: string;
+  salary_currency: string;
+  work_authorization: string;
+  languages: string[];
+  company_sizes: string[];
+  priorities: string[];
+  notes: string;
+};
+
+type PreferenceListField = "desired_roles" | "locations" | "industries" | "languages";
+type PreferenceInputs = Record<PreferenceListField, string>;
+
 type ResumeExperienceImportResponse = {
   experience?: Array<Partial<ExperienceEntry>>;
   message?: string;
@@ -378,6 +397,45 @@ const documentCategories = [
   "Transcript",
   "Other",
 ];
+
+const defaultJobPreferences: JobPreferences = {
+  desired_roles: [],
+  seniority: [],
+  locations: [],
+  work_formats: [],
+  employment_types: [],
+  industries: [],
+  salary_min: "",
+  salary_currency: "CHF",
+  work_authorization: "",
+  languages: [],
+  company_sizes: [],
+  priorities: [],
+  notes: "",
+};
+
+const defaultPreferenceInputs: PreferenceInputs = {
+  desired_roles: "",
+  locations: "",
+  industries: "",
+  languages: "",
+};
+
+const preferenceOptions = {
+  seniority: ["Intern", "Entry-level", "Junior", "Mid-level", "Senior"],
+  work_formats: ["Remote", "Hybrid", "On-site", "Relocation"],
+  employment_types: ["Full-time", "Part-time", "Internship", "Contract", "Freelance"],
+  company_sizes: ["Startup", "Scale-up", "Mid-size", "Enterprise"],
+  priorities: ["Salary", "Learning", "Remote", "Relocation", "Tech stack", "Stability", "Fast hiring"],
+  work_authorization: ["Authorized to work", "Needs sponsorship", "EU/EFTA eligible", "Swiss permit", "Student permit", "Not sure"],
+};
+
+const preferenceListLabels: Record<PreferenceListField, { label: string; placeholder: string }> = {
+  desired_roles: { label: "Desired roles", placeholder: "Python Developer, AI Engineer..." },
+  locations: { label: "Locations", placeholder: "Zurich, Switzerland, Remote Europe..." },
+  industries: { label: "Industries", placeholder: "AI, SaaS, FinTech..." },
+  languages: { label: "Languages", placeholder: "English C1, German A2..." },
+};
 
 const suggestedSkills = [
   "Agile Development",
@@ -836,6 +894,102 @@ function serializeDocumentEntries(entries: DocumentEntry[]) {
   return JSON.stringify(entries.map((entry) => normalizeDocumentEntry(entry)));
 }
 
+function normalizePreferenceList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+
+  return Array.from(
+    new Map(
+      value
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .map((item) => [item.toLowerCase(), item]),
+    ).values(),
+  );
+}
+
+function normalizeJobPreferences(value: Partial<JobPreferences>): JobPreferences {
+  return {
+    ...defaultJobPreferences,
+    ...value,
+    desired_roles: normalizePreferenceList(value.desired_roles),
+    seniority: normalizePreferenceList(value.seniority),
+    locations: normalizePreferenceList(value.locations),
+    work_formats: normalizePreferenceList(value.work_formats),
+    employment_types: normalizePreferenceList(value.employment_types),
+    industries: normalizePreferenceList(value.industries),
+    salary_min: value.salary_min?.trim() ?? "",
+    salary_currency: value.salary_currency?.trim() || "CHF",
+    work_authorization: value.work_authorization?.trim() ?? "",
+    languages: normalizePreferenceList(value.languages),
+    company_sizes: normalizePreferenceList(value.company_sizes),
+    priorities: normalizePreferenceList(value.priorities),
+    notes: value.notes?.trim() ?? "",
+  };
+}
+
+function parseJobPreferences(value: string): JobPreferences {
+  if (!value.trim()) return defaultJobPreferences;
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return normalizeJobPreferences(parsed as Partial<JobPreferences>);
+    }
+  } catch {
+    // Fall back to the previous one-line-per-preference format.
+  }
+
+  return normalizeJobPreferences({ notes: parseProfileLines(value).join("\n") });
+}
+
+function serializeJobPreferences(preferences: JobPreferences) {
+  const normalizedPreferences = normalizeJobPreferences(preferences);
+  const hasValues =
+    normalizedPreferences.desired_roles.length > 0 ||
+    normalizedPreferences.seniority.length > 0 ||
+    normalizedPreferences.locations.length > 0 ||
+    normalizedPreferences.work_formats.length > 0 ||
+    normalizedPreferences.employment_types.length > 0 ||
+    normalizedPreferences.industries.length > 0 ||
+    hasProfileValue(normalizedPreferences.salary_min) ||
+    hasProfileValue(normalizedPreferences.work_authorization) ||
+    normalizedPreferences.languages.length > 0 ||
+    normalizedPreferences.company_sizes.length > 0 ||
+    normalizedPreferences.priorities.length > 0 ||
+    hasProfileValue(normalizedPreferences.notes);
+
+  return hasValues ? JSON.stringify(normalizedPreferences) : "";
+}
+
+function formatPreferenceSummary(preferences: JobPreferences) {
+  const items: Array<{ label: string; values: string[] }> = [
+    { label: "Roles", values: preferences.desired_roles },
+    { label: "Seniority", values: preferences.seniority },
+    { label: "Locations", values: preferences.locations },
+    { label: "Work format", values: preferences.work_formats },
+    { label: "Employment", values: preferences.employment_types },
+    { label: "Industries", values: preferences.industries },
+    { label: "Languages", values: preferences.languages },
+    { label: "Company size", values: preferences.company_sizes },
+    { label: "Priorities", values: preferences.priorities },
+  ].filter((item) => item.values.length > 0);
+
+  if (hasProfileValue(preferences.salary_min)) {
+    items.splice(6, 0, { label: "Salary floor", values: [`${preferences.salary_currency} ${preferences.salary_min}`] });
+  }
+
+  if (hasProfileValue(preferences.work_authorization)) {
+    items.splice(7, 0, { label: "Authorization", values: [preferences.work_authorization] });
+  }
+
+  if (hasProfileValue(preferences.notes)) {
+    items.push({ label: "Notes", values: [preferences.notes] });
+  }
+
+  return items;
+}
+
 function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
@@ -1081,6 +1235,9 @@ export default function HomePage() {
   const [isDocumentDialogOpen, setIsDocumentDialogOpen] = useState(false);
   const [isDocumentEditMode, setIsDocumentEditMode] = useState(false);
   const [documentDraft, setDocumentDraft] = useState<DocumentEntry>(defaultDocumentDraft);
+  const [isPreferencesDialogOpen, setIsPreferencesDialogOpen] = useState(false);
+  const [preferencesDraft, setPreferencesDraft] = useState<JobPreferences>(defaultJobPreferences);
+  const [preferenceInputs, setPreferenceInputs] = useState<PreferenceInputs>(defaultPreferenceInputs);
   const [isSkillsDialogOpen, setIsSkillsDialogOpen] = useState(false);
   const [skillsDraft, setSkillsDraft] = useState<string[]>([]);
   const [skillInput, setSkillInput] = useState("");
@@ -1341,6 +1498,14 @@ export default function HomePage() {
     setIsDocumentDialogOpen(true);
   }
 
+  function openPreferencesEditor() {
+    setPreferencesDraft(parseJobPreferences(profile.job_preferences));
+    setPreferenceInputs(defaultPreferenceInputs);
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+    setIsPreferencesDialogOpen(true);
+  }
+
   function openSkillsEditor() {
     setSkillsDraft(parseProfileLines(profile.skills));
     setSkillInput("");
@@ -1377,6 +1542,64 @@ export default function HomePage() {
     value: CandidateProfile[Field],
   ) {
     setProfileDraft((current) => ({ ...current, [field]: value }));
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+  }
+
+  function updatePreferencesDraft<Field extends keyof JobPreferences>(
+    field: Field,
+    value: JobPreferences[Field],
+  ) {
+    setPreferencesDraft((current) => normalizeJobPreferences({ ...current, [field]: value }));
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+  }
+
+  function updatePreferenceInput(field: PreferenceListField, value: string) {
+    setPreferenceInputs((current) => ({ ...current, [field]: value }));
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+  }
+
+  function addPreferenceListItem(field: PreferenceListField) {
+    const value = preferenceInputs[field].trim();
+    if (!value) return;
+
+    setPreferencesDraft((current) =>
+      normalizeJobPreferences({
+        ...current,
+        [field]: [...current[field], value],
+      }),
+    );
+    setPreferenceInputs((current) => ({ ...current, [field]: "" }));
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+  }
+
+  function removePreferenceListItem(field: PreferenceListField, value: string) {
+    setPreferencesDraft((current) =>
+      normalizeJobPreferences({
+        ...current,
+        [field]: current[field].filter((item) => item !== value),
+      }),
+    );
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+  }
+
+  function togglePreferenceOption<Field extends "seniority" | "work_formats" | "employment_types" | "company_sizes" | "priorities">(
+    field: Field,
+    value: string,
+  ) {
+    setPreferencesDraft((current) => {
+      const existingValues = current[field];
+      return normalizeJobPreferences({
+        ...current,
+        [field]: existingValues.includes(value)
+          ? existingValues.filter((item) => item !== value)
+          : [...existingValues, value],
+      });
+    });
     setProfileSaveStatus("idle");
     setProfileSaveMessage("");
   }
@@ -1551,6 +1774,39 @@ export default function HomePage() {
     } catch (error) {
       setProfileSaveStatus("error");
       setProfileSaveMessage(error instanceof Error ? error.message : "Document save failed");
+    }
+  }
+
+  async function savePreferences() {
+    const nextProfile = normalizeCandidateProfile({
+      ...profile,
+      job_preferences: serializeJobPreferences(preferencesDraft),
+    });
+
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await response.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedProfile.detail ?? "Preferences save failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+      setIsPreferencesDialogOpen(false);
+    } catch (error) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(error instanceof Error ? error.message : "Preferences save failed");
     }
   }
 
@@ -2089,6 +2345,7 @@ export default function HomePage() {
             onAddDocument={() => openDocumentEditor()}
             onEditDocument={openDocumentEditor}
             onDeleteDocument={deleteDocument}
+            onEditPreferences={openPreferencesEditor}
             onEditSkills={openSkillsEditor}
             onSaveResume={saveResumeFile}
           />
@@ -2669,6 +2926,21 @@ export default function HomePage() {
           onSave={saveDocument}
         />
       )}
+      {isPreferencesDialogOpen && (
+        <PreferencesEditorDialog
+          preferences={preferencesDraft}
+          inputs={preferenceInputs}
+          status={profileSaveStatus}
+          message={profileSaveMessage}
+          onChange={updatePreferencesDraft}
+          onInputChange={updatePreferenceInput}
+          onAddListItem={addPreferenceListItem}
+          onRemoveListItem={removePreferenceListItem}
+          onToggleOption={togglePreferenceOption}
+          onClose={() => setIsPreferencesDialogOpen(false)}
+          onSave={savePreferences}
+        />
+      )}
       {isSkillsDialogOpen && (
         <SkillsEditorDialog
           skills={skillsDraft}
@@ -2905,6 +3177,7 @@ function ProfileView({
   onAddDocument,
   onEditDocument,
   onDeleteDocument,
+  onEditPreferences,
   onEditSkills,
   onSaveResume,
 }: {
@@ -2925,6 +3198,7 @@ function ProfileView({
   onAddDocument: () => void;
   onEditDocument: (document: DocumentEntry) => void;
   onDeleteDocument: (documentId: string) => void;
+  onEditPreferences: () => void;
   onEditSkills: () => void;
   onSaveResume: (file: File) => void;
 }) {
@@ -2972,7 +3246,7 @@ function ProfileView({
         <aside className="grid content-start gap-4 2xl:gap-5">
           <ActivityPanel profile={profile} onEditProfile={onEditProfile} />
           <AiMatchProfilePanel profile={profile} onEditProfile={onEditProfile} />
-          <PreferencesPanel profile={profile} onEditProfile={onEditProfile} />
+          <PreferencesPanel profile={profile} onEditPreferences={onEditPreferences} />
           <DealbreakersPanel profile={profile} onEditProfile={onEditProfile} />
           <AdditionalNotesPanel profile={profile} onEditProfile={onEditProfile} />
         </aside>
@@ -3570,16 +3844,32 @@ function AiMatchProfilePanel({ profile, onEditProfile }: { profile: CandidatePro
   );
 }
 
-function PreferencesPanel({ profile, onEditProfile }: { profile: CandidateProfile; onEditProfile: () => void }) {
-  const preferences = parseProfileLines(profile.job_preferences);
+function PreferencesPanel({
+  profile,
+  onEditPreferences,
+}: {
+  profile: CandidateProfile;
+  onEditPreferences: () => void;
+}) {
+  const preferences = parseJobPreferences(profile.job_preferences);
+  const preferenceSummary = formatPreferenceSummary(preferences);
 
   return (
     <section className="panel p-4 2xl:p-5">
-      <ProfileSectionHeader title="Job Preferences" action="Edit Preferences" onAction={onEditProfile} />
-      {preferences.length > 0 ? (
+      <ProfileSectionHeader title="Job Preferences" action="Edit Preferences" onAction={onEditPreferences} />
+      {preferenceSummary.length > 0 ? (
         <div className="mt-4 space-y-3">
-          {preferences.map((preference) => (
-            <ProfileTextItem key={preference} icon={Target} text={preference} compact />
+          {preferenceSummary.map((group) => (
+            <div key={group.label} className="rounded-md border border-border bg-white/[0.025] p-3">
+              <p className="text-[11px] font-bold uppercase tracking-normal text-muted">{group.label}</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {group.values.map((value) => (
+                  <span key={value} className="inline-flex min-h-7 items-center rounded-md border border-border bg-white/[0.035] px-2.5 text-xs font-semibold text-[#d8dee8]">
+                    {value}
+                  </span>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       ) : (
@@ -3588,7 +3878,7 @@ function PreferencesPanel({ profile, onEditProfile }: { profile: CandidateProfil
           title="No preferences set"
           description="Add desired roles, industries, countries, salary range, visa needs, or work format."
           action="Add preferences"
-          onAction={onEditProfile}
+          onAction={onEditPreferences}
         />
       )}
     </section>
@@ -4330,6 +4620,291 @@ function DocumentEditorDialog({
             </Button>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function PreferencesEditorDialog({
+  preferences,
+  inputs,
+  status,
+  message,
+  onChange,
+  onInputChange,
+  onAddListItem,
+  onRemoveListItem,
+  onToggleOption,
+  onClose,
+  onSave,
+}: {
+  preferences: JobPreferences;
+  inputs: PreferenceInputs;
+  status: "idle" | "loading" | "ready" | "error";
+  message: string;
+  onChange: <Field extends keyof JobPreferences>(
+    field: Field,
+    value: JobPreferences[Field],
+  ) => void;
+  onInputChange: (field: PreferenceListField, value: string) => void;
+  onAddListItem: (field: PreferenceListField) => void;
+  onRemoveListItem: (field: PreferenceListField, value: string) => void;
+  onToggleOption: (
+    field: "seniority" | "work_formats" | "employment_types" | "company_sizes" | "priorities",
+    value: string,
+  ) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+      <div className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[880px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] sm:p-5">
+        <div className="flex shrink-0 items-start justify-between gap-4">
+          <div>
+            <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[24px]">Edit Job Preferences</h2>
+            <p className="mt-1 text-sm font-medium text-muted">Define the roles and conditions that should guide search, matching, and recommendations.</p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close preferences editor"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto rounded-md border border-border p-4">
+          <div className="grid gap-4 lg:grid-cols-2">
+            {(Object.keys(preferenceListLabels) as PreferenceListField[]).map((field) => (
+              <PreferenceListEditor
+                key={field}
+                field={field}
+                values={preferences[field]}
+                inputValue={inputs[field]}
+                onInputChange={onInputChange}
+                onAdd={onAddListItem}
+                onRemove={onRemoveListItem}
+              />
+            ))}
+
+            <PreferenceToggleGroup
+              title="Seniority"
+              field="seniority"
+              options={preferenceOptions.seniority}
+              selectedValues={preferences.seniority}
+              onToggle={onToggleOption}
+            />
+            <PreferenceToggleGroup
+              title="Work format"
+              field="work_formats"
+              options={preferenceOptions.work_formats}
+              selectedValues={preferences.work_formats}
+              onToggle={onToggleOption}
+            />
+            <PreferenceToggleGroup
+              title="Employment type"
+              field="employment_types"
+              options={preferenceOptions.employment_types}
+              selectedValues={preferences.employment_types}
+              onToggle={onToggleOption}
+            />
+            <PreferenceToggleGroup
+              title="Company size"
+              field="company_sizes"
+              options={preferenceOptions.company_sizes}
+              selectedValues={preferences.company_sizes}
+              onToggle={onToggleOption}
+            />
+            <PreferenceToggleGroup
+              title="Search priority"
+              field="priorities"
+              options={preferenceOptions.priorities}
+              selectedValues={preferences.priorities}
+              onToggle={onToggleOption}
+              className="lg:col-span-2"
+            />
+
+            <div className="grid gap-4 rounded-md border border-border bg-white/[0.025] p-3 sm:grid-cols-[130px_minmax(0,1fr)] lg:col-span-2">
+              <label className="grid gap-2">
+                <span className="text-xs font-bold text-[#d8dee8]">Currency</span>
+                <select
+                  value={preferences.salary_currency}
+                  onChange={(event) => onChange("salary_currency", event.target.value)}
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                >
+                  {["CHF", "EUR", "USD", "GBP"].map((currency) => (
+                    <option key={currency}>{currency}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="grid gap-2">
+                <span className="text-xs font-bold text-[#d8dee8]">Minimum salary</span>
+                <input
+                  inputMode="numeric"
+                  value={preferences.salary_min}
+                  onChange={(event) => onChange("salary_min", event.target.value.replace(/[^\d\s.,']/g, ""))}
+                  placeholder="90000"
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+                />
+              </label>
+            </div>
+
+            <label className="grid gap-2 rounded-md border border-border bg-white/[0.025] p-3 lg:col-span-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Work authorization</span>
+              <select
+                value={preferences.work_authorization}
+                onChange={(event) => onChange("work_authorization", event.target.value)}
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+              >
+                <option value="">Not specified</option>
+                {preferenceOptions.work_authorization.map((item) => (
+                  <option key={item}>{item}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="grid gap-2 lg:col-span-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Notes</span>
+              <textarea
+                value={preferences.notes}
+                onChange={(event) => onChange("notes", event.target.value)}
+                placeholder="Availability, preferred tech stack, relocation timing, or other matching context..."
+                rows={4}
+                className="min-h-[112px] resize-none rounded-md border border-border bg-[#0d131a] px-3 py-2.5 text-sm font-semibold leading-5 text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
+            {message || "Empty preferences stay hidden"}
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              className="h-10 rounded-md border border-border bg-transparent px-6 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+              onClick={onClose}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12]"
+              disabled={status === "loading"}
+              onClick={onSave}
+            >
+              <Save className="h-4 w-4" />
+              {status === "loading" ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PreferenceListEditor({
+  field,
+  values,
+  inputValue,
+  onInputChange,
+  onAdd,
+  onRemove,
+}: {
+  field: PreferenceListField;
+  values: string[];
+  inputValue: string;
+  onInputChange: (field: PreferenceListField, value: string) => void;
+  onAdd: (field: PreferenceListField) => void;
+  onRemove: (field: PreferenceListField, value: string) => void;
+}) {
+  const config = preferenceListLabels[field];
+
+  return (
+    <div className="rounded-md border border-border bg-white/[0.025] p-3">
+      <p className="text-xs font-bold text-[#d8dee8]">{config.label}</p>
+      <div className="mt-2 flex gap-2">
+        <input
+          value={inputValue}
+          onChange={(event) => onInputChange(field, event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              onAdd(field);
+            }
+          }}
+          placeholder={config.placeholder}
+          className="h-9 min-w-0 flex-1 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+        />
+        <button
+          type="button"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border text-[#e6ebf3] transition hover:bg-white/[0.06]"
+          onClick={() => onAdd(field)}
+          aria-label={`Add ${config.label.toLowerCase()}`}
+        >
+          <Plus className="h-4 w-4" />
+        </button>
+      </div>
+      {values.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {values.map((value) => (
+            <button
+              key={value}
+              type="button"
+              className="inline-flex min-h-7 items-center gap-1.5 rounded-md border border-border bg-white/[0.04] px-2.5 text-xs font-semibold text-[#d8dee8] transition hover:border-[#ff6b6b]/50 hover:text-white"
+              onClick={() => onRemove(field, value)}
+            >
+              {value}
+              <X className="h-3.5 w-3.5 text-muted" />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PreferenceToggleGroup({
+  title,
+  field,
+  options,
+  selectedValues,
+  onToggle,
+  className,
+}: {
+  title: string;
+  field: "seniority" | "work_formats" | "employment_types" | "company_sizes" | "priorities";
+  options: string[];
+  selectedValues: string[];
+  onToggle: (
+    field: "seniority" | "work_formats" | "employment_types" | "company_sizes" | "priorities",
+    value: string,
+  ) => void;
+  className?: string;
+}) {
+  return (
+    <div className={cn("rounded-md border border-border bg-white/[0.025] p-3", className)}>
+      <p className="text-xs font-bold text-[#d8dee8]">{title}</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {options.map((option) => {
+          const isSelected = selectedValues.includes(option);
+          return (
+            <button
+              key={option}
+              type="button"
+              className={cn(
+                "inline-flex min-h-8 items-center rounded-md border px-2.5 text-xs font-semibold transition",
+                isSelected
+                  ? "border-accent/65 bg-accent/14 text-white"
+                  : "border-border bg-white/[0.025] text-[#d8dee8] hover:border-accent/45 hover:bg-accent/10",
+              )}
+              onClick={() => onToggle(field, option)}
+            >
+              {option}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
