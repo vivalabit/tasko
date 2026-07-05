@@ -187,9 +187,16 @@ type JobPreferences = {
   company_sizes: string[];
   priorities: string[];
   notes: string;
+  no_preference: PreferenceAnyField[];
 };
 
 type PreferenceListField = "desired_roles" | "locations" | "industries" | "languages";
+type PreferenceToggleField = "seniority" | "work_formats" | "employment_types" | "company_sizes" | "priorities";
+type PreferenceAnyField =
+  | PreferenceListField
+  | PreferenceToggleField
+  | "salary"
+  | "work_authorization";
 type PreferenceInputs = Record<PreferenceListField, string>;
 
 type ResumeExperienceImportResponse = {
@@ -412,6 +419,7 @@ const defaultJobPreferences: JobPreferences = {
   company_sizes: [],
   priorities: [],
   notes: "",
+  no_preference: [],
 };
 
 const defaultPreferenceInputs: PreferenceInputs = {
@@ -430,11 +438,39 @@ const preferenceOptions = {
   work_authorization: ["Authorized to work", "Needs sponsorship", "EU/EFTA eligible", "Swiss permit", "Student permit", "Not sure"],
 };
 
+const preferenceSuggestions: Record<PreferenceListField, string[]> = {
+  desired_roles: [
+    "Python Developer",
+    "Backend Developer",
+    "AI Engineer",
+    "Full-stack Developer",
+    "Data Engineer",
+    "Machine Learning Engineer",
+  ],
+  locations: ["Switzerland", "Zurich", "Remote Europe", "Germany", "Austria", "Netherlands", "Remote worldwide"],
+  industries: ["AI", "SaaS", "FinTech", "HealthTech", "Developer tools", "EdTech", "E-commerce", "Cybersecurity"],
+  languages: ["English C1", "English B2", "German A2", "German B1", "French B1", "Russian native"],
+};
+
 const preferenceListLabels: Record<PreferenceListField, { label: string; placeholder: string }> = {
   desired_roles: { label: "Desired roles", placeholder: "Python Developer, AI Engineer..." },
   locations: { label: "Locations", placeholder: "Zurich, Switzerland, Remote Europe..." },
   industries: { label: "Industries", placeholder: "AI, SaaS, FinTech..." },
   languages: { label: "Languages", placeholder: "English C1, German A2..." },
+};
+
+const preferenceSummaryLabels: Record<PreferenceAnyField, string> = {
+  desired_roles: "Roles",
+  seniority: "Seniority",
+  locations: "Locations",
+  work_formats: "Work format",
+  employment_types: "Employment",
+  industries: "Industries",
+  salary: "Salary floor",
+  work_authorization: "Authorization",
+  languages: "Languages",
+  company_sizes: "Company size",
+  priorities: "Priorities",
 };
 
 const suggestedSkills = [
@@ -908,6 +944,26 @@ function normalizePreferenceList(value: unknown): string[] {
   );
 }
 
+function normalizeNoPreferenceFields(value: unknown): PreferenceAnyField[] {
+  const allowedFields = new Set<PreferenceAnyField>([
+    "desired_roles",
+    "seniority",
+    "locations",
+    "work_formats",
+    "employment_types",
+    "industries",
+    "salary",
+    "work_authorization",
+    "languages",
+    "company_sizes",
+    "priorities",
+  ]);
+
+  return normalizePreferenceList(value).filter((item): item is PreferenceAnyField =>
+    allowedFields.has(item as PreferenceAnyField),
+  );
+}
+
 function normalizeJobPreferences(value: Partial<JobPreferences>): JobPreferences {
   return {
     ...defaultJobPreferences,
@@ -925,6 +981,7 @@ function normalizeJobPreferences(value: Partial<JobPreferences>): JobPreferences
     company_sizes: normalizePreferenceList(value.company_sizes),
     priorities: normalizePreferenceList(value.priorities),
     notes: value.notes?.trim() ?? "",
+    no_preference: normalizeNoPreferenceFields(value.no_preference),
   };
 }
 
@@ -957,29 +1014,37 @@ function serializeJobPreferences(preferences: JobPreferences) {
     normalizedPreferences.languages.length > 0 ||
     normalizedPreferences.company_sizes.length > 0 ||
     normalizedPreferences.priorities.length > 0 ||
+    normalizedPreferences.no_preference.length > 0 ||
     hasProfileValue(normalizedPreferences.notes);
 
   return hasValues ? JSON.stringify(normalizedPreferences) : "";
 }
 
 function formatPreferenceSummary(preferences: JobPreferences) {
+  const preferenceValue = (field: PreferenceAnyField, values: string[]) =>
+    preferences.no_preference.includes(field) ? ["No preference"] : values;
+
   const items: Array<{ label: string; values: string[] }> = [
-    { label: "Roles", values: preferences.desired_roles },
-    { label: "Seniority", values: preferences.seniority },
-    { label: "Locations", values: preferences.locations },
-    { label: "Work format", values: preferences.work_formats },
-    { label: "Employment", values: preferences.employment_types },
-    { label: "Industries", values: preferences.industries },
-    { label: "Languages", values: preferences.languages },
-    { label: "Company size", values: preferences.company_sizes },
-    { label: "Priorities", values: preferences.priorities },
+    { label: "Roles", values: preferenceValue("desired_roles", preferences.desired_roles) },
+    { label: "Seniority", values: preferenceValue("seniority", preferences.seniority) },
+    { label: "Locations", values: preferenceValue("locations", preferences.locations) },
+    { label: "Work format", values: preferenceValue("work_formats", preferences.work_formats) },
+    { label: "Employment", values: preferenceValue("employment_types", preferences.employment_types) },
+    { label: "Industries", values: preferenceValue("industries", preferences.industries) },
+    { label: "Languages", values: preferenceValue("languages", preferences.languages) },
+    { label: "Company size", values: preferenceValue("company_sizes", preferences.company_sizes) },
+    { label: "Priorities", values: preferenceValue("priorities", preferences.priorities) },
   ].filter((item) => item.values.length > 0);
 
-  if (hasProfileValue(preferences.salary_min)) {
+  if (preferences.no_preference.includes("salary")) {
+    items.splice(6, 0, { label: "Salary floor", values: ["No preference"] });
+  } else if (hasProfileValue(preferences.salary_min)) {
     items.splice(6, 0, { label: "Salary floor", values: [`${preferences.salary_currency} ${preferences.salary_min}`] });
   }
 
-  if (hasProfileValue(preferences.work_authorization)) {
+  if (preferences.no_preference.includes("work_authorization")) {
+    items.splice(7, 0, { label: "Authorization", values: ["No preference"] });
+  } else if (hasProfileValue(preferences.work_authorization)) {
     items.splice(7, 0, { label: "Authorization", values: [preferences.work_authorization] });
   }
 
@@ -1550,7 +1615,24 @@ export default function HomePage() {
     field: Field,
     value: JobPreferences[Field],
   ) {
-    setPreferencesDraft((current) => normalizeJobPreferences({ ...current, [field]: value }));
+    setPreferencesDraft((current) => {
+      const noPreferenceField =
+        field === "salary_min"
+          ? "salary"
+          : field === "work_authorization"
+            ? "work_authorization"
+            : (["desired_roles", "seniority", "locations", "work_formats", "employment_types", "industries", "languages", "company_sizes", "priorities"] as string[]).includes(field)
+              ? (field as PreferenceAnyField)
+              : "";
+
+      return normalizeJobPreferences({
+        ...current,
+        [field]: value,
+        no_preference: noPreferenceField
+          ? current.no_preference.filter((item) => item !== noPreferenceField)
+          : current.no_preference,
+      });
+    });
     setProfileSaveStatus("idle");
     setProfileSaveMessage("");
   }
@@ -1562,13 +1644,17 @@ export default function HomePage() {
   }
 
   function addPreferenceListItem(field: PreferenceListField) {
-    const value = preferenceInputs[field].trim();
-    if (!value) return;
+    const values = preferenceInputs[field]
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (values.length === 0) return;
 
     setPreferencesDraft((current) =>
       normalizeJobPreferences({
         ...current,
-        [field]: [...current[field], value],
+        [field]: [...current[field], ...values],
+        no_preference: current.no_preference.filter((item) => item !== field),
       }),
     );
     setPreferenceInputs((current) => ({ ...current, [field]: "" }));
@@ -1598,7 +1684,35 @@ export default function HomePage() {
         [field]: existingValues.includes(value)
           ? existingValues.filter((item) => item !== value)
           : [...existingValues, value],
+        no_preference: current.no_preference.filter((item) => item !== field),
       });
+    });
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+  }
+
+  function setPreferenceAny(field: PreferenceAnyField) {
+    setPreferencesDraft((current) => {
+      const nextPreferences = normalizeJobPreferences({
+        ...current,
+        no_preference: current.no_preference.includes(field)
+          ? current.no_preference.filter((item) => item !== field)
+          : [...current.no_preference, field],
+      });
+
+      if (!nextPreferences.no_preference.includes(field)) {
+        return nextPreferences;
+      }
+
+      if (field === "salary") {
+        nextPreferences.salary_min = "";
+      } else if (field === "work_authorization") {
+        nextPreferences.work_authorization = "";
+      } else {
+        nextPreferences[field] = [];
+      }
+
+      return nextPreferences;
     });
     setProfileSaveStatus("idle");
     setProfileSaveMessage("");
@@ -2937,6 +3051,7 @@ export default function HomePage() {
           onAddListItem={addPreferenceListItem}
           onRemoveListItem={removePreferenceListItem}
           onToggleOption={togglePreferenceOption}
+          onSetAny={setPreferenceAny}
           onClose={() => setIsPreferencesDialogOpen(false)}
           onSave={savePreferences}
         />
@@ -4635,6 +4750,7 @@ function PreferencesEditorDialog({
   onAddListItem,
   onRemoveListItem,
   onToggleOption,
+  onSetAny,
   onClose,
   onSave,
 }: {
@@ -4650,9 +4766,10 @@ function PreferencesEditorDialog({
   onAddListItem: (field: PreferenceListField) => void;
   onRemoveListItem: (field: PreferenceListField, value: string) => void;
   onToggleOption: (
-    field: "seniority" | "work_formats" | "employment_types" | "company_sizes" | "priorities",
+    field: PreferenceToggleField,
     value: string,
   ) => void;
+  onSetAny: (field: PreferenceAnyField) => void;
   onClose: () => void;
   onSave: () => void;
 }) {
@@ -4675,16 +4792,18 @@ function PreferencesEditorDialog({
         </div>
 
         <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto rounded-md border border-border p-4">
-          <div className="grid gap-4 lg:grid-cols-2">
+          <div className="grid gap-4">
             {(Object.keys(preferenceListLabels) as PreferenceListField[]).map((field) => (
               <PreferenceListEditor
                 key={field}
                 field={field}
                 values={preferences[field]}
                 inputValue={inputs[field]}
+                isAny={preferences.no_preference.includes(field)}
                 onInputChange={onInputChange}
                 onAdd={onAddListItem}
                 onRemove={onRemoveListItem}
+                onSetAny={onSetAny}
               />
             ))}
 
@@ -4693,39 +4812,48 @@ function PreferencesEditorDialog({
               field="seniority"
               options={preferenceOptions.seniority}
               selectedValues={preferences.seniority}
+              isAny={preferences.no_preference.includes("seniority")}
               onToggle={onToggleOption}
+              onSetAny={onSetAny}
             />
             <PreferenceToggleGroup
               title="Work format"
               field="work_formats"
               options={preferenceOptions.work_formats}
               selectedValues={preferences.work_formats}
+              isAny={preferences.no_preference.includes("work_formats")}
               onToggle={onToggleOption}
+              onSetAny={onSetAny}
             />
             <PreferenceToggleGroup
               title="Employment type"
               field="employment_types"
               options={preferenceOptions.employment_types}
               selectedValues={preferences.employment_types}
+              isAny={preferences.no_preference.includes("employment_types")}
               onToggle={onToggleOption}
+              onSetAny={onSetAny}
             />
             <PreferenceToggleGroup
               title="Company size"
               field="company_sizes"
               options={preferenceOptions.company_sizes}
               selectedValues={preferences.company_sizes}
+              isAny={preferences.no_preference.includes("company_sizes")}
               onToggle={onToggleOption}
+              onSetAny={onSetAny}
             />
             <PreferenceToggleGroup
               title="Search priority"
               field="priorities"
               options={preferenceOptions.priorities}
               selectedValues={preferences.priorities}
+              isAny={preferences.no_preference.includes("priorities")}
               onToggle={onToggleOption}
-              className="lg:col-span-2"
+              onSetAny={onSetAny}
             />
 
-            <div className="grid gap-4 rounded-md border border-border bg-white/[0.025] p-3 sm:grid-cols-[130px_minmax(0,1fr)] lg:col-span-2">
+            <div className="grid gap-4 rounded-md border border-border bg-white/[0.025] p-3 sm:grid-cols-[130px_minmax(0,1fr)]">
               <label className="grid gap-2">
                 <span className="text-xs font-bold text-[#d8dee8]">Currency</span>
                 <select
@@ -4743,28 +4871,56 @@ function PreferencesEditorDialog({
                 <input
                   inputMode="numeric"
                   value={preferences.salary_min}
+                  disabled={preferences.no_preference.includes("salary")}
                   onChange={(event) => onChange("salary_min", event.target.value.replace(/[^\d\s.,']/g, ""))}
                   placeholder="90000"
-                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 disabled:opacity-45 focus:border-accent/70"
                 />
               </label>
+              <button
+                type="button"
+                className={cn(
+                  "inline-flex min-h-9 items-center justify-center rounded-md border px-3 text-xs font-bold transition sm:col-span-2",
+                  preferences.no_preference.includes("salary")
+                    ? "border-accent/65 bg-accent/14 text-white"
+                    : "border-border bg-white/[0.025] text-[#d8dee8] hover:border-accent/45 hover:bg-accent/10",
+                )}
+                onClick={() => onSetAny("salary")}
+              >
+                No salary preference
+              </button>
             </div>
 
-            <label className="grid gap-2 rounded-md border border-border bg-white/[0.025] p-3 lg:col-span-2">
+            <label className="grid gap-2 rounded-md border border-border bg-white/[0.025] p-3">
               <span className="text-xs font-bold text-[#d8dee8]">Work authorization</span>
-              <select
-                value={preferences.work_authorization}
-                onChange={(event) => onChange("work_authorization", event.target.value)}
-                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
-              >
-                <option value="">Not specified</option>
-                {preferenceOptions.work_authorization.map((item) => (
-                  <option key={item}>{item}</option>
-                ))}
-              </select>
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px]">
+                <select
+                  value={preferences.work_authorization}
+                  disabled={preferences.no_preference.includes("work_authorization")}
+                  onChange={(event) => onChange("work_authorization", event.target.value)}
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none disabled:opacity-45 focus:border-accent/70"
+                >
+                  <option value="">Not specified</option>
+                  {preferenceOptions.work_authorization.map((item) => (
+                    <option key={item}>{item}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex min-h-10 items-center justify-center rounded-md border px-3 text-xs font-bold transition",
+                    preferences.no_preference.includes("work_authorization")
+                      ? "border-accent/65 bg-accent/14 text-white"
+                      : "border-border bg-white/[0.025] text-[#d8dee8] hover:border-accent/45 hover:bg-accent/10",
+                  )}
+                  onClick={() => onSetAny("work_authorization")}
+                >
+                  No preference
+                </button>
+              </div>
             </label>
 
-            <label className="grid gap-2 lg:col-span-2">
+            <label className="grid gap-2">
               <span className="text-xs font-bold text-[#d8dee8]">Notes</span>
               <textarea
                 value={preferences.notes}
@@ -4808,25 +4964,46 @@ function PreferenceListEditor({
   field,
   values,
   inputValue,
+  isAny,
   onInputChange,
   onAdd,
   onRemove,
+  onSetAny,
 }: {
   field: PreferenceListField;
   values: string[];
   inputValue: string;
+  isAny: boolean;
   onInputChange: (field: PreferenceListField, value: string) => void;
   onAdd: (field: PreferenceListField) => void;
   onRemove: (field: PreferenceListField, value: string) => void;
+  onSetAny: (field: PreferenceAnyField) => void;
 }) {
   const config = preferenceListLabels[field];
+  const suggestionListId = `${field}-suggestions`;
 
   return (
     <div className="rounded-md border border-border bg-white/[0.025] p-3">
-      <p className="text-xs font-bold text-[#d8dee8]">{config.label}</p>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-bold text-[#d8dee8]">{config.label}</p>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex min-h-7 items-center rounded-md border px-2.5 text-[11px] font-bold transition",
+            isAny
+              ? "border-accent/65 bg-accent/14 text-white"
+              : "border-border bg-white/[0.025] text-muted hover:border-accent/45 hover:bg-accent/10 hover:text-[#d8dee8]",
+          )}
+          onClick={() => onSetAny(field)}
+        >
+          No preference
+        </button>
+      </div>
       <div className="mt-2 flex gap-2">
         <input
           value={inputValue}
+          disabled={isAny}
+          list={suggestionListId}
           onChange={(event) => onInputChange(field, event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
@@ -4835,17 +5012,28 @@ function PreferenceListEditor({
             }
           }}
           placeholder={config.placeholder}
-          className="h-9 min-w-0 flex-1 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+          className="h-9 min-w-0 flex-1 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 disabled:opacity-45 focus:border-accent/70"
         />
+        <datalist id={suggestionListId}>
+          {preferenceSuggestions[field].map((suggestion) => (
+            <option key={suggestion} value={suggestion} />
+          ))}
+        </datalist>
         <button
           type="button"
-          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border text-[#e6ebf3] transition hover:bg-white/[0.06]"
+          className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border text-[#e6ebf3] transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45"
           onClick={() => onAdd(field)}
+          disabled={isAny}
           aria-label={`Add ${config.label.toLowerCase()}`}
         >
           <Plus className="h-4 w-4" />
         </button>
       </div>
+      {isAny && (
+        <p className="mt-3 rounded-md border border-accent/25 bg-accent/10 px-3 py-2 text-xs font-semibold text-[#ffd1b0]">
+          Any {config.label.toLowerCase()} is acceptable.
+        </p>
+      )}
       {values.length > 0 && (
         <div className="mt-3 flex flex-wrap gap-2">
           {values.map((value) => (
@@ -4870,35 +5058,54 @@ function PreferenceToggleGroup({
   field,
   options,
   selectedValues,
+  isAny,
   onToggle,
+  onSetAny,
   className,
 }: {
   title: string;
-  field: "seniority" | "work_formats" | "employment_types" | "company_sizes" | "priorities";
+  field: PreferenceToggleField;
   options: string[];
   selectedValues: string[];
   onToggle: (
-    field: "seniority" | "work_formats" | "employment_types" | "company_sizes" | "priorities",
+    field: PreferenceToggleField,
     value: string,
   ) => void;
+  isAny: boolean;
+  onSetAny: (field: PreferenceAnyField) => void;
   className?: string;
 }) {
   return (
     <div className={cn("rounded-md border border-border bg-white/[0.025] p-3", className)}>
-      <p className="text-xs font-bold text-[#d8dee8]">{title}</p>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs font-bold text-[#d8dee8]">{title}</p>
+        <button
+          type="button"
+          className={cn(
+            "inline-flex min-h-7 items-center rounded-md border px-2.5 text-[11px] font-bold transition",
+            isAny
+              ? "border-accent/65 bg-accent/14 text-white"
+              : "border-border bg-white/[0.025] text-muted hover:border-accent/45 hover:bg-accent/10 hover:text-[#d8dee8]",
+          )}
+          onClick={() => onSetAny(field)}
+        >
+          No preference
+        </button>
+      </div>
       <div className="mt-2 flex flex-wrap gap-2">
         {options.map((option) => {
-          const isSelected = selectedValues.includes(option);
+          const isSelected = selectedValues.includes(option) && !isAny;
           return (
             <button
               key={option}
               type="button"
               className={cn(
-                "inline-flex min-h-8 items-center rounded-md border px-2.5 text-xs font-semibold transition",
+                "inline-flex min-h-8 items-center rounded-md border px-2.5 text-xs font-semibold transition disabled:cursor-not-allowed disabled:opacity-45",
                 isSelected
                   ? "border-accent/65 bg-accent/14 text-white"
                   : "border-border bg-white/[0.025] text-[#d8dee8] hover:border-accent/45 hover:bg-accent/10",
               )}
+              disabled={isAny}
               onClick={() => onToggle(field, option)}
             >
               {option}
@@ -4906,6 +5113,11 @@ function PreferenceToggleGroup({
           );
         })}
       </div>
+      {isAny && (
+        <p className="mt-3 rounded-md border border-accent/25 bg-accent/10 px-3 py-2 text-xs font-semibold text-[#ffd1b0]">
+          Any {title.toLowerCase()} is acceptable.
+        </p>
+      )}
     </div>
   );
 }
