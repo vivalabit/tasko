@@ -1119,8 +1119,6 @@ function getProfileCompletion(profile: CandidateProfile) {
     "skills",
     "education",
     "job_preferences",
-    "additional_notes",
-    "documents",
     "resume_file_name",
   ];
   const completedFields = fields.filter((field) => hasProfileValue(profile[field]));
@@ -4282,7 +4280,7 @@ function AiMatchProfilePanel({ profile, onEditProfile }: { profile: CandidatePro
       {hasEnoughSignal ? (
         <div className="mt-4 divide-y divide-border rounded-md border border-border">
           <AiProfileGroup title="Signals" icon={Check} iconClassName="text-success" items={[profile.current_role, profile.desired_role, `${parseProfileLines(profile.skills).length} skills added`]} />
-          <AiProfileGroup title="Next gaps" icon={CircleDot} iconClassName="text-[#ffb020]" items={["Add quantified achievements", "Add preferred industries or countries", "Add dealbreakers"]} />
+          <AiProfileGroup title="Next gaps" icon={CircleDot} iconClassName="text-[#ffb020]" items={["Add quantified achievements", "Add preferred industries or countries", "Add salary or work authorization preferences"]} />
         </div>
       ) : (
         <EmptyProfileState
