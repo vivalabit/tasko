@@ -1350,6 +1350,8 @@ export default function HomePage() {
   const [isDealbreakersDialogOpen, setIsDealbreakersDialogOpen] = useState(false);
   const [dealbreakersDraft, setDealbreakersDraft] = useState<string[]>([]);
   const [dealbreakerInput, setDealbreakerInput] = useState("");
+  const [isAdditionalNotesDialogOpen, setIsAdditionalNotesDialogOpen] = useState(false);
+  const [additionalNotesDraft, setAdditionalNotesDraft] = useState("");
   const [profileSaveStatus, setProfileSaveStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [profileSaveMessage, setProfileSaveMessage] = useState("");
 
@@ -1629,6 +1631,13 @@ export default function HomePage() {
     setProfileSaveStatus("idle");
     setProfileSaveMessage("");
     setIsDealbreakersDialogOpen(true);
+  }
+
+  function openAdditionalNotesEditor() {
+    setAdditionalNotesDraft(profile.additional_notes);
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+    setIsAdditionalNotesDialogOpen(true);
   }
 
   function addSkillToDraft(skill: string) {
@@ -2083,6 +2092,39 @@ export default function HomePage() {
     } catch (error) {
       setProfileSaveStatus("error");
       setProfileSaveMessage(error instanceof Error ? error.message : "Dealbreakers save failed");
+    }
+  }
+
+  async function saveAdditionalNotes() {
+    const nextProfile = normalizeCandidateProfile({
+      ...profile,
+      additional_notes: additionalNotesDraft.trim(),
+    });
+
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await response.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedProfile.detail ?? "Notes save failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+      setIsAdditionalNotesDialogOpen(false);
+    } catch (error) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(error instanceof Error ? error.message : "Notes save failed");
     }
   }
 
@@ -2664,6 +2706,7 @@ export default function HomePage() {
             onEditPreferences={openPreferencesEditor}
             onEditSkills={openSkillsEditor}
             onEditDealbreakers={openDealbreakersEditor}
+            onEditAdditionalNotes={openAdditionalNotesEditor}
             onImportSkillsFromCv={importSkillsFromCv}
             isSkillsImporting={isSkillsImporting}
             skillsImportMessage={skillsImportMessage}
@@ -3297,6 +3340,25 @@ export default function HomePage() {
           onSave={saveDealbreakers}
         />
       )}
+      {isAdditionalNotesDialogOpen && (
+        <AdditionalNotesEditorDialog
+          notes={additionalNotesDraft}
+          status={profileSaveStatus}
+          message={profileSaveMessage}
+          onChange={(value) => {
+            setAdditionalNotesDraft(value);
+            setProfileSaveStatus("idle");
+            setProfileSaveMessage("");
+          }}
+          onClear={() => {
+            setAdditionalNotesDraft("");
+            setProfileSaveStatus("idle");
+            setProfileSaveMessage("");
+          }}
+          onClose={() => setIsAdditionalNotesDialogOpen(false)}
+          onSave={saveAdditionalNotes}
+        />
+      )}
       </div>
     </main>
   );
@@ -3519,6 +3581,7 @@ function ProfileView({
   onEditPreferences,
   onEditSkills,
   onEditDealbreakers,
+  onEditAdditionalNotes,
   onImportSkillsFromCv,
   isSkillsImporting,
   skillsImportMessage,
@@ -3544,6 +3607,7 @@ function ProfileView({
   onEditPreferences: () => void;
   onEditSkills: () => void;
   onEditDealbreakers: () => void;
+  onEditAdditionalNotes: () => void;
   onImportSkillsFromCv: () => void;
   isSkillsImporting: boolean;
   skillsImportMessage: string;
@@ -3599,7 +3663,8 @@ function ProfileView({
           onEditDocument={onEditDocument}
           onDeleteDocument={onDeleteDocument}
         />
-        <AdditionalNotesPanel profile={profile} onEditProfile={onEditProfile} />
+        <AdditionalNotesPanel profile={profile} onEditAdditionalNotes={onEditAdditionalNotes} />
+        <ProfileCompletenessPanel profile={profile} />
       </div>
     </section>
   );
@@ -4307,12 +4372,16 @@ function DealbreakersPanel({
   );
 }
 
-function AdditionalNotesPanel({ profile, onEditProfile }: { profile: CandidateProfile; onEditProfile: () => void }) {
-  const completion = getProfileCompletion(profile);
-
+function AdditionalNotesPanel({
+  profile,
+  onEditAdditionalNotes,
+}: {
+  profile: CandidateProfile;
+  onEditAdditionalNotes: () => void;
+}) {
   return (
     <section className="panel p-4 2xl:p-5">
-      <ProfileSectionHeader title="Additional Notes" action="Edit Notes" onAction={onEditProfile} />
+      <ProfileSectionHeader title="Additional Notes" action="Edit Notes" onAction={onEditAdditionalNotes} />
       {hasProfileValue(profile.additional_notes) ? (
         <div className="mt-4 whitespace-pre-line rounded-md border border-border bg-white/[0.025] p-3 text-[13px] leading-5 text-[#d8dee8]">
           {profile.additional_notes}
@@ -4323,10 +4392,19 @@ function AdditionalNotesPanel({ profile, onEditProfile }: { profile: CandidatePr
           title="No notes"
           description="Add context that does not fit elsewhere: availability, motivation, constraints, or personal positioning."
           action="Add notes"
-          onAction={onEditProfile}
+          onAction={onEditAdditionalNotes}
         />
       )}
-      <div className="mt-5">
+    </section>
+  );
+}
+
+function ProfileCompletenessPanel({ profile }: { profile: CandidateProfile }) {
+  const completion = getProfileCompletion(profile);
+
+  return (
+    <section className="panel p-4 2xl:p-5">
+      <div>
         <div className="mb-2 flex justify-between text-xs font-semibold text-muted">
           <span>Profile completeness</span>
           <span className="text-white">{completion}%</span>
@@ -4685,6 +4763,91 @@ function DealbreakersEditorDialog({
         <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
             {message || (dealbreakers.length === 0 ? "No dealbreakers set" : `${dealbreakers.length} dealbreakers selected`)}
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              className="h-10 rounded-md border border-border bg-transparent px-6 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+              onClick={onClose}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12]"
+              disabled={status === "loading"}
+              onClick={onSave}
+            >
+              <Save className="h-4 w-4" />
+              {status === "loading" ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AdditionalNotesEditorDialog({
+  notes,
+  status,
+  message,
+  onChange,
+  onClear,
+  onClose,
+  onSave,
+}: {
+  notes: string;
+  status: "idle" | "loading" | "ready" | "error";
+  message: string;
+  onChange: (value: string) => void;
+  onClear: () => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+      <div className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[720px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] sm:p-5">
+        <div className="flex shrink-0 items-start justify-between gap-4">
+          <div>
+            <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[24px]">Edit Additional Notes</h2>
+            <p className="mt-1 text-sm font-medium text-muted">Extra context for matching, applications, or future automation.</p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close notes editor"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto rounded-md border border-border p-4">
+          <label className="grid gap-2">
+            <span className="text-xs font-bold text-[#d8dee8]">Notes</span>
+            <textarea
+              value={notes}
+              onChange={(event) => onChange(event.target.value)}
+              placeholder="Availability, motivation, personal positioning, application context, or anything that does not fit elsewhere..."
+              rows={8}
+              className="min-h-[220px] resize-none rounded-md border border-border bg-[#0d131a] px-3 py-2.5 text-sm font-semibold leading-5 text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+            />
+            <span className="text-xs font-medium text-muted">Leave empty if there is no extra context to add.</span>
+          </label>
+          <div className="mt-3 flex justify-end">
+            <button
+              type="button"
+              className="inline-flex min-h-8 items-center rounded-md border border-border bg-white/[0.025] px-3 text-xs font-bold text-muted transition hover:border-accent/45 hover:bg-accent/10 hover:text-[#d8dee8]"
+              onClick={onClear}
+            >
+              Clear notes
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
+            {message || (notes.trim() ? "Notes ready to save" : "No notes set")}
           </p>
           <div className="flex gap-2">
             <Button
