@@ -14,6 +14,7 @@ import {
   ChevronRight,
   CircleDot,
   Command,
+  Download,
   Edit3,
   ExternalLink,
   FileText,
@@ -128,6 +129,7 @@ type CandidateProfile = {
   job_preferences: string;
   dealbreakers: string;
   additional_notes: string;
+  documents: string;
   resume_file_name: string;
   resume_file_size: string;
   resume_updated_at: string;
@@ -156,6 +158,19 @@ type EducationEntry = {
   end_date: string;
   is_current: boolean;
   description: string;
+};
+
+type DocumentEntry = {
+  id: string;
+  title: string;
+  category: string;
+  issuer: string;
+  notes: string;
+  file_name: string;
+  file_size: string;
+  file_type: string;
+  uploaded_at: string;
+  data_url: string;
 };
 
 type ResumeExperienceImportResponse = {
@@ -310,6 +325,7 @@ const defaultCandidateProfile: CandidateProfile = {
   job_preferences: "",
   dealbreakers: "",
   additional_notes: "",
+  documents: "",
   resume_file_name: "",
   resume_file_size: "",
   resume_updated_at: "",
@@ -339,6 +355,29 @@ const defaultEducationDraft: EducationEntry = {
   is_current: false,
   description: "",
 };
+
+const defaultDocumentDraft: DocumentEntry = {
+  id: "",
+  title: "",
+  category: "Other",
+  issuer: "",
+  notes: "",
+  file_name: "",
+  file_size: "",
+  file_type: "",
+  uploaded_at: "",
+  data_url: "",
+};
+
+const documentCategories = [
+  "Diploma",
+  "Certificate",
+  "Recommendation",
+  "Work permit",
+  "Portfolio",
+  "Transcript",
+  "Other",
+];
 
 const suggestedSkills = [
   "Agile Development",
@@ -756,6 +795,47 @@ function mergeEducationEntries(currentEntries: EducationEntry[], importedEntries
   return nextEntries;
 }
 
+function normalizeDocumentEntry(entry: Partial<DocumentEntry>): DocumentEntry {
+  return {
+    ...defaultDocumentDraft,
+    ...entry,
+    id: entry.id || createClientId("document"),
+    title: entry.title?.trim() ?? "",
+    category: entry.category?.trim() || "Other",
+    issuer: entry.issuer?.trim() ?? "",
+    notes: entry.notes?.trim() ?? "",
+    file_name: entry.file_name?.trim() ?? "",
+    file_size: entry.file_size?.trim() ?? "",
+    file_type: entry.file_type?.trim() ?? "",
+    uploaded_at: entry.uploaded_at?.trim() ?? "",
+    data_url: entry.data_url ?? "",
+  };
+}
+
+function parseDocumentEntries(value: string): DocumentEntry[] {
+  if (!value.trim()) return [];
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter((item): item is Partial<DocumentEntry> => Boolean(item) && typeof item === "object")
+        .map((item) => normalizeDocumentEntry(item))
+        .filter((item) => item.title || item.file_name || item.data_url);
+    }
+  } catch {
+    return [];
+  }
+
+  return [];
+}
+
+function serializeDocumentEntries(entries: DocumentEntry[]) {
+  if (entries.length === 0) return "";
+
+  return JSON.stringify(entries.map((entry) => normalizeDocumentEntry(entry)));
+}
+
 function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
@@ -793,6 +873,7 @@ function getProfileCompletion(profile: CandidateProfile) {
     "job_preferences",
     "dealbreakers",
     "additional_notes",
+    "documents",
     "resume_file_name",
   ];
   const completedFields = fields.filter((field) => hasProfileValue(profile[field]));
@@ -997,6 +1078,9 @@ export default function HomePage() {
   const [educationDraft, setEducationDraft] = useState<EducationEntry>(defaultEducationDraft);
   const [isEducationImporting, setIsEducationImporting] = useState(false);
   const [educationImportMessage, setEducationImportMessage] = useState("");
+  const [isDocumentDialogOpen, setIsDocumentDialogOpen] = useState(false);
+  const [isDocumentEditMode, setIsDocumentEditMode] = useState(false);
+  const [documentDraft, setDocumentDraft] = useState<DocumentEntry>(defaultDocumentDraft);
   const [isSkillsDialogOpen, setIsSkillsDialogOpen] = useState(false);
   const [skillsDraft, setSkillsDraft] = useState<string[]>([]);
   const [skillInput, setSkillInput] = useState("");
@@ -1249,6 +1333,14 @@ export default function HomePage() {
     setIsEducationDialogOpen(true);
   }
 
+  function openDocumentEditor(document?: DocumentEntry) {
+    setDocumentDraft(document ? normalizeDocumentEntry(document) : { ...defaultDocumentDraft, id: createClientId("document") });
+    setIsDocumentEditMode(Boolean(document));
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+    setIsDocumentDialogOpen(true);
+  }
+
   function openSkillsEditor() {
     setSkillsDraft(parseProfileLines(profile.skills));
     setSkillInput("");
@@ -1410,6 +1502,58 @@ export default function HomePage() {
     }
   }
 
+  async function saveDocument() {
+    const normalizedDocument = normalizeDocumentEntry(documentDraft);
+
+    if (!normalizedDocument.title) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage("Enter document title");
+      return;
+    }
+
+    if (!normalizedDocument.data_url || !normalizedDocument.file_name) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage("Attach a file");
+      return;
+    }
+
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    const documentEntries = parseDocumentEntries(profile.documents);
+    const existingDocument = documentEntries.some((entry) => entry.id === normalizedDocument.id);
+    const nextDocumentEntries = existingDocument
+      ? documentEntries.map((entry) => (entry.id === normalizedDocument.id ? normalizedDocument : entry))
+      : [...documentEntries, normalizedDocument];
+    const nextProfile = normalizeCandidateProfile({
+      ...profile,
+      documents: serializeDocumentEntries(nextDocumentEntries),
+    });
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await response.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedProfile.detail ?? "Document save failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+      setIsDocumentDialogOpen(false);
+    } catch (error) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(error instanceof Error ? error.message : "Document save failed");
+    }
+  }
+
   async function saveSkills() {
     const normalizedSkills = Array.from(
       new Map(skillsDraft.map((skill) => [skill.trim().toLowerCase(), skill.trim()])).values(),
@@ -1511,6 +1655,40 @@ export default function HomePage() {
       setProfileSaveStatus("error");
       setProfileSaveMessage(error instanceof Error ? error.message : "Education delete failed");
       window.alert(error instanceof Error ? error.message : "Education delete failed");
+    }
+  }
+
+  async function deleteDocument(documentId: string) {
+    const nextDocumentEntries = parseDocumentEntries(profile.documents).filter((entry) => entry.id !== documentId);
+    const nextProfile = normalizeCandidateProfile({
+      ...profile,
+      documents: serializeDocumentEntries(nextDocumentEntries),
+    });
+
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await response.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedProfile.detail ?? "Document delete failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+    } catch (error) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(error instanceof Error ? error.message : "Document delete failed");
+      window.alert(error instanceof Error ? error.message : "Document delete failed");
     }
   }
 
@@ -1678,6 +1856,51 @@ export default function HomePage() {
     } finally {
       setIsEducationImporting(false);
     }
+  }
+
+  function attachDocumentFile(file: File) {
+    const allowedTypes = new Set([
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "image/png",
+      "image/jpeg",
+      "image/webp",
+    ]);
+    const allowedExtensions = [".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg", ".webp"];
+    const lowerFileName = file.name.toLowerCase();
+    const hasAllowedExtension = allowedExtensions.some((extension) => lowerFileName.endsWith(extension));
+
+    if (!allowedTypes.has(file.type) && !hasAllowedExtension) {
+      window.alert("Upload a PDF, DOC, DOCX, PNG, JPG, or WebP file.");
+      return;
+    }
+
+    if (file.size > 5_000_000) {
+      window.alert("Document file must be under 5MB.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+
+      const titleFromFile = file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim();
+      setDocumentDraft((current) =>
+        normalizeDocumentEntry({
+          ...current,
+          title: current.title || titleFromFile,
+          file_name: file.name,
+          file_size: formatFileSize(file.size),
+          file_type: file.type || "application/octet-stream",
+          uploaded_at: new Date().toISOString(),
+          data_url: reader.result as string,
+        }),
+      );
+      setProfileSaveStatus("idle");
+      setProfileSaveMessage("");
+    };
+    reader.readAsDataURL(file);
   }
 
   async function saveResumeFile(file: File) {
@@ -1863,6 +2086,9 @@ export default function HomePage() {
             onImportEducationFromCv={importEducationFromCv}
             isEducationImporting={isEducationImporting}
             educationImportMessage={educationImportMessage}
+            onAddDocument={() => openDocumentEditor()}
+            onEditDocument={openDocumentEditor}
+            onDeleteDocument={deleteDocument}
             onEditSkills={openSkillsEditor}
             onSaveResume={saveResumeFile}
           />
@@ -2427,6 +2653,22 @@ export default function HomePage() {
           onSave={saveEducation}
         />
       )}
+      {isDocumentDialogOpen && (
+        <DocumentEditorDialog
+          document={documentDraft}
+          isEditMode={isDocumentEditMode}
+          status={profileSaveStatus}
+          message={profileSaveMessage}
+          onChange={(field, value) => {
+            setDocumentDraft((current) => ({ ...current, [field]: value }));
+            setProfileSaveStatus("idle");
+            setProfileSaveMessage("");
+          }}
+          onAttachFile={attachDocumentFile}
+          onClose={() => setIsDocumentDialogOpen(false)}
+          onSave={saveDocument}
+        />
+      )}
       {isSkillsDialogOpen && (
         <SkillsEditorDialog
           skills={skillsDraft}
@@ -2660,6 +2902,9 @@ function ProfileView({
   onImportEducationFromCv,
   isEducationImporting,
   educationImportMessage,
+  onAddDocument,
+  onEditDocument,
+  onDeleteDocument,
   onEditSkills,
   onSaveResume,
 }: {
@@ -2677,6 +2922,9 @@ function ProfileView({
   onImportEducationFromCv: () => void;
   isEducationImporting: boolean;
   educationImportMessage: string;
+  onAddDocument: () => void;
+  onEditDocument: (document: DocumentEntry) => void;
+  onDeleteDocument: (documentId: string) => void;
   onEditSkills: () => void;
   onSaveResume: (file: File) => void;
 }) {
@@ -2713,7 +2961,12 @@ function ProfileView({
             isEducationImporting={isEducationImporting}
             importMessage={educationImportMessage}
           />
-          <DocumentsPanel onEditProfile={onEditProfile} />
+          <DocumentsPanel
+            profile={profile}
+            onAddDocument={onAddDocument}
+            onEditDocument={onEditDocument}
+            onDeleteDocument={onDeleteDocument}
+          />
         </div>
 
         <aside className="grid content-start gap-4 2xl:gap-5">
@@ -3162,17 +3415,98 @@ function EducationPanel({
   );
 }
 
-function DocumentsPanel({ onEditProfile }: { onEditProfile: () => void }) {
+function DocumentsPanel({
+  profile,
+  onAddDocument,
+  onEditDocument,
+  onDeleteDocument,
+}: {
+  profile: CandidateProfile;
+  onAddDocument: () => void;
+  onEditDocument: (document: DocumentEntry) => void;
+  onDeleteDocument: (documentId: string) => void;
+}) {
+  const documentItems = parseDocumentEntries(profile.documents);
+
   return (
     <section className="panel p-4 2xl:p-5">
-      <ProfileSectionHeader title="Documents" action="+ Add Document" onAction={onEditProfile} />
-      <EmptyProfileState
-        className="mt-4"
-        title="No documents yet"
-        description="Document upload can be connected later. Add links to your portfolio or personal site for now."
-        action="Add links"
-        onAction={onEditProfile}
-      />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-base font-bold 2xl:text-lg">Supporting Documents</h2>
+          <p className="mt-1 text-xs font-medium text-muted 2xl:text-[13px]">Personal files you choose to reuse across applications.</p>
+        </div>
+        <button
+          type="button"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-bold text-accent transition hover:bg-accent/10 hover:text-[#ff7a1a] 2xl:text-[13px]"
+          onClick={onAddDocument}
+        >
+          <Plus className="h-4 w-4" />
+          Add Document
+        </button>
+      </div>
+
+      {documentItems.length > 0 ? (
+        <div className="mt-4 space-y-4">
+          {documentItems.map((item) => (
+            <article key={item.id} className="grid grid-cols-[40px_minmax(0,1fr)_auto] gap-3 rounded-md border border-border bg-white/[0.025] p-3">
+              <span className="grid h-10 w-10 place-items-center rounded-md bg-white/[0.06] text-[#d8dee8]">
+                <FileText className="h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="min-w-0 text-sm font-bold text-white 2xl:text-base">{item.title || item.file_name}</h3>
+                  <span className="rounded bg-white/[0.06] px-2 py-0.5 text-[11px] font-bold text-muted">{item.category}</span>
+                </div>
+                {item.issuer && (
+                  <p className="mt-0.5 text-[13px] font-semibold text-[#d8dee8] 2xl:text-sm">{item.issuer}</p>
+                )}
+                <p className="mt-1 truncate text-xs text-muted 2xl:text-[13px]">
+                  {item.file_name}
+                  {item.file_size ? ` • ${item.file_size}` : ""}
+                  {item.uploaded_at ? ` • ${formatProfileDate(item.uploaded_at)}` : ""}
+                </p>
+                {item.notes && (
+                  <p className="mt-2 whitespace-pre-line text-[13px] leading-5 text-muted 2xl:text-sm">{item.notes}</p>
+                )}
+              </div>
+              <div className="flex shrink-0 gap-1">
+                <a
+                  aria-label="Download document"
+                  href={item.data_url}
+                  download={item.file_name || item.title}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+                >
+                  <Download className="h-4 w-4" />
+                </a>
+                <button
+                  type="button"
+                  aria-label="Edit document"
+                  onClick={() => onEditDocument(item)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+                >
+                  <Edit3 className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Delete document"
+                  onClick={() => onDeleteDocument(item.id)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted transition hover:bg-[#ff6b6b]/12 hover:text-[#ff7a7a]"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <EmptyProfileState
+          className="mt-4"
+          title="No supporting documents yet"
+          description="Add diplomas, certificates, recommendations, permits, transcripts, portfolio PDFs, or other reusable files."
+          action="Add document"
+          onAction={onAddDocument}
+        />
+      )}
     </section>
   );
 }
@@ -3833,6 +4167,150 @@ function EducationEditorDialog({
         <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
             {message || "Institution and credential are required"}
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              className="h-10 rounded-md border border-border bg-transparent px-6 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+              onClick={onClose}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12]"
+              disabled={status === "loading"}
+              onClick={onSave}
+            >
+              <Save className="h-4 w-4" />
+              {status === "loading" ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DocumentEditorDialog({
+  document,
+  isEditMode,
+  status,
+  message,
+  onChange,
+  onAttachFile,
+  onClose,
+  onSave,
+}: {
+  document: DocumentEntry;
+  isEditMode: boolean;
+  status: "idle" | "loading" | "ready" | "error";
+  message: string;
+  onChange: <Field extends keyof DocumentEntry>(
+    field: Field,
+    value: DocumentEntry[Field],
+  ) => void;
+  onAttachFile: (file: File) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+      <div className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[720px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] sm:p-5">
+        <div className="flex shrink-0 items-start justify-between gap-4">
+          <div>
+            <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[24px]">
+              {isEditMode ? "Edit Document" : "Add Document"}
+            </h2>
+            <p className="mt-1 text-sm font-medium text-muted">Label a reusable personal file and attach it to your profile library.</p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close document editor"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto rounded-md border border-border p-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Document title</span>
+              <input
+                value={document.title}
+                onChange={(event) => onChange("title", event.target.value)}
+                placeholder="Swiss work permit, AWS certificate..."
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Type</span>
+              <select
+                value={document.category}
+                onChange={(event) => onChange("category", event.target.value)}
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+              >
+                {documentCategories.map((category) => (
+                  <option key={category}>{category}</option>
+                ))}
+              </select>
+            </label>
+
+            <label className="grid gap-2 md:col-span-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Issued by / source</span>
+              <input
+                value={document.issuer}
+                onChange={(event) => onChange("issuer", event.target.value)}
+                placeholder="University, certification provider, employer, immigration office..."
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+
+            <div className="rounded-md border border-border bg-white/[0.025] p-3 md:col-span-2">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-white">Attached file</p>
+                  <p className="mt-1 truncate text-xs text-muted">
+                    {document.file_name ? `${document.file_name}${document.file_size ? ` • ${document.file_size}` : ""}` : "PDF, DOC, DOCX, PNG, JPG, or WebP under 5MB"}
+                  </p>
+                </div>
+                <label className="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-md border border-border bg-white/[0.035] px-3 text-xs font-semibold text-[#e6ebf3] transition hover:bg-white/[0.07]">
+                  <Upload className="h-4 w-4" />
+                  {document.file_name ? "Replace file" : "Attach file"}
+                  <input
+                    type="file"
+                    accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.webp,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg,image/webp"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) {
+                        onAttachFile(file);
+                      }
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                </label>
+              </div>
+            </div>
+
+            <label className="grid gap-2 md:col-span-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Notes</span>
+              <textarea
+                value={document.notes}
+                onChange={(event) => onChange("notes", event.target.value)}
+                placeholder="When to use it, expiration date, original language, or anything important..."
+                rows={4}
+                className="min-h-[112px] resize-none rounded-md border border-border bg-[#0d131a] px-3 py-2.5 text-sm font-semibold leading-5 text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
+            {message || "Title and file are required"}
           </p>
           <div className="flex gap-2">
             <Button

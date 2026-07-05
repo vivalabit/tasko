@@ -48,6 +48,7 @@ def test_profile_can_be_updated_and_read() -> None:
             "job_preferences": "Remote or hybrid\nProduct-focused teams",
             "dealbreakers": "No unpaid roles",
             "additional_notes": "Prefers pragmatic AI workflows.",
+            "documents": "",
             "resume_file_name": "Eduard_Ishchenko_Resume.pdf",
             "resume_file_size": "128 KB",
             "resume_updated_at": "2026-07-04T10:00:00.000Z",
