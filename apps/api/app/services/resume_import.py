@@ -31,6 +31,17 @@ EDUCATION_HEADINGS = {
     "training",
 }
 
+SKILLS_HEADINGS = {
+    "skills",
+    "technical skills",
+    "core skills",
+    "key skills",
+    "technologies",
+    "technical stack",
+    "tech stack",
+    "tools",
+}
+
 SECTION_STOP_HEADINGS = {
     "education",
     "skills",
@@ -38,6 +49,26 @@ SECTION_STOP_HEADINGS = {
     "projects",
     "certifications",
     "certificates",
+    "languages",
+    "summary",
+    "profile",
+    "contacts",
+    "contact",
+    "references",
+}
+
+SKILLS_STOP_HEADINGS = {
+    "experience",
+    "work experience",
+    "professional experience",
+    "employment history",
+    "career history",
+    "education",
+    "education and certifications",
+    "education certifications",
+    "certifications",
+    "certificates",
+    "projects",
     "languages",
     "summary",
     "profile",
@@ -319,6 +350,15 @@ def parse_education_from_text(text: str) -> list[ImportedEducationEntry]:
     ][:12]
 
 
+def parse_skills_from_text(text: str) -> list[str]:
+    lines = normalize_lines(text)
+    section_lines = get_skills_section(lines)
+    if not section_lines:
+        return []
+
+    return normalize_skill_list(extract_skill_candidates(section_lines))
+
+
 def parse_experience_with_openclaw(
     text: str,
     command: str,
@@ -401,6 +441,43 @@ def parse_education_with_openclaw(
     ][:12]
 
 
+def parse_skills_with_openclaw(
+    text: str,
+    command: str,
+    agent_id: str,
+    thinking: str,
+    timeout_seconds: int,
+) -> list[str]:
+    resume_text = text.strip()
+    if not resume_text:
+        return []
+
+    executable = shutil.which(command) or command
+    prompt = build_openclaw_skills_prompt(resume_text[:50000])
+    try:
+        result = subprocess.run(
+            [executable, "agent", "--agent", agent_id, "--message", prompt, "--thinking", thinking, "--json"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except FileNotFoundError as exc:
+        raise OpenClawResumeImportError(f"OpenClaw command was not found: {command}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise OpenClawResumeImportError("OpenClaw resume import timed out") from exc
+    except subprocess.CalledProcessError as exc:
+        error_output = (exc.stderr or exc.stdout or "OpenClaw command failed").strip()
+        raise OpenClawResumeImportError(summarize_openclaw_error(error_output)) from exc
+
+    parsed = extract_openclaw_skills_payload(result.stdout)
+    skills = parsed.get("skills", [])
+    if not isinstance(skills, list):
+        return []
+
+    return normalize_skill_list([skill for skill in skills if isinstance(skill, str)])
+
+
 def summarize_openclaw_error(error_output: str) -> str:
     if "No API key found" in error_output:
         return (
@@ -424,6 +501,10 @@ def extract_openclaw_experience_payload(value: str) -> dict[str, object]:
 
 def extract_openclaw_education_payload(value: str) -> dict[str, object]:
     return extract_openclaw_payload(value, "education")
+
+
+def extract_openclaw_skills_payload(value: str) -> dict[str, object]:
+    return extract_openclaw_payload(value, "skills")
 
 
 def extract_openclaw_payload(value: str, key: str) -> dict[str, object]:
@@ -525,6 +606,25 @@ def build_openclaw_education_prompt(resume_text: str) -> str:
     )
 
 
+def build_openclaw_skills_prompt(resume_text: str) -> str:
+    return (
+        "You are extracting skills from a resume for a job search app.\n"
+        "Return ONLY one valid JSON object, no markdown and no prose.\n"
+        "JSON shape:\n"
+        "{\n"
+        '  "skills": ["skill name"]\n'
+        "}\n"
+        "Rules:\n"
+        "- Extract concrete skills, programming languages, frameworks, libraries, tools, platforms, databases, methodologies, and relevant technical domains.\n"
+        "- Do not include employers, schools, job titles, dates, responsibilities, contact details, or generic soft phrases unless they are listed as explicit skills.\n"
+        "- Keep each skill short and canonical, for example \"Python\", \"FastAPI\", \"Docker\", \"Machine Learning\".\n"
+        "- Do not duplicate skills, including case-only duplicates.\n"
+        "- Preserve common capitalization such as SQL, CI/CD, AWS, React, TypeScript, and OpenAI API.\n"
+        "- Return at most 80 skills.\n\n"
+        f"Resume text:\n{resume_text}"
+    )
+
+
 def extract_json_object(value: str) -> dict[str, object]:
     for payload in extract_json_objects(value):
         return payload
@@ -610,6 +710,82 @@ def get_education_section(lines: list[str]) -> list[str]:
             break
 
     return lines[start_index:end_index]
+
+
+def get_skills_section(lines: list[str]) -> list[str]:
+    start_index: int | None = None
+    for index, line in enumerate(lines):
+        heading = normalize_heading(line)
+        if heading in SKILLS_HEADINGS:
+            start_index = index + 1
+            break
+
+    if start_index is None:
+        return []
+
+    end_index = len(lines)
+    for index in range(start_index, len(lines)):
+        heading = normalize_heading(lines[index])
+        if heading in SKILLS_STOP_HEADINGS:
+            end_index = index
+            break
+
+    return lines[start_index:end_index]
+
+
+def extract_skill_candidates(lines: list[str]) -> list[str]:
+    candidates: list[str] = []
+    for line in lines:
+        value = re.sub(r"\s+", " ", line).strip(" \t-•*")
+        if not value:
+            continue
+
+        category, separator, rest = value.partition(":")
+        if separator and len(category.split()) <= 4:
+            value = rest.strip()
+
+        if re.search(r"[,;|•]", value):
+            candidates.extend(re.split(r"\s*[,;|•]\s*", value))
+        elif len(value.split()) <= 5:
+            candidates.append(value)
+
+    return candidates
+
+
+def normalize_skill_list(values: list[str]) -> list[str]:
+    normalized_skills: list[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        skill = re.sub(r"\s+", " ", value).strip(" \t-•*,.;:")
+        if not is_valid_skill(skill):
+            continue
+
+        key = skill.lower()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        normalized_skills.append(skill)
+
+    return normalized_skills[:80]
+
+
+def is_valid_skill(value: str) -> bool:
+    if len(value) < 2 or len(value) > 60:
+        return False
+
+    lowered = value.lower()
+    if lowered in SKILLS_HEADINGS or lowered in SKILLS_STOP_HEADINGS:
+        return False
+
+    if "@" in value or re.search(r"https?://|www\.", value, re.IGNORECASE):
+        return False
+
+    if DATE_RANGE_RE.search(value) or re.fullmatch(r"\d{4}(?:\s*-\s*\d{4})?", value):
+        return False
+
+    return bool(re.search(r"[A-Za-z+#./]", value))
 
 
 def parse_experience_lines(lines: list[str]) -> list[ParsedExperience]:

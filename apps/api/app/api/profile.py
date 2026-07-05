@@ -11,6 +11,7 @@ from app.models.profile import (
     ResumeEducationImportResponse,
     ResumeExperienceImportRequest,
     ResumeExperienceImportResponse,
+    ResumeSkillsImportResponse,
 )
 from app.services.resume_import import (
     OpenClawResumeImportError,
@@ -19,6 +20,8 @@ from app.services.resume_import import (
     parse_education_with_openclaw,
     parse_experience_from_text,
     parse_experience_with_openclaw,
+    parse_skills_from_text,
+    parse_skills_with_openclaw,
 )
 
 router = APIRouter()
@@ -192,4 +195,47 @@ def import_education_from_resume(
             f"Imported {len(education)} education entr{'y' if len(education) == 1 else 'ies'} "
             f"with {import_method}"
         ),
+    )
+
+
+@router.post("/import-skills-from-resume", response_model=ResumeSkillsImportResponse)
+def import_skills_from_resume(
+    payload: ResumeExperienceImportRequest,
+    settings: Settings = Depends(get_settings),
+) -> ResumeSkillsImportResponse:
+    text = extract_resume_text(payload.resume_file_name, payload.resume_data_url)
+    if not text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Could not read text from the attached resume",
+        )
+
+    if settings.openclaw_resume_import_enabled:
+        import_method = "OpenClaw"
+        try:
+            skills = parse_skills_with_openclaw(
+                text=text,
+                command=settings.openclaw_command,
+                agent_id=settings.openclaw_agent_id,
+                thinking=settings.openclaw_resume_import_thinking,
+                timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
+            )
+        except OpenClawResumeImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"OpenClaw resume import failed: {exc}",
+            ) from exc
+    else:
+        skills = parse_skills_from_text(text)
+        import_method = "local parser"
+
+    if not skills:
+        return ResumeSkillsImportResponse(
+            skills=[],
+            message="No skills were found in the attached resume",
+        )
+
+    return ResumeSkillsImportResponse(
+        skills=skills,
+        message=f"Imported {len(skills)} skill{'s' if len(skills) != 1 else ''} with {import_method}",
     )

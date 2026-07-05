@@ -212,6 +212,12 @@ type ResumeEducationImportResponse = {
   detail?: string;
 };
 
+type ResumeSkillsImportResponse = {
+  skills?: string[];
+  message?: string;
+  detail?: string;
+};
+
 const jobs: Job[] = [
   {
     id: "stripe-senior-product-designer",
@@ -1277,6 +1283,17 @@ function mergeJobs(importedJobs: Job[], currentJobs: Job[]) {
   return [...importedJobs, ...currentJobs.filter((job) => !importedIds.has(job.id))];
 }
 
+function mergeSkillLists(currentSkills: string[], importedSkills: string[]) {
+  return Array.from(
+    new Map(
+      [...currentSkills, ...importedSkills]
+        .map((skill) => skill.trim())
+        .filter(Boolean)
+        .map((skill) => [skill.toLowerCase(), skill]),
+    ).values(),
+  );
+}
+
 export default function HomePage() {
   const [activeView, setActiveView] = useState<View>("Dashboard");
   const [jobList, setJobList] = useState<Job[]>(jobs);
@@ -1316,6 +1333,8 @@ export default function HomePage() {
   const [isSkillsDialogOpen, setIsSkillsDialogOpen] = useState(false);
   const [skillsDraft, setSkillsDraft] = useState<string[]>([]);
   const [skillInput, setSkillInput] = useState("");
+  const [isSkillsImporting, setIsSkillsImporting] = useState(false);
+  const [skillsImportMessage, setSkillsImportMessage] = useState("");
   const [profileSaveStatus, setProfileSaveStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [profileSaveMessage, setProfileSaveMessage] = useState("");
 
@@ -1947,9 +1966,7 @@ export default function HomePage() {
   }
 
   async function saveSkills() {
-    const normalizedSkills = Array.from(
-      new Map(skillsDraft.map((skill) => [skill.trim().toLowerCase(), skill.trim()])).values(),
-    ).filter(Boolean);
+    const normalizedSkills = mergeSkillLists([], skillsDraft);
     const nextProfile = normalizeCandidateProfile({
       ...profile,
       skills: normalizedSkills.join("\n"),
@@ -2250,6 +2267,82 @@ export default function HomePage() {
     }
   }
 
+  async function importSkillsFromCv() {
+    if (!profile.resume_data_url || !profile.resume_file_name) {
+      setSkillsImportMessage("Attach a resume first");
+      window.alert("Attach a resume before importing skills.");
+      return;
+    }
+
+    setIsSkillsImporting(true);
+    setSkillsImportMessage("");
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    try {
+      const importResponse = await fetch(`${apiBaseUrl}/profile/import-skills-from-resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resume_file_name: profile.resume_file_name,
+          resume_data_url: profile.resume_data_url,
+        }),
+      });
+      const importResult = (await importResponse.json()) as ResumeSkillsImportResponse;
+
+      if (!importResponse.ok) {
+        throw new Error(importResult.detail ?? "Skills import failed");
+      }
+
+      const importedSkills = importResult.skills ?? [];
+      if (importedSkills.length === 0) {
+        setProfileSaveStatus("ready");
+        setSkillsImportMessage(importResult.message || "No skills were found in the attached CV");
+        return;
+      }
+
+      const currentSkills = parseProfileLines(profile.skills);
+      const mergedSkills = mergeSkillLists(currentSkills, importedSkills);
+      const addedCount = mergedSkills.length - currentSkills.length;
+
+      if (addedCount === 0) {
+        setProfileSaveStatus("ready");
+        setSkillsImportMessage("No new skills found in the attached CV");
+        return;
+      }
+
+      const nextProfile = normalizeCandidateProfile({
+        ...profile,
+        skills: mergedSkills.join("\n"),
+      });
+      const saveResponse = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await saveResponse.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!saveResponse.ok) {
+        throw new Error(savedProfile.detail ?? "Skills import save failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setSkillsDraft(parseProfileLines(normalizedProfile.skills));
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+      setSkillsImportMessage(`Added ${addedCount} new skill${addedCount === 1 ? "" : "s"} from CV`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Skills import failed";
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(message);
+      setSkillsImportMessage(message);
+    } finally {
+      setIsSkillsImporting(false);
+    }
+  }
+
   function attachDocumentFile(file: File) {
     const allowedTypes = new Set([
       "application/pdf",
@@ -2483,6 +2576,9 @@ export default function HomePage() {
             onDeleteDocument={deleteDocument}
             onEditPreferences={openPreferencesEditor}
             onEditSkills={openSkillsEditor}
+            onImportSkillsFromCv={importSkillsFromCv}
+            isSkillsImporting={isSkillsImporting}
+            skillsImportMessage={skillsImportMessage}
             onSaveResume={saveResumeFile}
           />
         ) : (
@@ -3316,6 +3412,9 @@ function ProfileView({
   onDeleteDocument,
   onEditPreferences,
   onEditSkills,
+  onImportSkillsFromCv,
+  isSkillsImporting,
+  skillsImportMessage,
   onSaveResume,
 }: {
   profile: CandidateProfile;
@@ -3337,6 +3436,9 @@ function ProfileView({
   onDeleteDocument: (documentId: string) => void;
   onEditPreferences: () => void;
   onEditSkills: () => void;
+  onImportSkillsFromCv: () => void;
+  isSkillsImporting: boolean;
+  skillsImportMessage: string;
   onSaveResume: (file: File) => void;
 }) {
   return (
@@ -3365,7 +3467,13 @@ function ProfileView({
           isExperienceImporting={isExperienceImporting}
           importMessage={experienceImportMessage}
         />
-        <SkillsPanel profile={profile} onEditSkills={onEditSkills} />
+        <SkillsPanel
+          profile={profile}
+          onEditSkills={onEditSkills}
+          onImportSkillsFromCv={onImportSkillsFromCv}
+          isSkillsImporting={isSkillsImporting}
+          importMessage={skillsImportMessage}
+        />
         <EducationPanel
           profile={profile}
           onAddEducation={onAddEducation}
@@ -3686,12 +3794,50 @@ function ExperiencePanel({
   );
 }
 
-function SkillsPanel({ profile, onEditSkills }: { profile: CandidateProfile; onEditSkills: () => void }) {
+function SkillsPanel({
+  profile,
+  onEditSkills,
+  onImportSkillsFromCv,
+  isSkillsImporting,
+  importMessage,
+}: {
+  profile: CandidateProfile;
+  onEditSkills: () => void;
+  onImportSkillsFromCv: () => void;
+  isSkillsImporting: boolean;
+  importMessage: string;
+}) {
   const skillItems = parseProfileLines(profile.skills);
+  const hasResume = hasProfileValue(profile.resume_data_url) && hasProfileValue(profile.resume_file_name);
 
   return (
     <section className="panel p-4 2xl:p-5">
-      <ProfileSectionHeader title="Skills" action="Edit Skills" onAction={onEditSkills} />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-base font-bold 2xl:text-lg">Skills</h2>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-xs font-bold text-[#e6ebf3] transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45 2xl:text-[13px]"
+            onClick={onImportSkillsFromCv}
+            disabled={!hasResume || isSkillsImporting}
+            title={hasResume ? "Import skills from attached CV" : "Attach a CV first"}
+          >
+            <FileText className="h-4 w-4" />
+            {isSkillsImporting ? "Importing..." : "Import from CV"}
+          </button>
+          <button
+            type="button"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-bold text-accent transition hover:bg-accent/10 hover:text-[#ff7a1a] 2xl:text-[13px]"
+            onClick={onEditSkills}
+          >
+            <Edit3 className="h-4 w-4" />
+            Edit Skills
+          </button>
+        </div>
+      </div>
+      {importMessage && (
+        <p className="mt-3 text-xs font-semibold text-muted 2xl:text-[13px]">{importMessage}</p>
+      )}
       {skillItems.length > 0 ? (
         <div className="mt-4 flex flex-wrap gap-2">
           {skillItems.map((skill) => (

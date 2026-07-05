@@ -74,3 +74,8 @@ class ImportedEducationEntry(BaseModel):
 class ResumeEducationImportResponse(BaseModel):
     education: list[ImportedEducationEntry]
     message: str = ""
+
+
+class ResumeSkillsImportResponse(BaseModel):
+    skills: list[str]
+    message: str = ""
