@@ -3328,43 +3328,40 @@ function ProfileView({
 
       <ProfileHero profile={profile} onEditProfile={onEditProfile} />
 
-      <div className="mt-4 grid shrink-0 gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(360px,0.95fr)] 2xl:gap-5">
-        <div className="grid content-start gap-4 2xl:gap-5">
-          <ResumePanel profile={profile} onSaveResume={onSaveResume} />
-          <ExperiencePanel
-            profile={profile}
-            onAddExperience={onAddExperience}
-            onEditExperience={onEditExperience}
-            onDeleteExperience={onDeleteExperience}
-            onImportExperienceFromCv={onImportExperienceFromCv}
-            isExperienceImporting={isExperienceImporting}
-            importMessage={experienceImportMessage}
-          />
-          <SkillsPanel profile={profile} onEditSkills={onEditSkills} />
-          <EducationPanel
-            profile={profile}
-            onAddEducation={onAddEducation}
-            onEditEducation={onEditEducation}
-            onDeleteEducation={onDeleteEducation}
-            onImportEducationFromCv={onImportEducationFromCv}
-            isEducationImporting={isEducationImporting}
-            importMessage={educationImportMessage}
-          />
-          <DocumentsPanel
-            profile={profile}
-            onAddDocument={onAddDocument}
-            onEditDocument={onEditDocument}
-            onDeleteDocument={onDeleteDocument}
-          />
-        </div>
-
-        <aside className="grid content-start gap-4 2xl:gap-5">
+      <div className="mt-4 grid shrink-0 content-start gap-4 2xl:gap-5">
+        <ResumePanel profile={profile} onSaveResume={onSaveResume} />
+        <div className="grid gap-4 xl:grid-cols-2 2xl:gap-5">
           <ActivityPanel profile={profile} onEditProfile={onEditProfile} />
           <AiMatchProfilePanel profile={profile} onEditProfile={onEditProfile} />
-          <PreferencesPanel profile={profile} onEditPreferences={onEditPreferences} />
-          <DealbreakersPanel profile={profile} onEditProfile={onEditProfile} />
-          <AdditionalNotesPanel profile={profile} onEditProfile={onEditProfile} />
-        </aside>
+        </div>
+        <ExperiencePanel
+          profile={profile}
+          onAddExperience={onAddExperience}
+          onEditExperience={onEditExperience}
+          onDeleteExperience={onDeleteExperience}
+          onImportExperienceFromCv={onImportExperienceFromCv}
+          isExperienceImporting={isExperienceImporting}
+          importMessage={experienceImportMessage}
+        />
+        <SkillsPanel profile={profile} onEditSkills={onEditSkills} />
+        <EducationPanel
+          profile={profile}
+          onAddEducation={onAddEducation}
+          onEditEducation={onEditEducation}
+          onDeleteEducation={onDeleteEducation}
+          onImportEducationFromCv={onImportEducationFromCv}
+          isEducationImporting={isEducationImporting}
+          importMessage={educationImportMessage}
+        />
+        <PreferencesPanel profile={profile} onEditPreferences={onEditPreferences} />
+        <DealbreakersPanel profile={profile} onEditProfile={onEditProfile} />
+        <DocumentsPanel
+          profile={profile}
+          onAddDocument={onAddDocument}
+          onEditDocument={onEditDocument}
+          onDeleteDocument={onDeleteDocument}
+        />
+        <AdditionalNotesPanel profile={profile} onEditProfile={onEditProfile} />
       </div>
     </section>
   );
