@@ -461,6 +461,19 @@ const preferenceSuggestions: Record<PreferenceListField, string[]> = {
   languages: ["English C1", "English B2", "German A2", "German B1", "French B1", "Russian native"],
 };
 
+const suggestedDealbreakers = [
+  "No onsite-only roles",
+  "Remote or hybrid only",
+  "Minimum salary CHF 100,000",
+  "No contract roles",
+  "Full-time only",
+  "No relocation outside Switzerland",
+  "No unpaid internships",
+  "No roles requiring fluent German",
+  "No crypto or gambling industry",
+  "Must support Swiss permit",
+];
+
 const preferenceListLabels: Record<PreferenceListField, { label: string; placeholder: string }> = {
   desired_roles: { label: "Desired roles", placeholder: "Python Developer, AI Engineer..." },
   locations: { label: "Locations", placeholder: "Zurich, Switzerland, Remote Europe..." },
@@ -1106,7 +1119,6 @@ function getProfileCompletion(profile: CandidateProfile) {
     "skills",
     "education",
     "job_preferences",
-    "dealbreakers",
     "additional_notes",
     "documents",
     "resume_file_name",
@@ -1335,6 +1347,9 @@ export default function HomePage() {
   const [skillInput, setSkillInput] = useState("");
   const [isSkillsImporting, setIsSkillsImporting] = useState(false);
   const [skillsImportMessage, setSkillsImportMessage] = useState("");
+  const [isDealbreakersDialogOpen, setIsDealbreakersDialogOpen] = useState(false);
+  const [dealbreakersDraft, setDealbreakersDraft] = useState<string[]>([]);
+  const [dealbreakerInput, setDealbreakerInput] = useState("");
   const [profileSaveStatus, setProfileSaveStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [profileSaveMessage, setProfileSaveMessage] = useState("");
 
@@ -1608,6 +1623,14 @@ export default function HomePage() {
     setIsSkillsDialogOpen(true);
   }
 
+  function openDealbreakersEditor() {
+    setDealbreakersDraft(parseProfileLines(profile.dealbreakers));
+    setDealbreakerInput("");
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+    setIsDealbreakersDialogOpen(true);
+  }
+
   function addSkillToDraft(skill: string) {
     const normalizedSkill = skill.trim();
     if (!normalizedSkill) return;
@@ -1627,6 +1650,36 @@ export default function HomePage() {
 
   function removeSkillFromDraft(skill: string) {
     setSkillsDraft((currentSkills) => currentSkills.filter((item) => item !== skill));
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+  }
+
+  function addDealbreakerToDraft(dealbreaker: string) {
+    const normalizedDealbreaker = dealbreaker.trim();
+    if (!normalizedDealbreaker) return;
+
+    setDealbreakersDraft((currentDealbreakers) => {
+      const existingDealbreakers = new Set(currentDealbreakers.map((item) => item.toLowerCase()));
+      if (existingDealbreakers.has(normalizedDealbreaker.toLowerCase())) {
+        return currentDealbreakers;
+      }
+
+      return [...currentDealbreakers, normalizedDealbreaker];
+    });
+    setDealbreakerInput("");
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+  }
+
+  function removeDealbreakerFromDraft(dealbreaker: string) {
+    setDealbreakersDraft((currentDealbreakers) => currentDealbreakers.filter((item) => item !== dealbreaker));
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+  }
+
+  function clearDealbreakersDraft() {
+    setDealbreakersDraft([]);
+    setDealbreakerInput("");
     setProfileSaveStatus("idle");
     setProfileSaveMessage("");
   }
@@ -1996,6 +2049,40 @@ export default function HomePage() {
     } catch (error) {
       setProfileSaveStatus("error");
       setProfileSaveMessage(error instanceof Error ? error.message : "Skills save failed");
+    }
+  }
+
+  async function saveDealbreakers() {
+    const normalizedDealbreakers = mergeSkillLists([], dealbreakersDraft);
+    const nextProfile = normalizeCandidateProfile({
+      ...profile,
+      dealbreakers: normalizedDealbreakers.join("\n"),
+    });
+
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await response.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedProfile.detail ?? "Dealbreakers save failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+      setIsDealbreakersDialogOpen(false);
+    } catch (error) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(error instanceof Error ? error.message : "Dealbreakers save failed");
     }
   }
 
@@ -2576,6 +2663,7 @@ export default function HomePage() {
             onDeleteDocument={deleteDocument}
             onEditPreferences={openPreferencesEditor}
             onEditSkills={openSkillsEditor}
+            onEditDealbreakers={openDealbreakersEditor}
             onImportSkillsFromCv={importSkillsFromCv}
             isSkillsImporting={isSkillsImporting}
             skillsImportMessage={skillsImportMessage}
@@ -3191,6 +3279,24 @@ export default function HomePage() {
           onSave={saveSkills}
         />
       )}
+      {isDealbreakersDialogOpen && (
+        <DealbreakersEditorDialog
+          dealbreakers={dealbreakersDraft}
+          dealbreakerInput={dealbreakerInput}
+          status={profileSaveStatus}
+          message={profileSaveMessage}
+          onDealbreakerInputChange={(value) => {
+            setDealbreakerInput(value);
+            setProfileSaveStatus("idle");
+            setProfileSaveMessage("");
+          }}
+          onAddDealbreaker={addDealbreakerToDraft}
+          onRemoveDealbreaker={removeDealbreakerFromDraft}
+          onClearDealbreakers={clearDealbreakersDraft}
+          onClose={() => setIsDealbreakersDialogOpen(false)}
+          onSave={saveDealbreakers}
+        />
+      )}
       </div>
     </main>
   );
@@ -3412,6 +3518,7 @@ function ProfileView({
   onDeleteDocument,
   onEditPreferences,
   onEditSkills,
+  onEditDealbreakers,
   onImportSkillsFromCv,
   isSkillsImporting,
   skillsImportMessage,
@@ -3436,6 +3543,7 @@ function ProfileView({
   onDeleteDocument: (documentId: string) => void;
   onEditPreferences: () => void;
   onEditSkills: () => void;
+  onEditDealbreakers: () => void;
   onImportSkillsFromCv: () => void;
   isSkillsImporting: boolean;
   skillsImportMessage: string;
@@ -3484,7 +3592,7 @@ function ProfileView({
           importMessage={educationImportMessage}
         />
         <PreferencesPanel profile={profile} onEditPreferences={onEditPreferences} />
-        <DealbreakersPanel profile={profile} onEditProfile={onEditProfile} />
+        <DealbreakersPanel profile={profile} onEditDealbreakers={onEditDealbreakers} />
         <DocumentsPanel
           profile={profile}
           onAddDocument={onAddDocument}
@@ -4165,28 +4273,34 @@ function PreferencesPanel({
   );
 }
 
-function DealbreakersPanel({ profile, onEditProfile }: { profile: CandidateProfile; onEditProfile: () => void }) {
+function DealbreakersPanel({
+  profile,
+  onEditDealbreakers,
+}: {
+  profile: CandidateProfile;
+  onEditDealbreakers: () => void;
+}) {
   const dealbreakers = parseProfileLines(profile.dealbreakers);
 
   return (
     <section className="panel p-4 2xl:p-5">
-      <ProfileSectionHeader title="Dealbreakers" action="Edit Dealbreakers" onAction={onEditProfile} />
+      <ProfileSectionHeader title="Dealbreakers" action="Edit Dealbreakers" onAction={onEditDealbreakers} />
       {dealbreakers.length > 0 ? (
         <div className="mt-4 space-y-2.5">
           {dealbreakers.map((item) => (
-          <p key={item} className="flex items-center gap-2 text-[13px] text-muted 2xl:text-sm">
-            <Ban className="h-4 w-4 text-[#ff6b6b]" />
-            {item}
-          </p>
+            <p key={item} className="flex items-center gap-2 text-[13px] text-muted 2xl:text-sm">
+              <Ban className="h-4 w-4 text-[#ff6b6b]" />
+              {item}
+            </p>
           ))}
         </div>
       ) : (
         <EmptyProfileState
           className="mt-4"
           title="No dealbreakers"
-          description="Add hard limits such as onsite-only roles, industries, salary floor, or contract type."
-          action="Add dealbreakers"
-          onAction={onEditProfile}
+          description="No hard limits are set. This is valid if every matching condition is flexible."
+          action="Edit dealbreakers"
+          onAction={onEditDealbreakers}
         />
       )}
     </section>
@@ -4405,6 +4519,172 @@ function SkillsEditorDialog({
         <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
             {message || `${skills.length} skills selected`}
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              className="h-10 rounded-md border border-border bg-transparent px-6 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+              onClick={onClose}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12]"
+              disabled={status === "loading"}
+              onClick={onSave}
+            >
+              <Save className="h-4 w-4" />
+              {status === "loading" ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DealbreakersEditorDialog({
+  dealbreakers,
+  dealbreakerInput,
+  status,
+  message,
+  onDealbreakerInputChange,
+  onAddDealbreaker,
+  onRemoveDealbreaker,
+  onClearDealbreakers,
+  onClose,
+  onSave,
+}: {
+  dealbreakers: string[];
+  dealbreakerInput: string;
+  status: "idle" | "loading" | "ready" | "error";
+  message: string;
+  onDealbreakerInputChange: (value: string) => void;
+  onAddDealbreaker: (dealbreaker: string) => void;
+  onRemoveDealbreaker: (dealbreaker: string) => void;
+  onClearDealbreakers: () => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const normalizedQuery = dealbreakerInput.trim().toLowerCase();
+  const availableSuggestions = suggestedDealbreakers.filter(
+    (suggestion) =>
+      !dealbreakers.some((dealbreaker) => dealbreaker.toLowerCase() === suggestion.toLowerCase()) &&
+      (!normalizedQuery || suggestion.toLowerCase().includes(normalizedQuery)),
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+      <div className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[720px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] sm:p-5">
+        <div className="flex shrink-0 items-start justify-between gap-4">
+          <div>
+            <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[24px]">Edit Dealbreakers</h2>
+            <p className="mt-1 text-sm font-medium text-muted">Hard limits that should rule out a job match.</p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close dealbreakers editor"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto rounded-md border border-border p-4">
+          <form
+            className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onAddDealbreaker(dealbreakerInput);
+            }}
+          >
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Dealbreaker</span>
+              <input
+                value={dealbreakerInput}
+                onChange={(event) => onDealbreakerInputChange(event.target.value)}
+                placeholder="e.g. No onsite-only roles"
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+              <span className="text-xs font-medium text-muted">Leave the list empty when you have no hard limits.</span>
+            </label>
+            <Button
+              type="submit"
+              variant="ghost"
+              className="mt-6 h-10 rounded-md border border-border bg-white/[0.035] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.07]"
+            >
+              <Plus className="h-4 w-4" />
+              Add
+            </Button>
+          </form>
+
+          <div className="mt-5 rounded-md border border-border bg-white/[0.025] p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-bold text-white">Current hard limits</h3>
+              <button
+                type="button"
+                className="inline-flex min-h-7 items-center rounded-md border border-border bg-white/[0.025] px-2.5 text-[11px] font-bold text-muted transition hover:border-accent/45 hover:bg-accent/10 hover:text-[#d8dee8]"
+                onClick={onClearDealbreakers}
+              >
+                No dealbreakers
+              </button>
+            </div>
+            {dealbreakers.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {dealbreakers.map((dealbreaker) => (
+                  <span key={dealbreaker} className="inline-flex min-h-8 items-center gap-2 rounded-md border border-border bg-white/[0.04] px-2.5 text-xs font-semibold text-[#d8dee8]">
+                    {dealbreaker}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${dealbreaker}`}
+                      className="inline-flex h-5 w-5 items-center justify-center rounded text-muted transition hover:bg-white/[0.08] hover:text-white"
+                      onClick={() => onRemoveDealbreaker(dealbreaker)}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 rounded-md border border-dashed border-white/[0.16] bg-white/[0.025] p-3 text-sm text-muted">
+                No hard limits are set. Save this empty list if every condition is flexible.
+              </p>
+            )}
+          </div>
+
+          <div className="mt-5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-bold text-white">Suggested dealbreakers</h3>
+              <p className="text-xs font-medium text-muted">
+                {normalizedQuery ? `${availableSuggestions.length} matches` : `${availableSuggestions.length} available`}
+              </p>
+            </div>
+            {availableSuggestions.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {availableSuggestions.map((dealbreaker) => (
+                  <button
+                    key={dealbreaker}
+                    type="button"
+                    className="inline-flex min-h-8 items-center gap-1.5 rounded-md border border-border bg-white/[0.025] px-2.5 text-xs font-semibold text-[#d8dee8] transition hover:border-accent/60 hover:bg-accent/10 hover:text-white"
+                    onClick={() => onAddDealbreaker(dealbreaker)}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {dealbreaker}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-3 rounded-md border border-dashed border-white/[0.16] bg-white/[0.025] p-3 text-sm text-muted">
+                No suggestions match this search. Press Add to save it as a custom hard limit.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
+            {message || (dealbreakers.length === 0 ? "No dealbreakers set" : `${dealbreakers.length} dealbreakers selected`)}
           </p>
           <div className="flex gap-2">
             <Button
