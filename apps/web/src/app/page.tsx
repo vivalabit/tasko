@@ -183,6 +183,7 @@ type JobPreferences = {
   salary_min: string;
   salary_currency: string;
   work_authorization: string;
+  swiss_permit_status: string;
   languages: string[];
   company_sizes: string[];
   priorities: string[];
@@ -415,6 +416,7 @@ const defaultJobPreferences: JobPreferences = {
   salary_min: "",
   salary_currency: "CHF",
   work_authorization: "",
+  swiss_permit_status: "",
   languages: [],
   company_sizes: [],
   priorities: [],
@@ -436,6 +438,7 @@ const preferenceOptions = {
   company_sizes: ["Startup", "Scale-up", "Mid-size", "Enterprise"],
   priorities: ["Salary", "Learning", "Remote", "Relocation", "Tech stack", "Stability", "Fast hiring"],
   work_authorization: ["Authorized to work", "Needs sponsorship", "EU/EFTA eligible", "Swiss permit", "Student permit", "Not sure"],
+  swiss_permit_status: ["B permit", "C permit", "L permit", "G permit", "Ci permit", "S permit", "Other / in progress"],
 };
 
 const preferenceSuggestions: Record<PreferenceListField, string[]> = {
@@ -977,6 +980,9 @@ function normalizeJobPreferences(value: Partial<JobPreferences>): JobPreferences
     salary_min: value.salary_min?.trim() ?? "",
     salary_currency: value.salary_currency?.trim() || "CHF",
     work_authorization: value.work_authorization?.trim() ?? "",
+    swiss_permit_status: value.work_authorization?.trim() === "Swiss permit"
+      ? value.swiss_permit_status?.trim() ?? ""
+      : "",
     languages: normalizePreferenceList(value.languages),
     company_sizes: normalizePreferenceList(value.company_sizes),
     priorities: normalizePreferenceList(value.priorities),
@@ -1011,6 +1017,7 @@ function serializeJobPreferences(preferences: JobPreferences) {
     normalizedPreferences.industries.length > 0 ||
     hasProfileValue(normalizedPreferences.salary_min) ||
     hasProfileValue(normalizedPreferences.work_authorization) ||
+    hasProfileValue(normalizedPreferences.swiss_permit_status) ||
     normalizedPreferences.languages.length > 0 ||
     normalizedPreferences.company_sizes.length > 0 ||
     normalizedPreferences.priorities.length > 0 ||
@@ -1045,7 +1052,10 @@ function formatPreferenceSummary(preferences: JobPreferences) {
   if (preferences.no_preference.includes("work_authorization")) {
     items.splice(7, 0, { label: "Authorization", values: ["No preference"] });
   } else if (hasProfileValue(preferences.work_authorization)) {
-    items.splice(7, 0, { label: "Authorization", values: [preferences.work_authorization] });
+    const authorizationValues = preferences.work_authorization === "Swiss permit" && hasProfileValue(preferences.swiss_permit_status)
+      ? [`${preferences.work_authorization} (${preferences.swiss_permit_status})`]
+      : [preferences.work_authorization];
+    items.splice(7, 0, { label: "Authorization", values: authorizationValues });
   }
 
   if (hasProfileValue(preferences.notes)) {
@@ -1619,7 +1629,7 @@ export default function HomePage() {
       const noPreferenceField =
         field === "salary_min"
           ? "salary"
-          : field === "work_authorization"
+          : field === "work_authorization" || field === "swiss_permit_status"
             ? "work_authorization"
             : (["desired_roles", "seniority", "locations", "work_formats", "employment_types", "industries", "languages", "company_sizes", "priorities"] as string[]).includes(field)
               ? (field as PreferenceAnyField)
@@ -1708,6 +1718,7 @@ export default function HomePage() {
         nextPreferences.salary_min = "";
       } else if (field === "work_authorization") {
         nextPreferences.work_authorization = "";
+        nextPreferences.swiss_permit_status = "";
       } else {
         nextPreferences[field] = [];
       }
@@ -1892,9 +1903,20 @@ export default function HomePage() {
   }
 
   async function savePreferences() {
+    const normalizedPreferences = normalizeJobPreferences(preferencesDraft);
+    if (
+      normalizedPreferences.work_authorization === "Swiss permit" &&
+      !hasProfileValue(normalizedPreferences.swiss_permit_status) &&
+      !normalizedPreferences.no_preference.includes("work_authorization")
+    ) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage("Select Swiss permit status");
+      return;
+    }
+
     const nextProfile = normalizeCandidateProfile({
       ...profile,
-      job_preferences: serializeJobPreferences(preferencesDraft),
+      job_preferences: serializeJobPreferences(normalizedPreferences),
     });
 
     setProfileSaveStatus("loading");
@@ -4888,7 +4910,7 @@ function PreferencesEditorDialog({
               </button>
             </div>
 
-            <label className="grid gap-2 rounded-md border border-border bg-white/[0.025] p-3">
+            <div className="grid gap-3 rounded-md border border-border bg-white/[0.025] p-3">
               <span className="text-xs font-bold text-[#d8dee8]">Work authorization</span>
               <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_180px]">
                 <select
@@ -4915,7 +4937,22 @@ function PreferencesEditorDialog({
                   No preference
                 </button>
               </div>
-            </label>
+              {preferences.work_authorization === "Swiss permit" && !preferences.no_preference.includes("work_authorization") ? (
+                <label className="grid gap-2">
+                  <span className="text-xs font-bold text-[#d8dee8]">Swiss permit status</span>
+                  <select
+                    value={preferences.swiss_permit_status}
+                    onChange={(event) => onChange("swiss_permit_status", event.target.value)}
+                    className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                  >
+                    <option value="">Select permit status</option>
+                    {preferenceOptions.swiss_permit_status.map((item) => (
+                      <option key={item}>{item}</option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+            </div>
 
             <label className="grid gap-2">
               <span className="text-xs font-bold text-[#d8dee8]">Notes</span>
