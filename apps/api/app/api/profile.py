@@ -8,12 +8,15 @@ from app.core.settings import Settings, get_settings
 from app.models.profile import (
     ProfilePayload,
     ProfileRecord,
+    ResumeEducationImportResponse,
     ResumeExperienceImportRequest,
     ResumeExperienceImportResponse,
 )
 from app.services.resume_import import (
     OpenClawResumeImportError,
     extract_resume_text,
+    parse_education_from_text,
+    parse_education_with_openclaw,
     parse_experience_from_text,
     parse_experience_with_openclaw,
 )
@@ -141,6 +144,52 @@ def import_experience_from_resume(
         experience=experience,
         message=(
             f"Imported {len(experience)} experience entr{'y' if len(experience) == 1 else 'ies'} "
+            f"with {import_method}"
+        ),
+    )
+
+
+@router.post("/import-education-from-resume", response_model=ResumeEducationImportResponse)
+def import_education_from_resume(
+    payload: ResumeExperienceImportRequest,
+    settings: Settings = Depends(get_settings),
+) -> ResumeEducationImportResponse:
+    text = extract_resume_text(payload.resume_file_name, payload.resume_data_url)
+    if not text.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Could not read text from the attached resume",
+        )
+
+    if settings.openclaw_resume_import_enabled:
+        import_method = "OpenClaw"
+        try:
+            education = parse_education_with_openclaw(
+                text=text,
+                command=settings.openclaw_command,
+                agent_id=settings.openclaw_agent_id,
+                thinking=settings.openclaw_resume_import_thinking,
+                timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
+            )
+        except OpenClawResumeImportError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"OpenClaw resume import failed: {exc}",
+            ) from exc
+    else:
+        education = parse_education_from_text(text)
+        import_method = "local parser"
+
+    if not education:
+        return ResumeEducationImportResponse(
+            education=[],
+            message="No structured education entries were found in the attached resume",
+        )
+
+    return ResumeEducationImportResponse(
+        education=education,
+        message=(
+            f"Imported {len(education)} education entr{'y' if len(education) == 1 else 'ies'} "
             f"with {import_method}"
         ),
     )

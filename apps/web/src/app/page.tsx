@@ -18,6 +18,7 @@ import {
   ExternalLink,
   FileText,
   Github,
+  GraduationCap,
   Globe,
   Heart,
   Home,
@@ -145,8 +146,26 @@ type ExperienceEntry = {
   description: string;
 };
 
+type EducationEntry = {
+  id: string;
+  institution: string;
+  credential: string;
+  field_of_study: string;
+  location: string;
+  start_date: string;
+  end_date: string;
+  is_current: boolean;
+  description: string;
+};
+
 type ResumeExperienceImportResponse = {
   experience?: Array<Partial<ExperienceEntry>>;
+  message?: string;
+  detail?: string;
+};
+
+type ResumeEducationImportResponse = {
+  education?: Array<Partial<EducationEntry>>;
   message?: string;
   detail?: string;
 };
@@ -302,6 +321,18 @@ const defaultExperienceDraft: ExperienceEntry = {
   title: "",
   company: "",
   employment_type: "Full-time",
+  location: "",
+  start_date: "",
+  end_date: "",
+  is_current: false,
+  description: "",
+};
+
+const defaultEducationDraft: EducationEntry = {
+  id: "",
+  institution: "",
+  credential: "",
+  field_of_study: "",
   location: "",
   start_date: "",
   end_date: "",
@@ -658,6 +689,73 @@ function mergeExperienceEntries(currentEntries: ExperienceEntry[], importedEntri
   return nextEntries;
 }
 
+function normalizeEducationEntry(entry: Partial<EducationEntry>): EducationEntry {
+  return {
+    ...defaultEducationDraft,
+    ...entry,
+    id: entry.id || createClientId("education"),
+    institution: entry.institution?.trim() ?? "",
+    credential: entry.credential?.trim() ?? "",
+    field_of_study: entry.field_of_study?.trim() ?? "",
+    location: entry.location?.trim() ?? "",
+    start_date: entry.start_date?.trim() ?? "",
+    end_date: entry.is_current ? "" : entry.end_date?.trim() ?? "",
+    is_current: Boolean(entry.is_current),
+    description: entry.description?.trim() ?? "",
+  };
+}
+
+function parseEducationEntries(value: string): EducationEntry[] {
+  if (!value.trim()) return [];
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed
+        .filter((item): item is Partial<EducationEntry> => Boolean(item) && typeof item === "object")
+        .map((item) => normalizeEducationEntry(item))
+        .filter((item) => item.institution || item.credential || item.field_of_study || item.description);
+    }
+  } catch {
+    // Fall back to the previous one-line-per-entry format.
+  }
+
+  return parseProfileLines(value).map((item, index) =>
+    normalizeEducationEntry({
+      id: `legacy-education-${index}`,
+      credential: item,
+      description: item,
+    }),
+  );
+}
+
+function serializeEducationEntries(entries: EducationEntry[]) {
+  return JSON.stringify(entries.map((entry) => normalizeEducationEntry(entry)));
+}
+
+function getEducationFingerprint(entry: EducationEntry) {
+  return [entry.institution, entry.credential, entry.field_of_study, entry.start_date, entry.end_date]
+    .map((value) => value.trim().toLowerCase())
+    .join("|");
+}
+
+function mergeEducationEntries(currentEntries: EducationEntry[], importedEntries: EducationEntry[]) {
+  const existingFingerprints = new Set(currentEntries.map(getEducationFingerprint));
+  const nextEntries = [...currentEntries];
+
+  for (const entry of importedEntries) {
+    const fingerprint = getEducationFingerprint(entry);
+    if ((!entry.institution && !entry.credential) || existingFingerprints.has(fingerprint)) {
+      continue;
+    }
+
+    existingFingerprints.add(fingerprint);
+    nextEntries.push(entry);
+  }
+
+  return nextEntries;
+}
+
 function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
@@ -894,6 +992,11 @@ export default function HomePage() {
   const [experienceDraft, setExperienceDraft] = useState<ExperienceEntry>(defaultExperienceDraft);
   const [isExperienceImporting, setIsExperienceImporting] = useState(false);
   const [experienceImportMessage, setExperienceImportMessage] = useState("");
+  const [isEducationDialogOpen, setIsEducationDialogOpen] = useState(false);
+  const [isEducationEditMode, setIsEducationEditMode] = useState(false);
+  const [educationDraft, setEducationDraft] = useState<EducationEntry>(defaultEducationDraft);
+  const [isEducationImporting, setIsEducationImporting] = useState(false);
+  const [educationImportMessage, setEducationImportMessage] = useState("");
   const [isSkillsDialogOpen, setIsSkillsDialogOpen] = useState(false);
   const [skillsDraft, setSkillsDraft] = useState<string[]>([]);
   const [skillInput, setSkillInput] = useState("");
@@ -1138,6 +1241,14 @@ export default function HomePage() {
     setIsExperienceDialogOpen(true);
   }
 
+  function openEducationEditor(education?: EducationEntry) {
+    setEducationDraft(education ? normalizeEducationEntry(education) : { ...defaultEducationDraft, id: createClientId("education") });
+    setIsEducationEditMode(Boolean(education));
+    setProfileSaveStatus("idle");
+    setProfileSaveMessage("");
+    setIsEducationDialogOpen(true);
+  }
+
   function openSkillsEditor() {
     setSkillsDraft(parseProfileLines(profile.skills));
     setSkillInput("");
@@ -1253,6 +1364,52 @@ export default function HomePage() {
     }
   }
 
+  async function saveEducation() {
+    const normalizedEducation = normalizeEducationEntry(educationDraft);
+
+    if (!normalizedEducation.institution || !normalizedEducation.credential) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage("Enter institution and credential");
+      return;
+    }
+
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    const educationEntries = parseEducationEntries(profile.education);
+    const existingEducation = educationEntries.some((entry) => entry.id === normalizedEducation.id);
+    const nextEducationEntries = existingEducation
+      ? educationEntries.map((entry) => (entry.id === normalizedEducation.id ? normalizedEducation : entry))
+      : [...educationEntries, normalizedEducation];
+    const nextProfile = normalizeCandidateProfile({
+      ...profile,
+      education: serializeEducationEntries(nextEducationEntries),
+    });
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await response.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedProfile.detail ?? "Education save failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+      setIsEducationDialogOpen(false);
+    } catch (error) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(error instanceof Error ? error.message : "Education save failed");
+    }
+  }
+
   async function saveSkills() {
     const normalizedSkills = Array.from(
       new Map(skillsDraft.map((skill) => [skill.trim().toLowerCase(), skill.trim()])).values(),
@@ -1320,6 +1477,40 @@ export default function HomePage() {
       setProfileSaveStatus("error");
       setProfileSaveMessage(error instanceof Error ? error.message : "Experience delete failed");
       window.alert(error instanceof Error ? error.message : "Experience delete failed");
+    }
+  }
+
+  async function deleteEducation(educationId: string) {
+    const nextEducationEntries = parseEducationEntries(profile.education).filter((entry) => entry.id !== educationId);
+    const nextProfile = normalizeCandidateProfile({
+      ...profile,
+      education: serializeEducationEntries(nextEducationEntries),
+    });
+
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await response.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedProfile.detail ?? "Education delete failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+    } catch (error) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(error instanceof Error ? error.message : "Education delete failed");
+      window.alert(error instanceof Error ? error.message : "Education delete failed");
     }
   }
 
@@ -1403,6 +1594,89 @@ export default function HomePage() {
       setExperienceImportMessage(message);
     } finally {
       setIsExperienceImporting(false);
+    }
+  }
+
+  async function importEducationFromCv() {
+    if (!profile.resume_data_url || !profile.resume_file_name) {
+      setEducationImportMessage("Attach a resume first");
+      window.alert("Attach a resume before importing education.");
+      return;
+    }
+
+    setIsEducationImporting(true);
+    setEducationImportMessage("");
+    setProfileSaveStatus("loading");
+    setProfileSaveMessage("");
+
+    try {
+      const importResponse = await fetch(`${apiBaseUrl}/profile/import-education-from-resume`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resume_file_name: profile.resume_file_name,
+          resume_data_url: profile.resume_data_url,
+        }),
+      });
+      const importResult = (await importResponse.json()) as ResumeEducationImportResponse;
+
+      if (!importResponse.ok) {
+        throw new Error(importResult.detail ?? "Education import failed");
+      }
+
+      const importedEntries = (importResult.education ?? []).map((entry) =>
+        normalizeEducationEntry({
+          ...entry,
+          id: entry.id || createClientId("cv-education"),
+        }),
+      );
+
+      if (importedEntries.length === 0) {
+        setProfileSaveStatus("ready");
+        setEducationImportMessage(importResult.message || "No education entries were found in the attached CV");
+        return;
+      }
+
+      const currentEntries = parseEducationEntries(profile.education);
+      const mergedEntries = mergeEducationEntries(currentEntries, importedEntries);
+      const addedCount = mergedEntries.length - currentEntries.length;
+
+      if (addedCount === 0) {
+        setProfileSaveStatus("ready");
+        setEducationImportMessage("No new education entries found in the attached CV");
+        return;
+      }
+
+      const nextProfile = normalizeCandidateProfile({
+        ...profile,
+        education: serializeEducationEntries(mergedEntries),
+      });
+      const saveResponse = await fetch(`${apiBaseUrl}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(nextProfile),
+      });
+      const savedProfile = (await saveResponse.json()) as Partial<CandidateProfile> & { detail?: string };
+
+      if (!saveResponse.ok) {
+        throw new Error(savedProfile.detail ?? "Education import save failed");
+      }
+
+      const normalizedProfile = normalizeCandidateProfile(savedProfile);
+      setProfile(normalizedProfile);
+      setProfileDraft(normalizedProfile);
+      setProfileSaveStatus("ready");
+      setProfileSaveMessage("");
+      setEducationImportMessage(
+        importResult.message || `Imported ${addedCount} education entr${addedCount === 1 ? "y" : "ies"} from CV`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Education import failed";
+      setProfileSaveStatus("error");
+      setProfileSaveMessage(message);
+      setEducationImportMessage(message);
+    } finally {
+      setIsEducationImporting(false);
     }
   }
 
@@ -1583,6 +1857,12 @@ export default function HomePage() {
             onImportExperienceFromCv={importExperienceFromCv}
             isExperienceImporting={isExperienceImporting}
             experienceImportMessage={experienceImportMessage}
+            onAddEducation={() => openEducationEditor()}
+            onEditEducation={openEducationEditor}
+            onDeleteEducation={deleteEducation}
+            onImportEducationFromCv={importEducationFromCv}
+            isEducationImporting={isEducationImporting}
+            educationImportMessage={educationImportMessage}
             onEditSkills={openSkillsEditor}
             onSaveResume={saveResumeFile}
           />
@@ -2132,6 +2412,21 @@ export default function HomePage() {
           onSave={saveExperience}
         />
       )}
+      {isEducationDialogOpen && (
+        <EducationEditorDialog
+          education={educationDraft}
+          isEditMode={isEducationEditMode}
+          status={profileSaveStatus}
+          message={profileSaveMessage}
+          onChange={(field, value) => {
+            setEducationDraft((current) => ({ ...current, [field]: value }));
+            setProfileSaveStatus("idle");
+            setProfileSaveMessage("");
+          }}
+          onClose={() => setIsEducationDialogOpen(false)}
+          onSave={saveEducation}
+        />
+      )}
       {isSkillsDialogOpen && (
         <SkillsEditorDialog
           skills={skillsDraft}
@@ -2359,6 +2654,12 @@ function ProfileView({
   onImportExperienceFromCv,
   isExperienceImporting,
   experienceImportMessage,
+  onAddEducation,
+  onEditEducation,
+  onDeleteEducation,
+  onImportEducationFromCv,
+  isEducationImporting,
+  educationImportMessage,
   onEditSkills,
   onSaveResume,
 }: {
@@ -2370,6 +2671,12 @@ function ProfileView({
   onImportExperienceFromCv: () => void;
   isExperienceImporting: boolean;
   experienceImportMessage: string;
+  onAddEducation: () => void;
+  onEditEducation: (education: EducationEntry) => void;
+  onDeleteEducation: (educationId: string) => void;
+  onImportEducationFromCv: () => void;
+  isEducationImporting: boolean;
+  educationImportMessage: string;
   onEditSkills: () => void;
   onSaveResume: (file: File) => void;
 }) {
@@ -2397,7 +2704,15 @@ function ProfileView({
             importMessage={experienceImportMessage}
           />
           <SkillsPanel profile={profile} onEditSkills={onEditSkills} />
-          <EducationPanel profile={profile} onEditProfile={onEditProfile} />
+          <EducationPanel
+            profile={profile}
+            onAddEducation={onAddEducation}
+            onEditEducation={onEditEducation}
+            onDeleteEducation={onDeleteEducation}
+            onImportEducationFromCv={onImportEducationFromCv}
+            isEducationImporting={isEducationImporting}
+            importMessage={educationImportMessage}
+          />
           <DocumentsPanel onEditProfile={onEditProfile} />
         </div>
 
@@ -2737,16 +3052,101 @@ function SkillsPanel({ profile, onEditSkills }: { profile: CandidateProfile; onE
   );
 }
 
-function EducationPanel({ profile, onEditProfile }: { profile: CandidateProfile; onEditProfile: () => void }) {
-  const educationItems = parseProfileLines(profile.education);
+function EducationPanel({
+  profile,
+  onAddEducation,
+  onEditEducation,
+  onDeleteEducation,
+  onImportEducationFromCv,
+  isEducationImporting,
+  importMessage,
+}: {
+  profile: CandidateProfile;
+  onAddEducation: () => void;
+  onEditEducation: (education: EducationEntry) => void;
+  onDeleteEducation: (educationId: string) => void;
+  onImportEducationFromCv: () => void;
+  isEducationImporting: boolean;
+  importMessage: string;
+}) {
+  const educationItems = parseEducationEntries(profile.education);
+  const hasResume = hasProfileValue(profile.resume_data_url) && hasProfileValue(profile.resume_file_name);
 
   return (
     <section className="panel p-4 2xl:p-5">
-      <ProfileSectionHeader title="Education & Certifications" action="+ Add" onAction={onEditProfile} />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-base font-bold 2xl:text-lg">Education & Certifications</h2>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-3 text-xs font-bold text-[#e6ebf3] transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45 2xl:text-[13px]"
+            onClick={onImportEducationFromCv}
+            disabled={!hasResume || isEducationImporting}
+            title={hasResume ? "Import education from attached CV" : "Attach a CV first"}
+          >
+            <FileText className="h-4 w-4" />
+            {isEducationImporting ? "Importing..." : "Import from CV"}
+          </button>
+          <button
+            type="button"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-bold text-accent transition hover:bg-accent/10 hover:text-[#ff7a1a] 2xl:text-[13px]"
+            onClick={onAddEducation}
+          >
+            <Plus className="h-4 w-4" />
+            Add Education
+          </button>
+        </div>
+      </div>
+      {importMessage && (
+        <p className="mt-3 text-xs font-semibold text-muted 2xl:text-[13px]">{importMessage}</p>
+      )}
       {educationItems.length > 0 ? (
-        <div className="mt-4 space-y-3">
+        <div className="mt-4 space-y-4">
           {educationItems.map((item) => (
-            <ProfileTextItem key={item} icon={FileText} text={item} />
+            <article key={item.id} className="grid grid-cols-[40px_minmax(0,1fr)_auto] gap-3 rounded-md border border-border bg-white/[0.025] p-3">
+              <span className="grid h-10 w-10 place-items-center rounded-md bg-white/[0.06] text-[#d8dee8]">
+                <GraduationCap className="h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <h3 className="text-sm font-bold text-white 2xl:text-base">
+                  {item.credential || "Education"}
+                </h3>
+                <p className="mt-0.5 text-[13px] font-semibold text-[#d8dee8] 2xl:text-sm">
+                  {item.institution || "Institution not specified"}
+                </p>
+                {(item.field_of_study || item.location) && (
+                  <p className="mt-1 text-xs text-muted 2xl:text-[13px]">
+                    {[item.field_of_study, item.location].filter(Boolean).join(" • ")}
+                  </p>
+                )}
+                {(item.start_date || item.end_date || item.is_current) && (
+                  <p className="mt-1 text-xs text-muted 2xl:text-[13px]">
+                    {item.start_date || "Start date"} - {item.is_current ? "Present" : item.end_date || "End date"}
+                  </p>
+                )}
+                {item.description && (
+                  <p className="mt-2 whitespace-pre-line text-[13px] leading-5 text-muted 2xl:text-sm">{item.description}</p>
+                )}
+              </div>
+              <div className="flex shrink-0 gap-1">
+                <button
+                  type="button"
+                  aria-label="Edit education"
+                  onClick={() => onEditEducation(item)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+                >
+                  <Edit3 className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Delete education"
+                  onClick={() => onDeleteEducation(item.id)}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted transition hover:bg-[#ff6b6b]/12 hover:text-[#ff7a7a]"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </div>
+            </article>
           ))}
         </div>
       ) : (
@@ -2755,7 +3155,7 @@ function EducationPanel({ profile, onEditProfile }: { profile: CandidateProfile;
           title="No education added"
           description="Add degrees, courses, certifications, or relevant training."
           action="Add education"
-          onAction={onEditProfile}
+          onAction={onAddEducation}
         />
       )}
     </section>
@@ -3294,6 +3694,169 @@ function ExperienceEditorDialog({
   );
 }
 
+function EducationEditorDialog({
+  education,
+  isEditMode,
+  status,
+  message,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  education: EducationEntry;
+  isEditMode: boolean;
+  status: "idle" | "loading" | "ready" | "error";
+  message: string;
+  onChange: <Field extends keyof EducationEntry>(
+    field: Field,
+    value: EducationEntry[Field],
+  ) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+      <div className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[760px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] sm:p-5">
+        <div className="flex shrink-0 items-start justify-between gap-4">
+          <div>
+            <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[24px]">
+              {isEditMode ? "Edit Education" : "Add Education"}
+            </h2>
+            <p className="mt-1 text-sm font-medium text-muted">
+              {isEditMode ? "Update this degree, course, certification, or training." : "Add one degree, course, certification, or training."}
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close education editor"
+            onClick={onClose}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto rounded-md border border-border p-4">
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Institution</span>
+              <input
+                value={education.institution}
+                onChange={(event) => onChange("institution", event.target.value)}
+                placeholder="University, school, provider..."
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Credential</span>
+              <input
+                value={education.credential}
+                onChange={(event) => onChange("credential", event.target.value)}
+                placeholder="Bachelor, certificate, course name..."
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Field of study</span>
+              <input
+                value={education.field_of_study}
+                onChange={(event) => onChange("field_of_study", event.target.value)}
+                placeholder="Computer Science, Data Analytics..."
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Location</span>
+              <input
+                value={education.location}
+                onChange={(event) => onChange("location", event.target.value)}
+                placeholder="Remote, Zurich, Switzerland..."
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Start date</span>
+              <input
+                type="month"
+                value={education.start_date}
+                onChange={(event) => onChange("start_date", event.target.value)}
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+              />
+            </label>
+
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">End date</span>
+              <input
+                type="month"
+                value={education.end_date}
+                disabled={education.is_current}
+                onChange={(event) => onChange("end_date", event.target.value)}
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none disabled:opacity-45 focus:border-accent/70"
+              />
+            </label>
+
+            <label className="flex items-start gap-3 rounded-md border border-border bg-white/[0.025] p-3 md:col-span-2">
+              <input
+                type="checkbox"
+                checked={education.is_current}
+                onChange={(event) => {
+                  onChange("is_current", event.target.checked);
+                  if (event.target.checked) {
+                    onChange("end_date", "");
+                  }
+                }}
+                className="mt-1 h-4 w-4 accent-accent"
+              />
+              <span>
+                <span className="block text-sm font-bold text-white">I currently study here</span>
+                <span className="mt-1 block text-xs text-muted">End date will be shown as Present.</span>
+              </span>
+            </label>
+
+            <label className="grid gap-2 md:col-span-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Details</span>
+              <textarea
+                value={education.description}
+                onChange={(event) => onChange("description", event.target.value)}
+                placeholder="Relevant coursework, honors, thesis, certification ID, or training details..."
+                rows={5}
+                className="min-h-[128px] resize-none rounded-md border border-border bg-[#0d131a] px-3 py-2.5 text-sm font-semibold leading-5 text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              />
+            </label>
+          </div>
+        </div>
+
+        <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
+            {message || "Institution and credential are required"}
+          </p>
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              className="h-10 rounded-md border border-border bg-transparent px-6 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+              onClick={onClose}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12]"
+              disabled={status === "loading"}
+              onClick={onSave}
+            >
+              <Save className="h-4 w-4" />
+              {status === "loading" ? "Saving..." : "Save"}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProfileEditorDialog({
   profile,
   status,
@@ -3468,7 +4031,7 @@ function AppSidebar({
         <img
           src="/brand/tasko-mark.png"
           alt=""
-          className="app-sidebar-mark h-8 w-8 object-contain 2xl:h-10 2xl:w-9"
+          className="app-sidebar-mark h-[52px] w-[52px] object-contain 2xl:h-[58px] 2xl:w-[58px]"
           aria-hidden="true"
         />
         <div className="min-w-0">

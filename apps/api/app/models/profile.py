@@ -28,7 +28,7 @@ class ProfilePayload(BaseModel):
     personal_site: str = Field(default="", max_length=240)
     experience: str = Field(default="", max_length=12000)
     skills: str = Field(default="", max_length=2000)
-    education: str = Field(default="", max_length=2000)
+    education: str = Field(default="", max_length=12000)
     job_preferences: str = Field(default="", max_length=2000)
     dealbreakers: str = Field(default="", max_length=2000)
     additional_notes: str = Field(default="", max_length=2000)
@@ -56,4 +56,20 @@ class ImportedExperienceEntry(BaseModel):
 
 class ResumeExperienceImportResponse(BaseModel):
     experience: list[ImportedExperienceEntry]
+    message: str = ""
+
+
+class ImportedEducationEntry(BaseModel):
+    institution: str = Field(default="", max_length=180)
+    credential: str = Field(default="", max_length=180)
+    field_of_study: str = Field(default="", max_length=180)
+    location: str = Field(default="", max_length=180)
+    start_date: str = Field(default="", max_length=20)
+    end_date: str = Field(default="", max_length=20)
+    is_current: bool = False
+    description: str = Field(default="", max_length=2000)
+
+
+class ResumeEducationImportResponse(BaseModel):
+    education: list[ImportedEducationEntry]
     message: str = ""

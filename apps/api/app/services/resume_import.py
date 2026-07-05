@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from xml.etree import ElementTree
 
-from app.models.profile import ImportedExperienceEntry
+from app.models.profile import ImportedEducationEntry, ImportedExperienceEntry
 
 EXPERIENCE_HEADINGS = {
     "experience",
@@ -21,6 +21,16 @@ EXPERIENCE_HEADINGS = {
     "relevant experience",
 }
 
+EDUCATION_HEADINGS = {
+    "education",
+    "education and certifications",
+    "education certifications",
+    "certifications",
+    "certificates",
+    "courses",
+    "training",
+}
+
 SECTION_STOP_HEADINGS = {
     "education",
     "skills",
@@ -28,6 +38,23 @@ SECTION_STOP_HEADINGS = {
     "projects",
     "certifications",
     "certificates",
+    "languages",
+    "summary",
+    "profile",
+    "contacts",
+    "contact",
+    "references",
+}
+
+EDUCATION_STOP_HEADINGS = {
+    "experience",
+    "work experience",
+    "professional experience",
+    "employment history",
+    "career history",
+    "skills",
+    "technical skills",
+    "projects",
     "languages",
     "summary",
     "profile",
@@ -53,6 +80,24 @@ TITLE_HINTS = {
     "programmer",
     "specialist",
     "technician",
+}
+
+CREDENTIAL_HINTS = {
+    "bachelor",
+    "bsc",
+    "bs",
+    "master",
+    "msc",
+    "ms",
+    "phd",
+    "doctor",
+    "degree",
+    "diploma",
+    "certificate",
+    "certification",
+    "course",
+    "bootcamp",
+    "training",
 }
 
 MONTHS = {
@@ -118,6 +163,31 @@ class ParsedExperience:
             title=self.title.strip(),
             company=self.company.strip(),
             employment_type=self.employment_type,
+            location=self.location.strip(),
+            start_date=self.start_date,
+            end_date="" if self.is_current else self.end_date,
+            is_current=self.is_current,
+            description=description.strip(),
+        )
+
+
+@dataclass
+class ParsedEducation:
+    institution: str = ""
+    credential: str = ""
+    field_of_study: str = ""
+    location: str = ""
+    start_date: str = ""
+    end_date: str = ""
+    is_current: bool = False
+    description_lines: list[str] | None = None
+
+    def to_model(self) -> ImportedEducationEntry:
+        description = "\n".join(self.description_lines or [])
+        return ImportedEducationEntry(
+            institution=self.institution.strip(),
+            credential=self.credential.strip(),
+            field_of_study=self.field_of_study.strip(),
             location=self.location.strip(),
             start_date=self.start_date,
             end_date="" if self.is_current else self.end_date,
@@ -235,6 +305,20 @@ def parse_experience_from_text(text: str) -> list[ImportedExperienceEntry]:
     ][:12]
 
 
+def parse_education_from_text(text: str) -> list[ImportedEducationEntry]:
+    lines = normalize_lines(text)
+    section_lines = get_education_section(lines)
+    if not section_lines:
+        return []
+
+    entries = parse_education_lines(section_lines)
+    return [
+        entry.to_model()
+        for entry in entries
+        if entry.institution or entry.credential or entry.field_of_study
+    ][:12]
+
+
 def parse_experience_with_openclaw(
     text: str,
     command: str,
@@ -276,6 +360,47 @@ def parse_experience_with_openclaw(
     ][:12]
 
 
+def parse_education_with_openclaw(
+    text: str,
+    command: str,
+    agent_id: str,
+    thinking: str,
+    timeout_seconds: int,
+) -> list[ImportedEducationEntry]:
+    resume_text = text.strip()
+    if not resume_text:
+        return []
+
+    executable = shutil.which(command) or command
+    prompt = build_openclaw_education_prompt(resume_text[:50000])
+    try:
+        result = subprocess.run(
+            [executable, "agent", "--agent", agent_id, "--message", prompt, "--thinking", thinking, "--json"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except FileNotFoundError as exc:
+        raise OpenClawResumeImportError(f"OpenClaw command was not found: {command}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise OpenClawResumeImportError("OpenClaw resume import timed out") from exc
+    except subprocess.CalledProcessError as exc:
+        error_output = (exc.stderr or exc.stdout or "OpenClaw command failed").strip()
+        raise OpenClawResumeImportError(summarize_openclaw_error(error_output)) from exc
+
+    parsed = extract_openclaw_education_payload(result.stdout)
+    entries = parsed.get("education", [])
+    if not isinstance(entries, list):
+        return []
+
+    return [
+        ImportedEducationEntry.model_validate(entry)
+        for entry in entries
+        if isinstance(entry, dict)
+    ][:12]
+
+
 def summarize_openclaw_error(error_output: str) -> str:
     if "No API key found" in error_output:
         return (
@@ -294,8 +419,16 @@ def summarize_openclaw_error(error_output: str) -> str:
 
 
 def extract_openclaw_experience_payload(value: str) -> dict[str, object]:
+    return extract_openclaw_payload(value, "experience")
+
+
+def extract_openclaw_education_payload(value: str) -> dict[str, object]:
+    return extract_openclaw_payload(value, "education")
+
+
+def extract_openclaw_payload(value: str, key: str) -> dict[str, object]:
     for payload in extract_json_objects(value):
-        if isinstance(payload.get("experience"), list):
+        if isinstance(payload.get(key), list):
             return payload
 
         result = payload.get("result")
@@ -305,7 +438,7 @@ def extract_openclaw_experience_payload(value: str) -> dict[str, object]:
         final_text = result.get("finalAssistantVisibleText") or result.get("finalAssistantRawText")
         if isinstance(final_text, str):
             final_payload = extract_json_object(final_text)
-            if isinstance(final_payload.get("experience"), list):
+            if isinstance(final_payload.get(key), list):
                 return final_payload
 
         nested_result = result.get("result")
@@ -313,7 +446,7 @@ def extract_openclaw_experience_payload(value: str) -> dict[str, object]:
             final_text = nested_result.get("finalAssistantVisibleText") or nested_result.get("finalAssistantRawText")
             if isinstance(final_text, str):
                 final_payload = extract_json_object(final_text)
-                if isinstance(final_payload.get("experience"), list):
+                if isinstance(final_payload.get(key), list):
                     return final_payload
 
         payloads = result.get("payloads")
@@ -325,7 +458,7 @@ def extract_openclaw_experience_payload(value: str) -> dict[str, object]:
                 if not isinstance(text, str):
                     continue
                 final_payload = extract_json_object(text)
-                if isinstance(final_payload.get("experience"), list):
+                if isinstance(final_payload.get(key), list):
                     return final_payload
 
     return {}
@@ -357,6 +490,36 @@ def build_openclaw_resume_prompt(resume_text: str) -> str:
         "- Preserve separate companies/projects as separate objects.\n"
         "- If a field is unknown, use an empty string.\n"
         "- For current roles, set is_current true and end_date empty.\n"
+        "- Use YYYY-MM when a month is known; for year-only start use YYYY-01, for year-only end use YYYY-12.\n\n"
+        f"Resume text:\n{resume_text}"
+    )
+
+
+def build_openclaw_education_prompt(resume_text: str) -> str:
+    return (
+        "You are extracting education, courses, and certifications from a resume for a job search app.\n"
+        "Return ONLY one valid JSON object, no markdown and no prose.\n"
+        "JSON shape:\n"
+        "{\n"
+        '  "education": [\n'
+        "    {\n"
+        '      "institution": "string",\n'
+        '      "credential": "degree, certification, course, bootcamp, or training name",\n'
+        '      "field_of_study": "string",\n'
+        '      "location": "string",\n'
+        '      "start_date": "YYYY-MM or empty string",\n'
+        '      "end_date": "YYYY-MM or empty string",\n'
+        '      "is_current": true,\n'
+        '      "description": "relevant details, honors, coursework, or credential notes; one item per line"\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "Rules:\n"
+        "- Extract degrees, universities, colleges, bootcamps, courses, certificates, certifications, and relevant training.\n"
+        "- Do not include work experience, skills, summary, contact sections, or unrelated projects.\n"
+        "- Do not merge separate credentials into one item.\n"
+        "- If a field is unknown, use an empty string.\n"
+        "- For current studies, set is_current true and end_date empty.\n"
         "- Use YYYY-MM when a month is known; for year-only start use YYYY-01, for year-only end use YYYY-12.\n\n"
         f"Resume text:\n{resume_text}"
     )
@@ -404,7 +567,7 @@ def normalize_lines(text: str) -> list[str]:
 
 
 def normalize_heading(line: str) -> str:
-    return re.sub(r"[^a-z ]+", "", line.lower()).strip()
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z ]+", " ", line.lower())).strip()
 
 
 def get_experience_section(lines: list[str]) -> list[str]:
@@ -422,6 +585,27 @@ def get_experience_section(lines: list[str]) -> list[str]:
     for index in range(start_index, len(lines)):
         heading = normalize_heading(lines[index])
         if heading in SECTION_STOP_HEADINGS:
+            end_index = index
+            break
+
+    return lines[start_index:end_index]
+
+
+def get_education_section(lines: list[str]) -> list[str]:
+    start_index: int | None = None
+    for index, line in enumerate(lines):
+        heading = normalize_heading(line)
+        if heading in EDUCATION_HEADINGS:
+            start_index = index + 1
+            break
+
+    if start_index is None:
+        return []
+
+    end_index = len(lines)
+    for index in range(start_index, len(lines)):
+        heading = normalize_heading(lines[index])
+        if heading in EDUCATION_STOP_HEADINGS:
             end_index = index
             break
 
@@ -461,6 +645,41 @@ def parse_experience_lines(lines: list[str]) -> list[ParsedExperience]:
     return entries
 
 
+def parse_education_lines(lines: list[str]) -> list[ParsedEducation]:
+    entries: list[ParsedEducation] = []
+    current: ParsedEducation | None = None
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        next_line = lines[index + 1] if index + 1 < len(lines) else ""
+        is_header = looks_like_education_header(line) or (
+            bool(next_line and DATE_RANGE_RE.search(next_line)) and not looks_like_description(line)
+        )
+
+        if is_header:
+            if current:
+                entries.append(current)
+
+            date_line = next_line if next_line and DATE_RANGE_RE.search(next_line) else ""
+            current = parse_education_header(line, date_line)
+            index += 2 if date_line else 1
+            continue
+
+        if current:
+            current.description_lines = current.description_lines or []
+            current.description_lines.append(line)
+        else:
+            current = parse_education_header(line)
+
+        index += 1
+
+    if current:
+        entries.append(current)
+
+    return entries
+
+
 def looks_like_entry_header(line: str) -> bool:
     if looks_like_description(line):
         return False
@@ -470,6 +689,20 @@ def looks_like_entry_header(line: str) -> bool:
     has_title_hint = any(hint in lowered for hint in TITLE_HINTS)
     has_separator = bool(re.search(r"\s(?:at|@)\s|[|•–—]", line, re.IGNORECASE))
     return has_date or (has_title_hint and has_separator)
+
+
+def looks_like_education_header(line: str) -> bool:
+    if looks_like_description(line):
+        return False
+
+    lowered = line.lower()
+    if lowered.startswith(("coursework", "relevant coursework", "honors", "thesis")):
+        return False
+
+    has_date = bool(DATE_RANGE_RE.search(line))
+    has_credential_hint = any(hint in lowered for hint in CREDENTIAL_HINTS)
+    has_separator = bool(re.search(r"\s(?:at|@)\s|[|•–—]", line, re.IGNORECASE))
+    return has_date or has_credential_hint or has_separator
 
 
 def looks_like_description(line: str) -> bool:
@@ -505,6 +738,35 @@ def parse_entry_header(line: str, date_line: str = "") -> ParsedExperience:
     )
 
 
+def parse_education_header(line: str, date_line: str = "") -> ParsedEducation:
+    combined = f"{line} {date_line}".strip()
+    date_match = DATE_RANGE_RE.search(combined)
+    start_date = ""
+    end_date = ""
+    is_current = False
+
+    if date_match:
+        start_date = normalize_date(date_match.group("start"), is_start=True)
+        end_raw = date_match.group("end")
+        is_current = end_raw.lower().strip(".") in {"present", "current", "now"}
+        end_date = "" if is_current else normalize_date(end_raw, is_start=False)
+
+    cleaned = DATE_RANGE_RE.sub("", line)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned).strip(" -–—|•,")
+    institution, credential, field_of_study, location = split_education_parts(cleaned)
+
+    return ParsedEducation(
+        institution=institution,
+        credential=credential,
+        field_of_study=field_of_study,
+        location=location,
+        start_date=start_date,
+        end_date=end_date,
+        is_current=is_current,
+        description_lines=[],
+    )
+
+
 def split_title_company_location(value: str) -> tuple[str, str, str]:
     at_match = re.match(r"(?P<title>.+?)\s+(?:at|@)\s+(?P<company>.+)$", value, re.IGNORECASE)
     if at_match:
@@ -521,6 +783,36 @@ def split_title_company_location(value: str) -> tuple[str, str, str]:
         return title, company, location
 
     return value.strip(), "", ""
+
+
+def split_education_parts(value: str) -> tuple[str, str, str, str]:
+    at_match = re.match(r"(?P<credential>.+?)\s+(?:at|@)\s+(?P<institution>.+)$", value, re.IGNORECASE)
+    if at_match:
+        return at_match.group("institution").strip(), at_match.group("credential").strip(), "", ""
+
+    parts = [part.strip() for part in re.split(r"\s*[|•–—]\s*", value) if part.strip()]
+    if len(parts) < 2:
+        parts = [part.strip() for part in value.split(",") if part.strip()]
+
+    if len(parts) >= 2:
+        first, second = parts[0], parts[1]
+        first_is_credential = any(hint in first.lower() for hint in CREDENTIAL_HINTS)
+        second_is_credential = any(hint in second.lower() for hint in CREDENTIAL_HINTS)
+        if first_is_credential and not second_is_credential:
+            credential, institution = first, second
+        elif second_is_credential and not first_is_credential:
+            institution, credential = first, second
+        else:
+            institution, credential = first, second
+
+        field_of_study = parts[2] if len(parts) >= 3 else ""
+        location = " • ".join(parts[3:])
+        return institution, credential, field_of_study, location
+
+    if any(hint in value.lower() for hint in CREDENTIAL_HINTS):
+        return "", value.strip(), "", ""
+
+    return value.strip(), "", "", ""
 
 
 def infer_title_company(first: str, second: str) -> tuple[str, str]:
