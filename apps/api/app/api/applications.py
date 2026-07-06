@@ -51,6 +51,36 @@ def upsert_applications(
         ) from exc
 
 
+@router.delete("/{application_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_application(application_id: str, db: Session = Depends(get_db)) -> None:
+    try:
+        record = db.get(StoredApplicationRecord, application_id)
+        if not record:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application not found",
+            )
+
+        related_events = (
+            db.query(StoredApplicationEventRecord)
+            .filter(StoredApplicationEventRecord.application_id == application_id)
+            .all()
+        )
+        for event in related_events:
+            db.delete(event)
+
+        db.delete(record)
+        db.commit()
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Applications database is unavailable",
+        ) from exc
+
+
 @router.get("/events", response_model=list[StoredApplicationEventPayload])
 def list_application_events(db: Session = Depends(get_db)) -> list[StoredApplicationEventPayload]:
     try:

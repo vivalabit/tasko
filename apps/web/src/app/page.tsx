@@ -412,6 +412,7 @@ const applicationsStorageKey = "tasko.applications.v1";
 const applicationEventsStorageKey = "tasko.applicationEvents.v1";
 const parserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v1";
 const parserSearchConfigsLocalUrl = "/parser-search-configs.local.json";
+const legacyMovedFromJobsNote = "Moved from Jobs after applying.";
 
 const defaultParserSearchForm: ParserSearchForm = {
   keywords: "",
@@ -1595,7 +1596,7 @@ function createApplicationFromJob(job: Job): TrackedApplication {
     status: "applied",
     appliedAt,
     nextStep: "",
-    notes: "Moved from Jobs after applying.",
+    notes: "",
   };
 }
 
@@ -1712,6 +1713,10 @@ function formatApplicationDate(value: string) {
 
 function getApplicationStatusLabel(status: ApplicationStatus) {
   return applicationStatuses.find((item) => item.status === status)?.label ?? status;
+}
+
+function getVisibleApplicationNotes(notes: string) {
+  return notes.trim() === legacyMovedFromJobsNote ? "" : notes.trim();
 }
 
 function mergeJobs(importedJobs: Job[], currentJobs: Job[]) {
@@ -2121,6 +2126,32 @@ export default function HomePage() {
           : application,
       ),
     );
+  }
+
+  function updateApplicationNotes(applicationId: string, notes: string) {
+    setApplications((currentApplications) =>
+      currentApplications.map((application) =>
+        application.id === applicationId
+          ? {
+              ...application,
+              notes,
+            }
+          : application,
+      ),
+    );
+  }
+
+  function deleteApplication(applicationId: string) {
+    setApplications((currentApplications) => {
+      const nextApplications = currentApplications.filter((application) => application.id !== applicationId);
+      setSelectedApplicationId((currentId) => (currentId === applicationId ? nextApplications[0]?.id || "" : currentId));
+      return nextApplications;
+    });
+    setApplicationEvents((currentEvents) => currentEvents.filter((event) => event.applicationId !== applicationId));
+
+    void fetch(`${apiBaseUrl}/applications/${encodeURIComponent(applicationId)}`, {
+      method: "DELETE",
+    }).catch(() => undefined);
   }
 
   function saveApplicationEvent(event: ApplicationEvent) {
@@ -3384,6 +3415,8 @@ export default function HomePage() {
             onSelectApplication={setSelectedApplicationId}
             onOpenJobs={() => changeView("Jobs")}
             onChangeStatus={updateApplicationStatus}
+            onChangeNotes={updateApplicationNotes}
+            onDeleteApplication={deleteApplication}
             onSaveEvent={saveApplicationEvent}
             onDeleteEvent={deleteApplicationEvent}
           />
@@ -4096,6 +4129,8 @@ function ApplicationsView({
   onSelectApplication,
   onOpenJobs,
   onChangeStatus,
+  onChangeNotes,
+  onDeleteApplication,
   onSaveEvent,
   onDeleteEvent,
 }: {
@@ -4105,6 +4140,8 @@ function ApplicationsView({
   onSelectApplication: (applicationId: string) => void;
   onOpenJobs: () => void;
   onChangeStatus: (applicationId: string, status: ApplicationStatus) => void;
+  onChangeNotes: (applicationId: string, notes: string) => void;
+  onDeleteApplication: (applicationId: string) => void;
   onSaveEvent: (event: ApplicationEvent) => void;
   onDeleteEvent: (eventId: string) => void;
 }) {
@@ -4113,6 +4150,9 @@ function ApplicationsView({
   const [isScheduleDialogOpen, setIsScheduleDialogOpen] = useState(false);
   const [eventDraft, setEventDraft] = useState<ApplicationEventDraft | null>(null);
   const [activeEventMenuId, setActiveEventMenuId] = useState("");
+  const [isApplicationMenuOpen, setIsApplicationMenuOpen] = useState(false);
+  const [isNotesDialogOpen, setIsNotesDialogOpen] = useState(false);
+  const [applicationNotesDraft, setApplicationNotesDraft] = useState("");
   const statusCounts = applications.reduce(
     (counts, application) => ({
       ...counts,
@@ -4232,6 +4272,47 @@ function ApplicationsView({
   function deleteEvent(eventId: string) {
     onDeleteEvent(eventId);
     setActiveEventMenuId("");
+  }
+
+  function openApplicationPosting() {
+    if (!visibleSelectedApplication) return;
+
+    const postingUrl = visibleSelectedApplication.job.applyUrl || visibleSelectedApplication.job.sourceUrl;
+    if (!postingUrl) return;
+
+    window.open(postingUrl, "_blank", "noopener,noreferrer");
+    setIsApplicationMenuOpen(false);
+  }
+
+  function changeApplicationStatus(status: ApplicationStatus) {
+    if (!visibleSelectedApplication) return;
+
+    onChangeStatus(visibleSelectedApplication.id, status);
+    setIsApplicationMenuOpen(false);
+  }
+
+  function openNotesDialog() {
+    if (!visibleSelectedApplication) return;
+
+    setApplicationNotesDraft(getVisibleApplicationNotes(visibleSelectedApplication.notes));
+    setIsApplicationMenuOpen(false);
+    setIsNotesDialogOpen(true);
+  }
+
+  function saveApplicationNotes() {
+    if (!visibleSelectedApplication) return;
+
+    onChangeNotes(visibleSelectedApplication.id, applicationNotesDraft.trim());
+    setIsNotesDialogOpen(false);
+  }
+
+  function deleteSelectedApplication() {
+    if (!visibleSelectedApplication) return;
+    const shouldDelete = window.confirm(`Delete application for ${visibleSelectedApplication.job.title} at ${visibleSelectedApplication.job.company}?`);
+    if (!shouldDelete) return;
+
+    onDeleteApplication(visibleSelectedApplication.id);
+    setIsApplicationMenuOpen(false);
   }
 
   return (
@@ -4390,9 +4471,52 @@ function ApplicationsView({
                       )}
                     </div>
                   </div>
-                  <button type="button" className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-border text-muted transition hover:bg-white/[0.06] hover:text-white 2xl:h-9 2xl:w-9">
-                    <MoreHorizontal className="h-4 w-4" />
-                  </button>
+                  <div className="relative">
+                    <button
+                      type="button"
+                      aria-label="Application actions"
+                      onClick={() => setIsApplicationMenuOpen((isOpen) => !isOpen)}
+                      className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-border text-muted transition hover:bg-white/[0.06] hover:text-white 2xl:h-9 2xl:w-9"
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
+                    </button>
+
+                    {isApplicationMenuOpen && (
+                      <div className="absolute right-0 top-10 z-30 grid w-[184px] gap-1 rounded-md border border-border bg-[#101720] p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.42)]">
+                        <button
+                          type="button"
+                          onClick={openApplicationPosting}
+                          disabled={!visibleSelectedApplication.job.applyUrl && !visibleSelectedApplication.job.sourceUrl}
+                          className="rounded-md px-2 py-1.5 text-left text-[11px] font-bold text-[#e6ebf3] hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:text-muted/45 disabled:hover:bg-transparent"
+                        >
+                          Open job posting
+                        </button>
+                        <div className="my-1 h-px bg-border" />
+                        <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-normal text-muted">Change status</p>
+                        {applicationStatuses.map((item) => (
+                          <button
+                            key={item.status}
+                            type="button"
+                            onClick={() => changeApplicationStatus(item.status)}
+                            className={cn(
+                              "rounded-md px-2 py-1.5 text-left text-[11px] font-bold hover:bg-white/[0.06]",
+                              visibleSelectedApplication.status === item.status ? "text-accent" : "text-[#e6ebf3]",
+                            )}
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                        <div className="my-1 h-px bg-border" />
+                        <button
+                          type="button"
+                          onClick={deleteSelectedApplication}
+                          className="rounded-md px-2 py-1.5 text-left text-[11px] font-bold text-[#ff8a8a] hover:bg-[#d94d4d]/12"
+                        >
+                          Delete application
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <section className="mt-2 shrink-0 rounded-md border border-border bg-white/[0.018] p-2 2xl:p-2.5">
@@ -4531,11 +4655,17 @@ function ApplicationsView({
                 <section className="mt-2 min-h-0 shrink rounded-md border border-border bg-white/[0.018] p-2 2xl:p-2.5">
                   <div className="flex items-center justify-between gap-3">
                     <h3 className="text-[13px] font-bold text-white 2xl:text-sm">Notes</h3>
-                    <Button variant="ghost" className="h-7 rounded-md border border-border bg-transparent px-2.5 text-[11px] text-[#e6ebf3] hover:bg-white/[0.06]">
+                    <Button
+                      variant="ghost"
+                      className="h-7 rounded-md border border-border bg-transparent px-2.5 text-[11px] text-[#e6ebf3] hover:bg-white/[0.06]"
+                      onClick={openNotesDialog}
+                    >
                       Edit note
                     </Button>
                   </div>
-                  <p className="mt-1.5 line-clamp-2 text-[11px] leading-4 text-muted 2xl:text-xs 2xl:leading-5">{visibleSelectedApplication.notes}</p>
+                  <p className="mt-1.5 line-clamp-2 text-[11px] leading-4 text-muted 2xl:text-xs 2xl:leading-5">
+                    {getVisibleApplicationNotes(visibleSelectedApplication.notes) || "No notes yet."}
+                  </p>
                 </section>
               </div>
             ) : (
@@ -4630,6 +4760,65 @@ function ApplicationsView({
               </button>
             </section>
           </aside>
+        </div>
+      )}
+
+      {isNotesDialogOpen && visibleSelectedApplication && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+          <div className="panel w-full max-w-[540px] border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] 2xl:p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-[22px] font-bold leading-tight text-white">Edit notes</h2>
+                <p className="mt-1 text-sm font-medium text-muted">
+                  {visibleSelectedApplication.job.company} • {visibleSelectedApplication.job.title}
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Close notes editor"
+                onClick={() => setIsNotesDialogOpen(false)}
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <textarea
+              value={applicationNotesDraft}
+              onChange={(event) => setApplicationNotesDraft(event.target.value)}
+              className="mt-5 min-h-[150px] w-full resize-none rounded-md border border-border bg-[#0d131a] px-3 py-2 text-sm font-semibold leading-5 text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              placeholder="Add notes about this application..."
+            />
+
+            <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <Button
+                type="button"
+                variant="ghost"
+                className="h-10 rounded-md border border-border bg-transparent px-5 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+                onClick={() => setApplicationNotesDraft("")}
+              >
+                Clear
+              </Button>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-10 rounded-md border border-border bg-transparent px-5 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+                  onClick={() => setIsNotesDialogOpen(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-5 text-[13px] text-white"
+                  onClick={saveApplicationNotes}
+                >
+                  <Save className="h-4 w-4" />
+                  Save notes
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

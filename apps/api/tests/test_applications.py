@@ -108,5 +108,16 @@ def test_applications_and_events_can_be_upserted_and_read() -> None:
         assert delete_event_response.status_code == 204
         assert events_after_delete_response.status_code == 200
         assert events_after_delete_response.json() == []
+
+        client.put("/applications/events", json=event_payload)
+        delete_application_response = client.delete("/applications/application-linkedin-product-designer")
+        applications_after_delete_response = client.get("/applications")
+        events_after_application_delete_response = client.get("/applications/events")
+
+        assert delete_application_response.status_code == 204
+        assert applications_after_delete_response.status_code == 200
+        assert applications_after_delete_response.json() == []
+        assert events_after_application_delete_response.status_code == 200
+        assert events_after_application_delete_response.json() == []
     finally:
         app.dependency_overrides.clear()
