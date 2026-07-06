@@ -9,6 +9,7 @@ from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
 from app.api.parsers import router as parsers_router
 from app.api.profile import router as profile_router
+from app.api.settings import router as settings_router
 from app.core.database import init_db
 from app.core.settings import get_settings
 
@@ -45,6 +46,7 @@ app.include_router(health_router, prefix="/health", tags=["health"])
 app.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
 app.include_router(parsers_router, prefix="/parsers", tags=["parsers"])
 app.include_router(profile_router, prefix="/profile", tags=["profile"])
+app.include_router(settings_router, prefix="/settings", tags=["settings"])
 
 
 @app.get("/")

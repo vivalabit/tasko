@@ -23,6 +23,7 @@ import {
   Globe,
   Heart,
   Home,
+  KeyRound,
   Linkedin,
   Mail,
   MapPin,
@@ -88,6 +89,11 @@ type ParserApiResponse = {
   jobs?: ParsedJob[];
   snapshot_id?: string | null;
   message?: string | null;
+};
+
+type AppSettings = {
+  has_brightdata_api_key: boolean;
+  brightdata_api_key_preview: string;
 };
 
 type ParserSearchForm = {
@@ -309,7 +315,7 @@ const jobs: Job[] = [
 
 const filters = ["Location", "Remote", "Salary", "Experience", "Job Type", "AI Match"];
 const tabs = ["Overview", "Company", "AI Match", "Reviews", "Similar Jobs"];
-type View = "Dashboard" | "Jobs" | "Profile";
+type View = "Dashboard" | "Jobs" | "Profile" | "Settings";
 type ParserSearchStatus = "idle" | "loading" | "ready" | "error";
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -1308,6 +1314,10 @@ function getViewFromHash(): View {
     return "Profile";
   }
 
+  if (window.location.hash === "#settings") {
+    return "Settings";
+  }
+
   return window.location.hash === "#jobs" ? "Jobs" : "Dashboard";
 }
 
@@ -1478,6 +1488,13 @@ export default function HomePage() {
   const [additionalNotesDraft, setAdditionalNotesDraft] = useState("");
   const [profileSaveStatus, setProfileSaveStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [profileSaveMessage, setProfileSaveMessage] = useState("");
+  const [appSettings, setAppSettings] = useState<AppSettings>({
+    has_brightdata_api_key: false,
+    brightdata_api_key_preview: "",
+  });
+  const [brightDataApiKeyDraft, setBrightDataApiKeyDraft] = useState("");
+  const [settingsSaveStatus, setSettingsSaveStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [settingsSaveMessage, setSettingsSaveMessage] = useState("");
 
   const filteredJobs = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -1613,8 +1630,24 @@ export default function HomePage() {
       }
     }
 
+    async function loadSettings() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/settings`, {
+          cache: "no-store",
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) return;
+
+        setAppSettings((await response.json()) as AppSettings);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      }
+    }
+
     loadStoredJobs();
     loadProfile();
+    loadSettings();
 
     return () => {
       abortController.abort();
@@ -1627,6 +1660,7 @@ export default function HomePage() {
       Dashboard: "#dashboard",
       Jobs: "#jobs",
       Profile: "#profile",
+      Settings: "#settings",
     };
     window.history.replaceState(null, "", viewHash[view]);
   }
@@ -1646,6 +1680,32 @@ export default function HomePage() {
     setParserSearchForm((current) => ({ ...current, [field]: value }));
     setParserSearchStatus("idle");
     setParserSearchMessage("");
+  }
+
+  async function saveAppSettings(apiKey = brightDataApiKeyDraft) {
+    setSettingsSaveStatus("loading");
+    setSettingsSaveMessage("");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ brightdata_api_key: apiKey }),
+      });
+      const savedSettings = (await response.json()) as AppSettings & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedSettings.detail ?? "Settings save failed");
+      }
+
+      setAppSettings(savedSettings);
+      setBrightDataApiKeyDraft("");
+      setSettingsSaveStatus("ready");
+      setSettingsSaveMessage(savedSettings.has_brightdata_api_key ? "Bright Data API key saved" : "Bright Data API key cleared");
+    } catch (error) {
+      setSettingsSaveStatus("error");
+      setSettingsSaveMessage(error instanceof Error ? error.message : "Settings save failed");
+    }
   }
 
   function saveParserSearchConfig() {
@@ -2849,6 +2909,20 @@ export default function HomePage() {
             skillsImportMessage={skillsImportMessage}
             onSaveResume={saveResumeFile}
           />
+        ) : activeView === "Settings" ? (
+          <SettingsView
+            settings={appSettings}
+            apiKeyDraft={brightDataApiKeyDraft}
+            status={settingsSaveStatus}
+            message={settingsSaveMessage}
+            onApiKeyChange={(value) => {
+              setBrightDataApiKeyDraft(value);
+              setSettingsSaveStatus("idle");
+              setSettingsSaveMessage("");
+            }}
+            onClear={() => saveAppSettings("")}
+            onSave={() => saveAppSettings()}
+          />
         ) : (
         <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
         <header className="grid shrink-0 gap-3 xl:grid-cols-[112px_minmax(260px,520px)_1fr] 2xl:grid-cols-[140px_minmax(280px,560px)_1fr] xl:items-center">
@@ -3498,6 +3572,120 @@ export default function HomePage() {
       )}
       </div>
     </main>
+  );
+}
+
+function SettingsView({
+  settings,
+  apiKeyDraft,
+  status,
+  message,
+  onApiKeyChange,
+  onClear,
+  onSave,
+}: {
+  settings: AppSettings;
+  apiKeyDraft: string;
+  status: "idle" | "loading" | "ready" | "error";
+  message: string;
+  onApiKeyChange: (value: string) => void;
+  onClear: () => void;
+  onSave: () => void;
+}) {
+  const hasApiKeyDraft = apiKeyDraft.trim().length > 0;
+
+  return (
+    <section className="job-scroll flex h-screen min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
+      <header className="mb-4 flex shrink-0 flex-col gap-3 md:flex-row md:items-start md:justify-between 2xl:mb-5">
+        <div>
+          <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">
+            Settings
+          </h1>
+          <p className="mt-1 text-[13px] text-muted 2xl:mt-1.5 2xl:text-base">Application credentials and integrations</p>
+        </div>
+      </header>
+
+      <div className="grid max-w-[960px] gap-4">
+        <section className="panel p-4 2xl:p-5">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="grid h-11 w-11 shrink-0 place-items-center rounded-md bg-[#0a66c2]/22 text-[#8cc7ff] 2xl:h-12 2xl:w-12">
+                <KeyRound className="h-5 w-5 2xl:h-6 2xl:w-6" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-base font-bold text-white 2xl:text-lg">Bright Data</h2>
+                <p className="mt-1 text-[13px] leading-5 text-muted 2xl:text-sm 2xl:leading-6">
+                  LinkedIn vacancy search uses this server-side API key.
+                </p>
+              </div>
+            </div>
+            <span
+              className={cn(
+                "inline-flex h-8 w-fit items-center gap-2 rounded-md border px-3 text-xs font-bold",
+                settings.has_brightdata_api_key
+                  ? "border-success/35 bg-success/12 text-success"
+                  : "border-white/[0.12] bg-white/[0.055] text-muted",
+              )}
+            >
+              {settings.has_brightdata_api_key ? <Check className="h-3.5 w-3.5" /> : <X className="h-3.5 w-3.5" />}
+              {settings.has_brightdata_api_key ? "Configured" : "Not configured"}
+            </span>
+          </div>
+
+          <div className="mt-5 grid gap-4">
+            <div className="rounded-md border border-border bg-white/[0.018] p-3 2xl:p-4">
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm font-bold text-white">Current key</p>
+                <p className="font-mono text-xs font-semibold text-muted">
+                  {settings.brightdata_api_key_preview || "No key saved"}
+                </p>
+              </div>
+            </div>
+
+            <label className="grid gap-2">
+              <span className="text-xs font-bold text-[#d8dee8]">Bright Data API Key</span>
+              <input
+                type="password"
+                value={apiKeyDraft}
+                onChange={(event) => onApiKeyChange(event.target.value)}
+                placeholder={settings.has_brightdata_api_key ? "Enter a new key to replace the saved one" : "Enter API key"}
+                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70 2xl:h-11"
+                autoComplete="off"
+              />
+              <span className="text-xs font-medium text-muted">Saved to backend environment as BRIGHTDATA_API_KEY</span>
+            </label>
+
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
+                {message || "Parser requests will use the saved key immediately."}
+              </p>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                {settings.has_brightdata_api_key && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-10 w-full rounded-md border border-border bg-transparent px-5 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06] sm:w-auto 2xl:h-11"
+                    disabled={status === "loading"}
+                    onClick={onClear}
+                  >
+                    Clear key
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  className="h-10 w-full rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-5 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12] sm:w-auto 2xl:h-11"
+                  disabled={status === "loading" || !hasApiKeyDraft}
+                  onClick={onSave}
+                >
+                  <Save className="h-4 w-4" />
+                  {status === "loading" ? "Saving..." : "Save settings"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
   );
 }
 
@@ -6188,8 +6376,12 @@ function AppSidebar({
           <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted 2xl:h-4 2xl:w-4" />
         </a>
         <a
-          href="#"
-          className="app-sidebar-settings flex h-10 items-center gap-2.5 rounded-md px-3 text-sm text-muted hover:bg-white/[0.055] hover:text-white 2xl:h-11 2xl:gap-3 2xl:text-base"
+          href="#settings"
+          onClick={() => onChangeView("Settings")}
+          className={cn(
+            "app-sidebar-settings flex h-10 items-center gap-2.5 rounded-md px-3 text-sm text-muted transition hover:bg-white/[0.055] hover:text-white 2xl:h-11 2xl:gap-3 2xl:text-base",
+            activeView === "Settings" && "border border-white/[0.12] bg-white/10 text-white shadow-[inset_4px_0_0_#ff5a00]",
+          )}
         >
           <Settings className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
           <span>Settings</span>
