@@ -3756,12 +3756,12 @@ function ApplicationsView({
   );
   const activeCount = statusCounts.interview + statusCounts.assessment + statusCounts.offer;
   const responseRate = applications.length > 0 ? Math.round((activeCount / applications.length) * 100) : 0;
-  const stats = [
-    { label: "Total", value: applications.length.toString(), icon: FileText },
-    { label: "Interviews", value: statusCounts.interview.toString(), icon: CalendarDays },
-    { label: "Assessments", value: statusCounts.assessment.toString(), icon: Target },
-    { label: "Offers", value: statusCounts.offer.toString(), icon: BriefcaseBusiness },
-    { label: "Response rate", value: `${responseRate}%`, icon: Mail },
+  const statCards = [
+    { label: "Total applications", value: applications.length.toString(), note: "tracked roles", icon: FileText, iconClassName: "bg-white/[0.055] text-[#d8dee8]" },
+    { label: "Interviews", value: statusCounts.interview.toString(), note: "active conversations", icon: CalendarDays, iconClassName: "bg-accent/16 text-accent" },
+    { label: "Assessments", value: statusCounts.assessment.toString(), note: "tasks pending", icon: FileText, iconClassName: "bg-[#2f80ed]/16 text-[#8cc7ff]" },
+    { label: "Offers", value: statusCounts.offer.toString(), note: "received", icon: BriefcaseBusiness, iconClassName: "bg-success/16 text-success" },
+    { label: "Response rate", value: `${responseRate}%`, note: "from tracked roles", icon: Target, iconClassName: "bg-[#9f7aea]/16 text-[#c4a7ff]" },
   ];
   const normalizedApplicationQuery = applicationQuery.trim().toLowerCase();
   const filteredApplications = applications.filter((application) => {
@@ -3778,27 +3778,40 @@ function ApplicationsView({
     selectedApplication && filteredApplications.some((application) => application.id === selectedApplication.id)
       ? selectedApplication
       : filteredApplications[0] ?? null;
+  const upcomingApplications = filteredApplications.filter((application) => application.status !== "rejected").slice(0, 2);
+  const timelineItems = visibleSelectedApplication
+    ? [
+        { label: "Applied", date: formatApplicationDate(visibleSelectedApplication.appliedAt), state: "done" },
+        {
+          label: visibleSelectedApplication.status === "applied" ? "Follow-up" : getApplicationStatusLabel(visibleSelectedApplication.status),
+          date: visibleSelectedApplication.nextStep,
+          state: "current",
+        },
+        { label: "Hiring manager interview", date: visibleSelectedApplication.status === "interview" ? "Pending schedule" : "TBD", state: "future" },
+        { label: "Decision", date: visibleSelectedApplication.status === "offer" ? "Offer received" : "TBD", state: "future" },
+      ]
+    : [];
 
   return (
     <section className="job-scroll flex h-screen min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
-      <header className="mb-4 grid shrink-0 gap-3 2xl:mb-5">
+      <header className="mb-3 grid shrink-0 gap-3 xl:grid-cols-[190px_minmax(0,1fr)] xl:items-center 2xl:mb-4 2xl:grid-cols-[minmax(280px,430px)_minmax(0,1fr)]">
         <div>
-          <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">Applications</h1>
-          <p className="mt-1 text-[13px] text-muted 2xl:mt-1.5 2xl:text-base">Track submitted roles and next steps</p>
+          <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white 2xl:text-[31px]">Applications</h1>
+          <p className="mt-1 text-[12px] text-muted 2xl:mt-1.5 2xl:text-base">Track submitted roles and next steps</p>
         </div>
 
-        <div className="grid gap-3 md:grid-cols-[minmax(260px,1fr)_auto] xl:grid-cols-[minmax(280px,360px)_minmax(0,1fr)_auto] 2xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)_auto]">
-          <label className="flex h-12 min-w-0 items-center gap-3 rounded-md border border-border bg-white/[0.045] px-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] focus-within:border-accent/70 2xl:h-14 2xl:px-5">
-            <Search className="h-5 w-5 shrink-0 text-muted 2xl:h-[22px] 2xl:w-[22px]" />
+        <div className="grid gap-2 md:grid-cols-[minmax(260px,1fr)_auto] xl:grid-cols-[minmax(210px,250px)_minmax(0,1fr)_auto] 2xl:gap-3 2xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)_auto]">
+          <label className="flex h-10 min-w-0 items-center gap-2.5 rounded-md border border-border bg-white/[0.045] px-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] focus-within:border-accent/70 2xl:h-12 2xl:gap-3 2xl:px-4">
+            <Search className="h-[17px] w-[17px] shrink-0 text-muted 2xl:h-5 2xl:w-5" />
             <input
               value={applicationQuery}
               onChange={(event) => setApplicationQuery(event.target.value)}
               placeholder="Search applications..."
-              className="h-full min-w-0 flex-1 bg-transparent text-sm font-semibold text-white outline-none placeholder:text-muted 2xl:text-base"
+              className="h-full min-w-0 flex-1 bg-transparent text-xs font-semibold text-white outline-none placeholder:text-muted 2xl:text-sm"
             />
           </label>
 
-          <div className="flex h-12 min-w-0 items-center gap-2 overflow-x-auto rounded-md border border-border bg-white/[0.035] p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] md:col-span-2 xl:col-span-1 2xl:h-14">
+          <div className="flex h-10 min-w-0 items-center gap-1.5 overflow-x-auto rounded-md border border-border bg-white/[0.035] p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] md:col-span-2 xl:col-span-1 2xl:h-12 2xl:gap-2">
             {[
               { value: "all" as const, label: "All" },
               ...applicationStatuses.map((item) => ({ value: item.status, label: item.label })),
@@ -3811,7 +3824,7 @@ function ApplicationsView({
                   type="button"
                   onClick={() => setSelectedStatusFilter(item.value)}
                   className={cn(
-                    "h-8 shrink-0 rounded-md border px-3 text-xs font-bold transition 2xl:h-9 2xl:px-4 2xl:text-sm",
+                    "h-7 shrink-0 rounded-md border px-2 text-[11px] font-bold transition 2xl:h-8 2xl:px-4 2xl:text-xs",
                     isActive
                       ? "border-accent/70 bg-accent/14 text-accent shadow-[0_0_0_1px_rgba(255,90,0,0.12)]"
                       : "border-border bg-white/[0.035] text-muted hover:bg-white/[0.07] hover:text-white",
@@ -3824,24 +3837,27 @@ function ApplicationsView({
           </div>
 
           <Button
-            className="h-12 w-full justify-center rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-5 text-sm font-bold text-white shadow-[0_14px_30px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12] md:w-auto 2xl:h-14 2xl:px-6 2xl:text-base"
+            className="h-10 w-full justify-center rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-3 text-xs font-bold text-white shadow-[0_14px_30px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12] md:w-auto 2xl:h-12 2xl:px-6 2xl:text-sm"
             onClick={onOpenJobs}
           >
-            <Plus className="h-5 w-5" />
+            <Plus className="h-4 w-4 2xl:h-5 2xl:w-5" />
             Add application
           </Button>
         </div>
       </header>
 
       <div className="grid shrink-0 gap-2.5 sm:grid-cols-2 xl:grid-cols-5 2xl:gap-3">
-        {stats.map((stat) => (
-          <article key={stat.label} className="panel flex min-h-[92px] items-center gap-3 p-3 2xl:min-h-[108px] 2xl:p-4">
-            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-accent/18 text-accent 2xl:h-11 2xl:w-11">
-              <stat.icon className="h-5 w-5" />
+        {statCards.map((stat) => (
+          <article key={stat.label} className="panel flex min-h-[78px] items-start justify-between gap-2.5 p-2.5 2xl:min-h-[118px] 2xl:gap-3 2xl:p-5">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold text-muted 2xl:text-sm">{stat.label}</p>
+              <p className="mt-1 text-[21px] font-bold leading-none text-white 2xl:mt-2 2xl:text-[30px]">{stat.value}</p>
+              <p className="mt-1 text-[11px] font-semibold leading-tight text-success 2xl:mt-2 2xl:text-sm">
+                <span className="mr-1">↑</span>{stat.note}
+              </p>
             </div>
-            <div>
-              <p className="text-xs font-semibold text-muted 2xl:text-sm">{stat.label}</p>
-              <p className="mt-1 text-[24px] font-bold leading-none text-white 2xl:text-[28px]">{stat.value}</p>
+            <div className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-md border border-white/[0.08] 2xl:h-12 2xl:w-12", stat.iconClassName)}>
+              <stat.icon className="h-3.5 w-3.5 2xl:h-5 2xl:w-5" />
             </div>
           </article>
         ))}
@@ -3862,11 +3878,14 @@ function ApplicationsView({
           </div>
         </section>
       ) : (
-        <div className="mt-3 grid min-h-0 flex-1 gap-3 xl:grid-cols-[360px_minmax(0,1fr)_300px] 2xl:mt-4 2xl:grid-cols-[420px_minmax(0,1fr)_340px] 2xl:gap-4">
-          <aside className="panel flex min-h-0 flex-col overflow-hidden p-3 2xl:p-4">
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-base font-bold text-white 2xl:text-lg">Pipeline</h2>
-              <span className="text-xs font-semibold text-muted">{filteredApplications.length} of {applications.length}</span>
+        <div className="mt-3 grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(280px,0.86fr)_minmax(360px,1.18fr)_minmax(240px,0.7fr)] 2xl:mt-4 2xl:grid-cols-[minmax(420px,0.95fr)_minmax(480px,1.2fr)_minmax(320px,0.75fr)] 2xl:gap-4">
+          <aside className="panel flex min-h-0 flex-col overflow-hidden p-2.5 2xl:p-4">
+            <div className="mb-2.5 flex items-center justify-between 2xl:mb-3">
+              <h2 className="text-sm font-bold text-white 2xl:text-lg">Applications ({filteredApplications.length})</h2>
+              <button type="button" className="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-white/[0.035] px-3 text-xs font-bold text-[#d8dee8]">
+                Date applied
+                <ChevronDown className="h-3.5 w-3.5 text-muted" />
+              </button>
             </div>
             <div className="job-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
               {filteredApplications.length === 0 ? (
@@ -3879,7 +3898,7 @@ function ApplicationsView({
                   type="button"
                   onClick={() => onSelectApplication(application.id)}
                   className={cn(
-                    "grid w-full grid-cols-[46px_minmax(0,1fr)] gap-3 rounded-md border p-3 text-left transition 2xl:grid-cols-[54px_minmax(0,1fr)] 2xl:p-4",
+                    "grid w-full grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-2.5 rounded-md border p-2.5 text-left transition 2xl:grid-cols-[54px_minmax(0,1fr)_auto_auto] 2xl:gap-3 2xl:p-4",
                     visibleSelectedApplication?.id === application.id
                       ? "border-accent bg-white/[0.055] shadow-[0_0_0_1px_rgba(255,90,0,0.12)]"
                       : "border-border bg-white/[0.025] hover:bg-white/[0.055]",
@@ -3887,57 +3906,106 @@ function ApplicationsView({
                 >
                   <CompanyLogo logo={application.job.logo} />
                   <div className="min-w-0">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <h3 className="truncate text-sm font-bold text-white 2xl:text-base">{application.job.title}</h3>
-                        <p className="mt-0.5 truncate text-xs font-semibold text-[#cdd4df] 2xl:text-sm">{application.job.company}</p>
-                      </div>
-                      <span className={cn("shrink-0 rounded-md border px-2 py-1 text-[11px] font-bold", applicationStatusStyles[application.status])}>
-                        {getApplicationStatusLabel(application.status)}
-                      </span>
-                    </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-                      <span>{formatApplicationDate(application.appliedAt)}</span>
-                      <span>{application.job.match}% match</span>
-                      <span>{application.job.location}</span>
-                    </div>
+                    <h3 className="truncate text-[13px] font-bold text-white 2xl:text-base">{application.job.title}</h3>
+                    <p className="mt-0.5 truncate text-[11px] font-semibold text-[#cdd4df] 2xl:text-sm">{application.job.company}</p>
+                    <p className="mt-1 text-[11px] text-muted 2xl:hidden">{formatApplicationDate(application.appliedAt)} • {application.job.match}% match</p>
+                  </div>
+                  <span className={cn("shrink-0 rounded-md border px-2 py-1 text-[10px] font-bold 2xl:text-[11px]", applicationStatusStyles[application.status])}>
+                    {getApplicationStatusLabel(application.status)}
+                  </span>
+                  <div className="hidden text-right 2xl:block">
+                    <p className="text-xs font-semibold text-muted">{formatApplicationDate(application.appliedAt)}</p>
+                    <p className="mt-1 text-sm font-bold text-success">{application.job.match}%</p>
                   </div>
                 </button>
               ))}
             </div>
           </aside>
 
-          <section className="panel job-scroll min-h-0 overflow-y-auto p-4 2xl:p-5">
+          <section className="panel job-scroll min-h-0 overflow-y-auto p-3 2xl:p-5">
             {visibleSelectedApplication ? (
               <>
-                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                  <div className="flex min-w-0 items-start gap-3">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between 2xl:gap-4">
+                  <div className="flex min-w-0 items-start gap-2.5 2xl:gap-3">
                     <CompanyLogo logo={visibleSelectedApplication.job.logo} large />
                     <div className="min-w-0">
-                      <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[28px]">{visibleSelectedApplication.job.title}</h2>
-                      <p className="mt-1.5 text-sm font-semibold text-muted 2xl:text-base">
+                      <h2 className="text-[19px] font-bold leading-tight text-white 2xl:text-[28px]">{visibleSelectedApplication.job.title}</h2>
+                      <p className="mt-1 text-xs font-semibold text-muted 2xl:mt-1.5 2xl:text-base">
                         {visibleSelectedApplication.job.company} <span className="text-white/35">•</span> {visibleSelectedApplication.job.location}
                       </p>
-                      <p className="mt-2 text-sm font-semibold text-muted">{visibleSelectedApplication.job.salary}</p>
+                      {visibleSelectedApplication.job.applyUrl || visibleSelectedApplication.job.sourceUrl ? (
+                        <a
+                          href={visibleSelectedApplication.job.applyUrl || visibleSelectedApplication.job.sourceUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-bold text-[#8cc7ff] hover:text-white 2xl:mt-2 2xl:text-sm"
+                        >
+                          View job posting
+                          <ExternalLink className="h-3.5 w-3.5" />
+                        </a>
+                      ) : (
+                        <p className="mt-2 text-sm font-semibold text-muted">{visibleSelectedApplication.job.salary}</p>
+                      )}
                     </div>
                   </div>
-                  <span className={cn("inline-flex h-9 w-fit items-center rounded-md border px-3 text-xs font-bold", applicationStatusStyles[visibleSelectedApplication.status])}>
-                    {getApplicationStatusLabel(visibleSelectedApplication.status)}
-                  </span>
+                  <button type="button" className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-border text-muted transition hover:bg-white/[0.06] hover:text-white">
+                    <MoreHorizontal className="h-5 w-5" />
+                  </button>
                 </div>
 
-                <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                  <InfoStat label="Applied" value={formatApplicationDate(visibleSelectedApplication.appliedAt)} />
-                  <InfoStat label="Next step" value={visibleSelectedApplication.nextStep} />
-                  <InfoStat label="Match" value={`${visibleSelectedApplication.job.match}%`} />
-                </div>
+                <section className="mt-4 rounded-md border border-border bg-white/[0.018] p-3 2xl:mt-6 2xl:p-5">
+                  <h3 className="text-sm font-bold text-white 2xl:text-base">Status timeline</h3>
+                  <div className="mt-3 space-y-0 2xl:mt-4">
+                    {timelineItems.map((item, index) => (
+                      <div key={`${item.label}-${index}`} className="grid grid-cols-[24px_minmax(0,1fr)] gap-3">
+                        <div className="relative flex justify-center">
+                          <span
+                            className={cn(
+                              "mt-1 grid h-4 w-4 place-items-center rounded-full border",
+                              item.state === "done"
+                                ? "border-accent bg-accent text-white"
+                                : item.state === "current"
+                                  ? "border-accent bg-accent/18"
+                                  : "border-white/25 bg-white/[0.04]",
+                            )}
+                          >
+                            {item.state === "done" && <Check className="h-2.5 w-2.5" />}
+                          </span>
+                          {index < timelineItems.length - 1 && <span className="absolute bottom-0 top-5 w-px bg-white/12" />}
+                        </div>
+                        <div className="pb-4">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className={cn("text-[13px] font-bold 2xl:text-sm", item.state === "current" ? "text-accent" : "text-white")}>{item.label}</p>
+                            {item.state === "current" && (
+                              <span className="rounded-md border border-accent/30 bg-accent/12 px-2 py-1 text-[11px] font-bold text-accent">Current</span>
+                            )}
+                          </div>
+                          <p className="mt-1 text-[11px] font-medium text-muted 2xl:text-sm">{item.date}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
 
-                <section className="mt-5 rounded-md border border-border bg-white/[0.018] p-4">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <h3 className="text-base font-bold text-white">Status</h3>
+                <section className="mt-3 rounded-md border border-border bg-white/[0.018] p-3 2xl:mt-4 2xl:p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="text-sm font-bold text-white 2xl:text-base">Next action</h3>
+                      <p className="mt-1.5 text-[13px] font-semibold text-[#d8dee8] 2xl:mt-2 2xl:text-sm">{visibleSelectedApplication.nextStep}</p>
+                      <p className="mt-1 text-xs text-muted">{visibleSelectedApplication.job.company} • {visibleSelectedApplication.job.title}</p>
+                    </div>
+                    <Button variant="ghost" className="h-9 rounded-md border border-border bg-transparent px-4 text-xs text-[#e6ebf3] hover:bg-white/[0.06]">
+                      View details
+                    </Button>
+                  </div>
+                </section>
+
+                <section className="mt-3 rounded-md border border-border bg-white/[0.018] p-3 2xl:mt-4 2xl:p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-bold text-white 2xl:text-base">Status</h3>
                     <span className="text-xs font-semibold text-muted">Move through the pipeline</span>
                   </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="mt-3 flex flex-wrap gap-2">
                     {applicationStatuses.map((item) => (
                       <button
                         key={item.status}
@@ -3956,22 +4024,28 @@ function ApplicationsView({
                   </div>
                 </section>
 
-                <section className="mt-5 rounded-md border border-border bg-white/[0.018] p-4">
-                  <h3 className="text-base font-bold text-white">Application notes</h3>
-                  <p className="mt-3 text-sm leading-6 text-muted">{visibleSelectedApplication.notes}</p>
-                  <p className="mt-3 text-sm leading-6 text-muted">{visibleSelectedApplication.job.overview}</p>
-                </section>
-
-                <section className="mt-5 rounded-md border border-border bg-white/[0.018] p-4">
-                  <h3 className="text-base font-bold text-white">Documents</h3>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {["Resume", "Cover letter", "Portfolio", "Job description"].map((document) => (
-                      <div key={document} className="flex items-center gap-2 rounded-md border border-border bg-white/[0.025] px-3 py-2 text-sm font-semibold text-[#d8dee8]">
-                        <FileText className="h-4 w-4 text-accent" />
-                        {document}
+                <section className="mt-3 rounded-md border border-border bg-white/[0.018] p-3 2xl:mt-4 2xl:p-4">
+                  <h3 className="text-sm font-bold text-white 2xl:text-base">Documents used</h3>
+                  <div className="mt-3 divide-y divide-border overflow-hidden rounded-md border border-border">
+                    {["Resume.pdf", "Cover letter.pdf", "Job description"].map((document) => (
+                      <div key={document} className="flex items-center gap-3 bg-white/[0.018] px-3 py-2.5 text-sm font-semibold text-[#d8dee8]">
+                        <span className="grid h-6 w-6 place-items-center rounded bg-[#d94d4d]/18 text-[10px] font-black text-[#ff8a8a]">PDF</span>
+                        <span className="min-w-0 flex-1 truncate">{document}</span>
+                        <Download className="h-4 w-4 text-muted" />
+                        <MoreHorizontal className="h-4 w-4 text-muted" />
                       </div>
                     ))}
                   </div>
+                </section>
+
+                <section className="mt-3 rounded-md border border-border bg-white/[0.018] p-3 2xl:mt-4 2xl:p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-bold text-white 2xl:text-base">Notes</h3>
+                    <Button variant="ghost" className="h-8 rounded-md border border-border bg-transparent px-3 text-xs text-[#e6ebf3] hover:bg-white/[0.06]">
+                      Edit note
+                    </Button>
+                  </div>
+                  <p className="mt-3 text-sm leading-6 text-muted">{visibleSelectedApplication.notes}</p>
                 </section>
               </>
             ) : (
@@ -3986,50 +4060,62 @@ function ApplicationsView({
           </section>
 
           <aside className="grid min-h-0 content-start gap-3 2xl:gap-4">
-            <section className="panel p-4 2xl:p-5">
-              <h2 className="text-base font-bold text-white 2xl:text-lg">Upcoming</h2>
+            <section className="panel p-3 2xl:p-5">
+              <div className="flex items-center justify-between gap-3">
+                <h2 className="text-sm font-bold text-white 2xl:text-lg">Upcoming</h2>
+                <button type="button" className="text-xs font-bold text-accent">View calendar</button>
+              </div>
               <div className="mt-4 space-y-3">
-                {(filteredApplications.slice(0, 3)).map((application) => (
+                {(upcomingApplications.length > 0 ? upcomingApplications : filteredApplications.slice(0, 2)).map((application, index) => (
                   <button
                     key={application.id}
                     type="button"
                     onClick={() => onSelectApplication(application.id)}
-                    className="w-full rounded-md border border-border bg-white/[0.025] p-3 text-left transition hover:bg-white/[0.055]"
+                    className="grid w-full grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-2.5 rounded-md border border-border bg-white/[0.025] p-2.5 text-left transition hover:bg-white/[0.055] 2xl:grid-cols-[52px_minmax(0,1fr)_auto] 2xl:gap-3 2xl:p-3"
                   >
-                    <p className="text-sm font-bold text-white">{application.nextStep}</p>
-                    <p className="mt-1 truncate text-xs text-muted">{application.job.company} • {application.job.title}</p>
+                    <div className="rounded-md border border-accent/45 bg-accent/10 py-1.5 text-center">
+                      <p className="text-[9px] font-black uppercase text-accent 2xl:text-[10px]">Jul</p>
+                      <p className="text-lg font-bold leading-none text-white 2xl:text-xl">{6 + index * 5}</p>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-bold text-white">{application.nextStep}</p>
+                      <p className="mt-1 truncate text-xs text-muted">{application.job.company} • {application.job.title}</p>
+                    </div>
+                    <span className="rounded-md bg-white/[0.06] px-2 py-1 text-[11px] font-bold text-muted">{index === 0 ? "Next" : "Later"}</span>
                   </button>
                 ))}
               </div>
             </section>
 
-            <section className="panel p-4 2xl:p-5">
-              <h2 className="text-base font-bold text-white 2xl:text-lg">AI Actions</h2>
-              <div className="mt-4 grid gap-2">
+            <section className="panel p-3 2xl:p-5">
+              <h2 className="text-sm font-bold text-white 2xl:text-lg">AI Actions</h2>
+              <div className="mt-3 grid gap-2 2xl:mt-4">
                 {["Prepare interview", "Write follow-up", "Tailor resume", "Summarize fit"].map((action) => (
-                  <Button key={action} variant="ghost" className="h-9 justify-start rounded-md border border-border bg-transparent text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]">
-                    <Sparkles className="h-4 w-4 text-accent" />
+                  <Button key={action} variant="ghost" className="h-9 justify-start rounded-md border border-border bg-transparent text-xs text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-11 2xl:text-[13px]">
+                    <span className="grid h-6 w-6 place-items-center rounded-md bg-accent/14 text-accent 2xl:h-7 2xl:w-7">
+                      <Sparkles className="h-3.5 w-3.5 2xl:h-4 2xl:w-4" />
+                    </span>
                     {action}
+                    <ChevronRight className="ml-auto h-4 w-4 text-muted" />
                   </Button>
                 ))}
               </div>
             </section>
 
-            <section className="panel p-4 2xl:p-5">
-              <h2 className="text-base font-bold text-white 2xl:text-lg">Source</h2>
-              {visibleSelectedApplication?.job.applyUrl || visibleSelectedApplication?.job.sourceUrl ? (
-                <a
-                  href={visibleSelectedApplication.job.applyUrl || visibleSelectedApplication.job.sourceUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-4 inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-bold text-accent transition hover:bg-white/[0.06]"
-                >
-                  Open vacancy
-                  <ExternalLink className="h-4 w-4" />
-                </a>
-              ) : (
-                <p className="mt-3 text-sm leading-6 text-muted">No external apply link was saved for this role.</p>
-              )}
+            <section className="panel p-3 2xl:p-5">
+              <h2 className="text-sm font-bold text-white 2xl:text-lg">Application insights</h2>
+              <div className="mt-3 flex items-center gap-3 2xl:mt-4 2xl:gap-4">
+                <div className="relative grid h-16 w-16 shrink-0 place-items-center rounded-full border-[5px] border-accent/80 bg-white/[0.02] 2xl:h-20 2xl:w-20 2xl:border-[6px]">
+                  <span className="text-base font-bold text-white 2xl:text-xl">{responseRate}%</span>
+                </div>
+                <p className="text-xs leading-5 text-muted 2xl:text-sm 2xl:leading-6">
+                  You have a higher response rate on roles with 80%+ match scores.
+                </p>
+              </div>
+              <button type="button" className="mt-4 inline-flex items-center gap-2 text-sm font-bold text-accent">
+                View detailed insights
+                <ChevronRight className="h-4 w-4" />
+              </button>
             </section>
           </aside>
         </div>
