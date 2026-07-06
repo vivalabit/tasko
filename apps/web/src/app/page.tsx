@@ -3745,6 +3745,8 @@ function ApplicationsView({
   onOpenJobs: () => void;
   onChangeStatus: (applicationId: string, status: ApplicationStatus) => void;
 }) {
+  const [applicationQuery, setApplicationQuery] = useState("");
+  const [selectedStatusFilter, setSelectedStatusFilter] = useState<ApplicationStatus | "all">("all");
   const statusCounts = applications.reduce(
     (counts, application) => ({
       ...counts,
@@ -3761,21 +3763,74 @@ function ApplicationsView({
     { label: "Offers", value: statusCounts.offer.toString(), icon: BriefcaseBusiness },
     { label: "Response rate", value: `${responseRate}%`, icon: Mail },
   ];
+  const normalizedApplicationQuery = applicationQuery.trim().toLowerCase();
+  const filteredApplications = applications.filter((application) => {
+    const matchesStatus = selectedStatusFilter === "all" || application.status === selectedStatusFilter;
+    const matchesQuery =
+      normalizedApplicationQuery.length === 0 ||
+      [application.job.title, application.job.company, application.job.location, application.job.type, application.nextStep].some((value) =>
+        value.toLowerCase().includes(normalizedApplicationQuery),
+      );
+
+    return matchesStatus && matchesQuery;
+  });
+  const visibleSelectedApplication =
+    selectedApplication && filteredApplications.some((application) => application.id === selectedApplication.id)
+      ? selectedApplication
+      : filteredApplications[0] ?? null;
 
   return (
     <section className="job-scroll flex h-screen min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
-      <header className="mb-4 flex shrink-0 flex-col gap-3 md:flex-row md:items-start md:justify-between 2xl:mb-5">
+      <header className="mb-4 grid shrink-0 gap-3 2xl:mb-5">
         <div>
           <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">Applications</h1>
           <p className="mt-1 text-[13px] text-muted 2xl:mt-1.5 2xl:text-base">Track submitted roles and next steps</p>
         </div>
-        <Button
-          className="h-10 w-full justify-center rounded-md bg-gradient-to-r from-[#ff5a00] to-[#dd3d00] text-[13px] md:w-auto 2xl:h-11 2xl:text-sm"
-          onClick={onOpenJobs}
-        >
-          <Plus className="h-4 w-4" />
-          Add from Jobs
-        </Button>
+
+        <div className="grid gap-3 md:grid-cols-[minmax(260px,1fr)_auto] xl:grid-cols-[minmax(280px,360px)_minmax(0,1fr)_auto] 2xl:grid-cols-[minmax(320px,420px)_minmax(0,1fr)_auto]">
+          <label className="flex h-12 min-w-0 items-center gap-3 rounded-md border border-border bg-white/[0.045] px-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] focus-within:border-accent/70 2xl:h-14 2xl:px-5">
+            <Search className="h-5 w-5 shrink-0 text-muted 2xl:h-[22px] 2xl:w-[22px]" />
+            <input
+              value={applicationQuery}
+              onChange={(event) => setApplicationQuery(event.target.value)}
+              placeholder="Search applications..."
+              className="h-full min-w-0 flex-1 bg-transparent text-sm font-semibold text-white outline-none placeholder:text-muted 2xl:text-base"
+            />
+          </label>
+
+          <div className="flex h-12 min-w-0 items-center gap-2 overflow-x-auto rounded-md border border-border bg-white/[0.035] p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] md:col-span-2 xl:col-span-1 2xl:h-14">
+            {[
+              { value: "all" as const, label: "All" },
+              ...applicationStatuses.map((item) => ({ value: item.status, label: item.label })),
+            ].map((item) => {
+              const isActive = selectedStatusFilter === item.value;
+
+              return (
+                <button
+                  key={item.value}
+                  type="button"
+                  onClick={() => setSelectedStatusFilter(item.value)}
+                  className={cn(
+                    "h-8 shrink-0 rounded-md border px-3 text-xs font-bold transition 2xl:h-9 2xl:px-4 2xl:text-sm",
+                    isActive
+                      ? "border-accent/70 bg-accent/14 text-accent shadow-[0_0_0_1px_rgba(255,90,0,0.12)]"
+                      : "border-border bg-white/[0.035] text-muted hover:bg-white/[0.07] hover:text-white",
+                  )}
+                >
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+
+          <Button
+            className="h-12 w-full justify-center rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-5 text-sm font-bold text-white shadow-[0_14px_30px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12] md:w-auto 2xl:h-14 2xl:px-6 2xl:text-base"
+            onClick={onOpenJobs}
+          >
+            <Plus className="h-5 w-5" />
+            Add application
+          </Button>
+        </div>
       </header>
 
       <div className="grid shrink-0 gap-2.5 sm:grid-cols-2 xl:grid-cols-5 2xl:gap-3">
@@ -3789,18 +3844,6 @@ function ApplicationsView({
               <p className="mt-1 text-[24px] font-bold leading-none text-white 2xl:text-[28px]">{stat.value}</p>
             </div>
           </article>
-        ))}
-      </div>
-
-      <div className="mt-3 flex shrink-0 flex-wrap gap-2 2xl:mt-4">
-        {applicationStatuses.map((item) => (
-          <span
-            key={item.status}
-            className={cn("inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-bold", applicationStatusStyles[item.status])}
-          >
-            {item.label}
-            <span className="text-white/75">{statusCounts[item.status]}</span>
-          </span>
         ))}
       </div>
 
@@ -3823,17 +3866,21 @@ function ApplicationsView({
           <aside className="panel flex min-h-0 flex-col overflow-hidden p-3 2xl:p-4">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-base font-bold text-white 2xl:text-lg">Pipeline</h2>
-              <span className="text-xs font-semibold text-muted">{applications.length} tracked</span>
+              <span className="text-xs font-semibold text-muted">{filteredApplications.length} of {applications.length}</span>
             </div>
             <div className="job-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
-              {applications.map((application) => (
+              {filteredApplications.length === 0 ? (
+                <div className="rounded-md border border-border bg-white/[0.025] p-4 text-sm leading-6 text-muted">
+                  No applications match the current search or status filter.
+                </div>
+              ) : filteredApplications.map((application) => (
                 <button
                   key={application.id}
                   type="button"
                   onClick={() => onSelectApplication(application.id)}
                   className={cn(
                     "grid w-full grid-cols-[46px_minmax(0,1fr)] gap-3 rounded-md border p-3 text-left transition 2xl:grid-cols-[54px_minmax(0,1fr)] 2xl:p-4",
-                    selectedApplication?.id === application.id
+                    visibleSelectedApplication?.id === application.id
                       ? "border-accent bg-white/[0.055] shadow-[0_0_0_1px_rgba(255,90,0,0.12)]"
                       : "border-border bg-white/[0.025] hover:bg-white/[0.055]",
                   )}
@@ -3861,28 +3908,28 @@ function ApplicationsView({
           </aside>
 
           <section className="panel job-scroll min-h-0 overflow-y-auto p-4 2xl:p-5">
-            {selectedApplication && (
+            {visibleSelectedApplication ? (
               <>
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                   <div className="flex min-w-0 items-start gap-3">
-                    <CompanyLogo logo={selectedApplication.job.logo} large />
+                    <CompanyLogo logo={visibleSelectedApplication.job.logo} large />
                     <div className="min-w-0">
-                      <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[28px]">{selectedApplication.job.title}</h2>
+                      <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[28px]">{visibleSelectedApplication.job.title}</h2>
                       <p className="mt-1.5 text-sm font-semibold text-muted 2xl:text-base">
-                        {selectedApplication.job.company} <span className="text-white/35">•</span> {selectedApplication.job.location}
+                        {visibleSelectedApplication.job.company} <span className="text-white/35">•</span> {visibleSelectedApplication.job.location}
                       </p>
-                      <p className="mt-2 text-sm font-semibold text-muted">{selectedApplication.job.salary}</p>
+                      <p className="mt-2 text-sm font-semibold text-muted">{visibleSelectedApplication.job.salary}</p>
                     </div>
                   </div>
-                  <span className={cn("inline-flex h-9 w-fit items-center rounded-md border px-3 text-xs font-bold", applicationStatusStyles[selectedApplication.status])}>
-                    {getApplicationStatusLabel(selectedApplication.status)}
+                  <span className={cn("inline-flex h-9 w-fit items-center rounded-md border px-3 text-xs font-bold", applicationStatusStyles[visibleSelectedApplication.status])}>
+                    {getApplicationStatusLabel(visibleSelectedApplication.status)}
                   </span>
                 </div>
 
                 <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                  <InfoStat label="Applied" value={formatApplicationDate(selectedApplication.appliedAt)} />
-                  <InfoStat label="Next step" value={selectedApplication.nextStep} />
-                  <InfoStat label="Match" value={`${selectedApplication.job.match}%`} />
+                  <InfoStat label="Applied" value={formatApplicationDate(visibleSelectedApplication.appliedAt)} />
+                  <InfoStat label="Next step" value={visibleSelectedApplication.nextStep} />
+                  <InfoStat label="Match" value={`${visibleSelectedApplication.job.match}%`} />
                 </div>
 
                 <section className="mt-5 rounded-md border border-border bg-white/[0.018] p-4">
@@ -3895,10 +3942,10 @@ function ApplicationsView({
                       <button
                         key={item.status}
                         type="button"
-                        onClick={() => onChangeStatus(selectedApplication.id, item.status)}
+                        onClick={() => onChangeStatus(visibleSelectedApplication.id, item.status)}
                         className={cn(
                           "h-9 rounded-md border px-3 text-xs font-bold transition hover:bg-white/[0.08]",
-                          selectedApplication.status === item.status
+                          visibleSelectedApplication.status === item.status
                             ? applicationStatusStyles[item.status]
                             : "border-border bg-transparent text-[#d8dee8]",
                         )}
@@ -3911,8 +3958,8 @@ function ApplicationsView({
 
                 <section className="mt-5 rounded-md border border-border bg-white/[0.018] p-4">
                   <h3 className="text-base font-bold text-white">Application notes</h3>
-                  <p className="mt-3 text-sm leading-6 text-muted">{selectedApplication.notes}</p>
-                  <p className="mt-3 text-sm leading-6 text-muted">{selectedApplication.job.overview}</p>
+                  <p className="mt-3 text-sm leading-6 text-muted">{visibleSelectedApplication.notes}</p>
+                  <p className="mt-3 text-sm leading-6 text-muted">{visibleSelectedApplication.job.overview}</p>
                 </section>
 
                 <section className="mt-5 rounded-md border border-border bg-white/[0.018] p-4">
@@ -3927,6 +3974,14 @@ function ApplicationsView({
                   </div>
                 </section>
               </>
+            ) : (
+              <div className="grid min-h-[320px] place-items-center text-center">
+                <div className="max-w-[360px]">
+                  <Search className="mx-auto h-8 w-8 text-muted" />
+                  <h3 className="mt-3 text-base font-bold text-white">No matching application</h3>
+                  <p className="mt-2 text-sm leading-6 text-muted">Adjust the search or choose another status filter.</p>
+                </div>
+              </div>
             )}
           </section>
 
@@ -3934,7 +3989,7 @@ function ApplicationsView({
             <section className="panel p-4 2xl:p-5">
               <h2 className="text-base font-bold text-white 2xl:text-lg">Upcoming</h2>
               <div className="mt-4 space-y-3">
-                {(applications.slice(0, 3)).map((application) => (
+                {(filteredApplications.slice(0, 3)).map((application) => (
                   <button
                     key={application.id}
                     type="button"
@@ -3962,9 +4017,9 @@ function ApplicationsView({
 
             <section className="panel p-4 2xl:p-5">
               <h2 className="text-base font-bold text-white 2xl:text-lg">Source</h2>
-              {selectedApplication?.job.applyUrl || selectedApplication?.job.sourceUrl ? (
+              {visibleSelectedApplication?.job.applyUrl || visibleSelectedApplication?.job.sourceUrl ? (
                 <a
-                  href={selectedApplication.job.applyUrl || selectedApplication.job.sourceUrl}
+                  href={visibleSelectedApplication.job.applyUrl || visibleSelectedApplication.job.sourceUrl}
                   target="_blank"
                   rel="noreferrer"
                   className="mt-4 inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-bold text-accent transition hover:bg-white/[0.06]"
