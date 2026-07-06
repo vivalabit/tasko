@@ -1,6 +1,10 @@
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
 from app.api.settings import format_env_value, mask_secret, upsert_env_value
+from app.core.settings import get_settings
+from app.main import app
 
 
 def test_mask_secret_keeps_only_edges() -> None:
@@ -31,3 +35,17 @@ def test_upsert_env_value_preserves_other_lines(tmp_path: Path) -> None:
         "BRIGHTDATA_API_KEY=new-key\n"
         "# BRIGHTDATA_API_KEY=commented\n"
     )
+
+
+def test_get_brightdata_api_key_returns_full_key(monkeypatch) -> None:
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "full-secret-key")
+    get_settings.cache_clear()
+    client = TestClient(app)
+
+    try:
+        response = client.get("/settings/brightdata-key")
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"brightdata_api_key": "full-secret-key"}

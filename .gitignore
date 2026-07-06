@@ -30,6 +30,8 @@ pnpm-debug.log*
 
 # Local user data
 apps/web/public/parser-search-configs.local.json
+profile-page-full.png
+.profile-screenshot-parts/
 
 # Caches
 .turbo/

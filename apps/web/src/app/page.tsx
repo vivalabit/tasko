@@ -14,8 +14,10 @@ import {
   ChevronRight,
   CircleDot,
   Command,
+  Copy,
   Download,
   Edit3,
+  Eye,
   ExternalLink,
   FileText,
   Github,
@@ -34,6 +36,7 @@ import {
   Save,
   Search,
   Share2,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Star,
@@ -144,6 +147,26 @@ type ParserApiResponse = {
 type AppSettings = {
   has_brightdata_api_key: boolean;
   brightdata_api_key_preview: string;
+};
+
+type BrightDataApiKeyResponse = {
+  brightdata_api_key?: string;
+  detail?: string;
+};
+
+type UiSettings = {
+  showLogs: boolean;
+};
+
+type AppLogLevel = "info" | "success" | "warning" | "error";
+
+type AppLogEntry = {
+  id: string;
+  timestamp: string;
+  level: AppLogLevel;
+  area: string;
+  message: string;
+  details?: string;
 };
 
 type ParserSearchForm = {
@@ -365,7 +388,7 @@ const jobs: Job[] = [
 
 const filters = ["Location", "Remote", "Salary", "Experience", "Job Type", "AI Match"];
 const tabs = ["Overview", "Company", "AI Match", "Reviews", "Similar Jobs"];
-type View = "Dashboard" | "Jobs" | "Applications" | "Profile" | "Settings";
+type View = "Dashboard" | "Jobs" | "Applications" | "Profile" | "Settings" | "Logs";
 type ParserSearchStatus = "idle" | "loading" | "ready" | "error";
 
 const applicationStatuses: Array<{ status: ApplicationStatus; label: string }> = [
@@ -411,8 +434,11 @@ const importedJobsStorageKey = "tasko.importedJobs.v1";
 const applicationsStorageKey = "tasko.applications.v1";
 const applicationEventsStorageKey = "tasko.applicationEvents.v1";
 const parserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v1";
+const uiSettingsStorageKey = "tasko.uiSettings.v1";
+const appLogsStorageKey = "tasko.appLogs.v1";
 const parserSearchConfigsLocalUrl = "/parser-search-configs.local.json";
 const legacyMovedFromJobsNote = "Moved from Jobs after applying.";
+const maxStoredAppLogs = 300;
 
 const defaultParserSearchForm: ParserSearchForm = {
   keywords: "",
@@ -426,6 +452,10 @@ const defaultParserSearchForm: ParserSearchForm = {
   deduplicate: true,
   searchName: "",
   folder: "",
+};
+
+const defaultUiSettings: UiSettings = {
+  showLogs: false,
 };
 
 const navItems: Array<{ label: string; icon: typeof Home; href: string; view?: View }> = [
@@ -1407,6 +1437,10 @@ function getViewFromHash(): View {
     return "Settings";
   }
 
+  if (window.location.hash === "#logs") {
+    return "Logs";
+  }
+
   if (window.location.hash === "#applications") {
     return "Applications";
   }
@@ -1487,6 +1521,39 @@ function normalizeParserSearchConfigs(configs: ParserSearchConfig[]) {
   }
 
   return Array.from(uniqueConfigs.values());
+}
+
+function normalizeStoredLogs(value: unknown) {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .filter((entry): entry is Partial<AppLogEntry> => Boolean(entry) && typeof entry === "object")
+    .map((entry) => ({
+      id: typeof entry.id === "string" && entry.id ? entry.id : createClientId("log"),
+      timestamp: typeof entry.timestamp === "string" && entry.timestamp ? entry.timestamp : new Date().toISOString(),
+      level: isAppLogLevel(entry.level) ? entry.level : "info",
+      area: typeof entry.area === "string" && entry.area ? entry.area : "Application",
+      message: typeof entry.message === "string" && entry.message ? entry.message : "Log entry",
+      details: typeof entry.details === "string" && entry.details ? entry.details : undefined,
+    }))
+    .slice(0, maxStoredAppLogs);
+}
+
+function isAppLogLevel(value: unknown): value is AppLogLevel {
+  return value === "info" || value === "success" || value === "warning" || value === "error";
+}
+
+function formatLogTimestamp(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Time unknown";
+
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function isImportedJob(job: Job) {
@@ -1795,6 +1862,10 @@ export default function HomePage() {
   const [brightDataApiKeyDraft, setBrightDataApiKeyDraft] = useState("");
   const [settingsSaveStatus, setSettingsSaveStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [settingsSaveMessage, setSettingsSaveMessage] = useState("");
+  const [uiSettings, setUiSettings] = useState<UiSettings>(defaultUiSettings);
+  const [areUiSettingsLoaded, setAreUiSettingsLoaded] = useState(false);
+  const [appLogs, setAppLogs] = useState<AppLogEntry[]>([]);
+  const [areAppLogsLoaded, setAreAppLogsLoaded] = useState(false);
 
   const filteredJobs = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -1972,6 +2043,41 @@ export default function HomePage() {
   }, [isParserSearchConfigsLoaded, parserSearchConfigs]);
 
   useEffect(() => {
+    try {
+      const rawSettings = window.localStorage.getItem(uiSettingsStorageKey);
+      const storedSettings = rawSettings ? (JSON.parse(rawSettings) as Partial<UiSettings>) : {};
+      setUiSettings({ ...defaultUiSettings, ...storedSettings });
+    } catch {
+      window.localStorage.removeItem(uiSettingsStorageKey);
+    } finally {
+      setAreUiSettingsLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!areUiSettingsLoaded) return;
+
+    window.localStorage.setItem(uiSettingsStorageKey, JSON.stringify(uiSettings));
+  }, [areUiSettingsLoaded, uiSettings]);
+
+  useEffect(() => {
+    try {
+      const rawLogs = window.localStorage.getItem(appLogsStorageKey);
+      setAppLogs(normalizeStoredLogs(rawLogs ? JSON.parse(rawLogs) : []));
+    } catch {
+      window.localStorage.removeItem(appLogsStorageKey);
+    } finally {
+      setAreAppLogsLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!areAppLogsLoaded) return;
+
+    window.localStorage.setItem(appLogsStorageKey, JSON.stringify(appLogs.slice(0, maxStoredAppLogs)));
+  }, [areAppLogsLoaded, appLogs]);
+
+  useEffect(() => {
     const abortController = new AbortController();
 
     try {
@@ -2097,8 +2203,37 @@ export default function HomePage() {
       Applications: "#applications",
       Profile: "#profile",
       Settings: "#settings",
+      Logs: "#logs",
     };
     window.history.replaceState(null, "", viewHash[view]);
+  }
+
+  function appendAppLog(entry: Omit<AppLogEntry, "id" | "timestamp">) {
+    setAppLogs((currentLogs) => [
+      {
+        ...entry,
+        id: createClientId("log"),
+        timestamp: new Date().toISOString(),
+      },
+      ...currentLogs,
+    ].slice(0, maxStoredAppLogs));
+  }
+
+  function updateShowLogs(showLogs: boolean) {
+    setUiSettings((currentSettings) => ({ ...currentSettings, showLogs }));
+    appendAppLog({
+      level: "info",
+      area: "Settings",
+      message: showLogs ? "Logs view enabled" : "Logs view disabled",
+    });
+
+    if (!showLogs && activeView === "Logs") {
+      changeView("Settings");
+    }
+  }
+
+  function clearAppLogs() {
+    setAppLogs([]);
   }
 
   function markJobApplied(job: Job) {
@@ -3331,7 +3466,14 @@ export default function HomePage() {
 
   async function pollLinkedInSnapshot(snapshotId: string): Promise<ParserApiResponse> {
     for (let attempt = 1; attempt <= snapshotPollMaxAttempts; attempt += 1) {
-      setParserSearchMessage(`Bright Data snapshot queued. Checking ${attempt}/${snapshotPollMaxAttempts}...`);
+      const pollMessage = `Bright Data snapshot queued. Checking ${attempt}/${snapshotPollMaxAttempts}...`;
+      setParserSearchMessage(pollMessage);
+      appendAppLog({
+        level: "info",
+        area: "Vacancy search",
+        message: pollMessage,
+        details: `Snapshot: ${snapshotId}`,
+      });
       await wait(snapshotPollDelayMs);
 
       const snapshotResponse = await fetch(
@@ -3344,6 +3486,12 @@ export default function HomePage() {
       }
 
       if (snapshotData.status === "completed") {
+        appendAppLog({
+          level: "success",
+          area: "Vacancy search",
+          message: `Bright Data snapshot completed with ${(snapshotData.jobs ?? []).length} vacancies`,
+          details: `Snapshot: ${snapshotId}`,
+        });
         return snapshotData;
       }
     }
@@ -3354,6 +3502,17 @@ export default function HomePage() {
   async function runParsers() {
     setParserSearchStatus("loading");
     setParserSearchMessage("");
+    appendAppLog({
+      level: "info",
+      area: "Vacancy search",
+      message: "LinkedIn vacancy search started",
+      details: [
+        `Keywords: ${parserSearchForm.keywords || "Any"}`,
+        `Location: ${parserSearchForm.location || parserSearchForm.country || "Any"}`,
+        `Remote: ${parserSearchForm.remote}`,
+        `Limit: ${parserSearchForm.resultsLimit || "100"}`,
+      ].join(" | "),
+    });
 
     try {
       const response = await fetch(`${apiBaseUrl}/parsers/linkedin/search`, {
@@ -3379,6 +3538,16 @@ export default function HomePage() {
         throw new Error(data.detail ?? "LinkedIn parser request failed");
       }
 
+      appendAppLog({
+        level: data.status === "completed" ? "success" : "info",
+        area: "Vacancy search",
+        message:
+          data.status === "completed"
+            ? `LinkedIn parser returned ${(data.jobs ?? []).length} vacancies immediately`
+            : `Bright Data snapshot queued: ${data.snapshot_id ?? "waiting"}`,
+        details: data.message || undefined,
+      });
+
       const finalData =
         data.status === "completed"
           ? data
@@ -3386,16 +3555,28 @@ export default function HomePage() {
             ? await pollLinkedInSnapshot(data.snapshot_id)
             : data;
       const addedCount = finalData.status === "completed" ? addParsedJobsToList(finalData.jobs ?? []) : 0;
-
-      setParserSearchStatus("ready");
-      setParserSearchMessage(
+      const finalMessage =
         finalData.status === "completed"
           ? `Added ${addedCount} LinkedIn vacancies to Jobs`
-          : `Bright Data snapshot queued: ${finalData.snapshot_id ?? data.snapshot_id ?? "waiting"}`,
-      );
+          : `Bright Data snapshot queued: ${finalData.snapshot_id ?? data.snapshot_id ?? "waiting"}`;
+
+      setParserSearchStatus("ready");
+      setParserSearchMessage(finalMessage);
+      appendAppLog({
+        level: finalData.status === "completed" ? "success" : "info",
+        area: "Vacancy search",
+        message: finalMessage,
+        details: finalData.snapshot_id ? `Snapshot: ${finalData.snapshot_id}` : undefined,
+      });
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "LinkedIn parser request failed";
       setParserSearchStatus("error");
-      setParserSearchMessage(error instanceof Error ? error.message : "LinkedIn parser request failed");
+      setParserSearchMessage(errorMessage);
+      appendAppLog({
+        level: "error",
+        area: "Vacancy search",
+        message: errorMessage,
+      });
     }
   }
 
@@ -3403,7 +3584,7 @@ export default function HomePage() {
     <main className="h-screen overflow-hidden bg-background text-foreground">
       <div className="fixed inset-0 bg-[radial-gradient(circle_at_16%_8%,rgba(255,90,0,0.12),transparent_26%),radial-gradient(circle_at_80%_0%,rgba(52,120,246,0.10),transparent_28%)]" />
       <div className="relative mx-auto flex h-full max-w-[1536px] overflow-hidden rounded-none border-border bg-[#0a0f15]/96 shadow-panel lg:rounded-[14px] lg:border">
-        <AppSidebar activeView={activeView} onChangeView={changeView} profile={profile} />
+        <AppSidebar activeView={activeView} onChangeView={changeView} profile={profile} showLogs={uiSettings.showLogs} />
 
         {activeView === "Dashboard" ? (
           <DashboardView onOpenJobs={() => changeView("Jobs")} />
@@ -3451,6 +3632,7 @@ export default function HomePage() {
         ) : activeView === "Settings" ? (
           <SettingsView
             settings={appSettings}
+            showLogs={uiSettings.showLogs}
             apiKeyDraft={brightDataApiKeyDraft}
             status={settingsSaveStatus}
             message={settingsSaveMessage}
@@ -3461,7 +3643,10 @@ export default function HomePage() {
             }}
             onClear={() => saveAppSettings("")}
             onSave={() => saveAppSettings()}
+            onShowLogsChange={updateShowLogs}
           />
+        ) : activeView === "Logs" && uiSettings.showLogs ? (
+          <LogsView logs={appLogs} onClear={clearAppLogs} />
         ) : (
         <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
         <header className="grid shrink-0 gap-3 xl:grid-cols-[112px_minmax(260px,520px)_1fr] 2xl:grid-cols-[140px_minmax(280px,560px)_1fr] xl:items-center">
@@ -4993,22 +5178,102 @@ function ApplicationsView({
 
 function SettingsView({
   settings,
+  showLogs,
   apiKeyDraft,
   status,
   message,
   onApiKeyChange,
   onClear,
   onSave,
+  onShowLogsChange,
 }: {
   settings: AppSettings;
+  showLogs: boolean;
   apiKeyDraft: string;
   status: "idle" | "loading" | "ready" | "error";
   message: string;
   onApiKeyChange: (value: string) => void;
   onClear: () => void;
   onSave: () => void;
+  onShowLogsChange: (value: boolean) => void;
 }) {
   const hasApiKeyDraft = apiKeyDraft.trim().length > 0;
+  const [isCurrentKeyVisible, setIsCurrentKeyVisible] = useState(false);
+  const [revealedCurrentKey, setRevealedCurrentKey] = useState("");
+  const [isCurrentKeyLoading, setIsCurrentKeyLoading] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
+  const currentKeyPreview = settings.brightdata_api_key_preview || "No key saved";
+  const displayedCurrentKey =
+    settings.has_brightdata_api_key && isCurrentKeyVisible
+      ? revealedCurrentKey || (isCurrentKeyLoading ? "Loading key..." : currentKeyPreview)
+      : settings.has_brightdata_api_key
+        ? currentKeyPreview
+        : "No key saved";
+  const statusMessage =
+    status === "error"
+      ? message || "Settings save failed"
+      : copyStatus ||
+        message ||
+        (settings.has_brightdata_api_key
+          ? "Key is encrypted and stored securely"
+          : "Add a Bright Data key to enable LinkedIn vacancy search.");
+
+  useEffect(() => {
+    setIsCurrentKeyVisible(false);
+    setRevealedCurrentKey("");
+    setCopyStatus("");
+  }, [settings.brightdata_api_key_preview, settings.has_brightdata_api_key]);
+
+  async function loadCurrentApiKey() {
+    if (!settings.has_brightdata_api_key) return "";
+    if (revealedCurrentKey) return revealedCurrentKey;
+
+    try {
+      setIsCurrentKeyLoading(true);
+      const response = await fetch(`${apiBaseUrl}/settings/brightdata-key`, { cache: "no-store" });
+      const data = (await response.json()) as BrightDataApiKeyResponse;
+
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Current key request failed");
+      }
+
+      const fullKey = data.brightdata_api_key ?? "";
+      setRevealedCurrentKey(fullKey);
+      return fullKey;
+    } catch {
+      setCopyStatus("Could not load current key");
+      window.setTimeout(() => setCopyStatus(""), 2000);
+      return "";
+    } finally {
+      setIsCurrentKeyLoading(false);
+    }
+  }
+
+  async function toggleCurrentKeyVisibility() {
+    if (isCurrentKeyVisible) {
+      setIsCurrentKeyVisible(false);
+      return;
+    }
+
+    const fullKey = await loadCurrentApiKey();
+    if (fullKey) {
+      setIsCurrentKeyVisible(true);
+    }
+  }
+
+  async function copyCurrentKey() {
+    const fullKey = await loadCurrentApiKey();
+    if (!fullKey) return;
+
+    try {
+      await navigator.clipboard.writeText(fullKey);
+      setCopyStatus("Current key copied");
+      window.setTimeout(() => setCopyStatus(""), 2000);
+    } catch {
+      setCopyStatus("Copy failed");
+      window.setTimeout(() => setCopyStatus(""), 2000);
+    }
+  }
 
   return (
     <section className="job-scroll flex h-screen min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
@@ -5021,8 +5286,36 @@ function SettingsView({
         </div>
       </header>
 
-      <div className="grid max-w-[960px] gap-4">
+      <div className="grid max-w-[1460px] gap-5">
         <section className="panel p-4 2xl:p-5">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="grid h-11 w-11 shrink-0 place-items-center rounded-md bg-accent/18 text-accent 2xl:h-12 2xl:w-12">
+                <FileText className="h-5 w-5 2xl:h-6 2xl:w-6" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-base font-bold text-white 2xl:text-lg">Logs</h2>
+                <p className="mt-1 text-[13px] leading-5 text-muted 2xl:text-sm 2xl:leading-6">
+                  Show the Logs button in the sidebar and keep local application events.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              aria-label="Show logs"
+              aria-pressed={showLogs}
+              onClick={() => onShowLogsChange(!showLogs)}
+              className={cn(
+                "relative h-6 w-11 shrink-0 rounded-full transition",
+                showLogs ? "bg-accent shadow-[0_0_14px_rgba(255,90,0,0.22)]" : "bg-white/15",
+              )}
+            >
+              <span className={cn("absolute top-1 h-4 w-4 rounded-full bg-white transition", showLogs ? "right-1" : "left-1")} />
+            </button>
+          </div>
+        </section>
+
+        <section className="panel p-5 2xl:p-7">
           <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
             <div className="flex min-w-0 items-start gap-3">
               <div className="grid h-11 w-11 shrink-0 place-items-center rounded-md bg-[#0a66c2]/22 text-[#8cc7ff] 2xl:h-12 2xl:w-12">
@@ -5048,39 +5341,96 @@ function SettingsView({
             </span>
           </div>
 
-          <div className="mt-5 grid gap-4">
-            <div className="rounded-md border border-border bg-white/[0.018] p-3 2xl:p-4">
-              <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-sm font-bold text-white">Current key</p>
-                <p className="font-mono text-xs font-semibold text-muted">
-                  {settings.brightdata_api_key_preview || "No key saved"}
-                </p>
+          <div className="mt-6 grid gap-5">
+            <div className="grid gap-2">
+              <p className="text-sm font-bold text-[#d8dee8] 2xl:text-base">Current key</p>
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto]">
+                <div className="flex min-w-0 overflow-hidden rounded-md border border-border bg-[#0d131a]">
+                  <div className="min-w-0 flex-1 px-3 py-3 font-mono text-sm font-semibold text-muted 2xl:px-4 2xl:text-base">
+                    {displayedCurrentKey}
+                  </div>
+                  <button
+                    type="button"
+                    aria-label={isCurrentKeyVisible ? "Hide current key" : "Show current key"}
+                    className="grid w-12 shrink-0 place-items-center border-l border-border text-muted transition hover:bg-white/[0.055] hover:text-white 2xl:w-14"
+                    disabled={!settings.has_brightdata_api_key || isCurrentKeyLoading}
+                    onClick={toggleCurrentKeyVisibility}
+                  >
+                    <Eye className="h-5 w-5" />
+                  </button>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-12 rounded-md border border-border bg-transparent px-6 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06] lg:w-[112px] 2xl:h-[52px] 2xl:text-sm"
+                  disabled={!settings.has_brightdata_api_key || isCurrentKeyLoading}
+                  onClick={copyCurrentKey}
+                >
+                  <Copy className="h-4 w-4" />
+                  Copy
+                </Button>
               </div>
             </div>
 
             <label className="grid gap-2">
-              <span className="text-xs font-bold text-[#d8dee8]">Bright Data API Key</span>
+              <span className="text-sm font-bold text-[#d8dee8] 2xl:text-base">Bright Data API key</span>
               <input
                 type="password"
                 value={apiKeyDraft}
                 onChange={(event) => onApiKeyChange(event.target.value)}
-                placeholder={settings.has_brightdata_api_key ? "Enter a new key to replace the saved one" : "Enter API key"}
-                className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70 2xl:h-11"
+                placeholder="Enter your Bright Data API key"
+                className="h-12 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70 2xl:h-[52px] 2xl:px-4 2xl:text-base"
                 autoComplete="off"
               />
-              <span className="text-xs font-medium text-muted">Saved to backend environment as BRIGHTDATA_API_KEY</span>
+              <span className="text-sm font-medium text-muted">
+                You can find your API key in your{" "}
+                <a
+                  href="https://brightdata.com/cp"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 font-semibold text-[#2f80ed] transition hover:text-[#8cc7ff]"
+                >
+                  Bright Data dashboard
+                  <ExternalLink className="h-3.5 w-3.5" />
+                </a>
+                .
+              </span>
             </label>
 
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className={cn("text-sm font-semibold", status === "error" ? "text-[#ff7a7a]" : "text-muted")}>
-                {message || "Parser requests will use the saved key immediately."}
+            <div className="rounded-md border border-border bg-white/[0.018] px-4 py-4 2xl:px-5 2xl:py-5">
+              <div className="grid gap-3 sm:grid-cols-[28px_minmax(0,1fr)]">
+                <Info className="mt-0.5 h-5 w-5 text-[#2f80ed]" />
+                <div>
+                  <h3 className="text-sm font-bold text-[#d8dee8] 2xl:text-base">How it works</h3>
+                  <p className="mt-2 max-w-[720px] text-sm leading-6 text-muted 2xl:text-base 2xl:leading-7">
+                    Your API key is saved securely and used for LinkedIn vacancy search on the server side.
+                    <br />
+                    The full key is fetched only when you reveal or copy it.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <p
+                className={cn(
+                  "flex items-center gap-3 text-sm font-semibold 2xl:text-base",
+                  status === "error"
+                    ? "text-[#ff7a7a]"
+                    : settings.has_brightdata_api_key || copyStatus
+                      ? "text-success"
+                      : "text-muted",
+                )}
+              >
+                {status === "error" ? <X className="h-5 w-5" /> : <ShieldCheck className="h-5 w-5" />}
+                {statusMessage}
               </p>
-              <div className="flex flex-col gap-2 sm:flex-row">
+              <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
                 {settings.has_brightdata_api_key && (
                   <Button
                     type="button"
                     variant="ghost"
-                    className="h-10 w-full rounded-md border border-border bg-transparent px-5 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06] sm:w-auto 2xl:h-11"
+                    className="h-12 w-full rounded-md border border-border bg-transparent px-6 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06] sm:w-auto 2xl:h-[52px] 2xl:text-sm"
                     disabled={status === "loading"}
                     onClick={onClear}
                   >
@@ -5089,7 +5439,7 @@ function SettingsView({
                 )}
                 <Button
                   type="button"
-                  className="h-10 w-full rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-5 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12] sm:w-auto 2xl:h-11"
+                  className="h-12 w-full rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12] sm:w-auto 2xl:h-[52px] 2xl:text-sm"
                   disabled={status === "loading" || !hasApiKeyDraft}
                   onClick={onSave}
                 >
@@ -5100,6 +5450,72 @@ function SettingsView({
             </div>
           </div>
         </section>
+      </div>
+    </section>
+  );
+}
+
+function LogsView({ logs, onClear }: { logs: AppLogEntry[]; onClear: () => void }) {
+  const levelStyles: Record<AppLogLevel, string> = {
+    info: "border-[#2f80ed]/35 bg-[#2f80ed]/12 text-[#8cc7ff]",
+    success: "border-success/35 bg-success/12 text-success",
+    warning: "border-[#ff9f1a]/35 bg-[#ff9f1a]/12 text-[#ffd08a]",
+    error: "border-[#d94d4d]/45 bg-[#d94d4d]/13 text-[#ff8a8a]",
+  };
+
+  return (
+    <section className="job-scroll flex h-screen min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
+      <header className="mb-4 flex shrink-0 flex-col gap-3 md:flex-row md:items-start md:justify-between 2xl:mb-5">
+        <div>
+          <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">
+            Logs
+          </h1>
+          <p className="mt-1 text-[13px] text-muted 2xl:mt-1.5 2xl:text-base">Local application events and parser activity</p>
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          className="h-10 w-full rounded-md border border-border bg-transparent px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06] md:w-auto 2xl:h-11"
+          disabled={logs.length === 0}
+          onClick={onClear}
+        >
+          <Trash2 className="h-4 w-4" />
+          Clear logs
+        </Button>
+      </header>
+
+      <div className="panel flex min-h-[360px] max-w-[1120px] flex-1 flex-col overflow-hidden p-0">
+        {logs.length === 0 ? (
+          <div className="grid min-h-[360px] place-items-center px-4 text-center">
+            <div>
+              <FileText className="mx-auto h-8 w-8 text-muted" />
+              <h2 className="mt-3 text-base font-bold text-white">No logs yet</h2>
+              <p className="mt-1 max-w-[360px] text-sm leading-6 text-muted">
+                Run a vacancy search or change settings to create log entries.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="job-scroll min-h-0 flex-1 overflow-y-auto">
+            {logs.map((log) => (
+              <article key={log.id} className="border-b border-border px-4 py-3 last:border-0 2xl:px-5 2xl:py-4">
+                <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className={cn("inline-flex h-6 items-center rounded-md border px-2 text-[11px] font-bold uppercase", levelStyles[log.level])}>
+                        {log.level}
+                      </span>
+                      <span className="text-xs font-bold text-[#d8dee8]">{log.area}</span>
+                      <span className="text-xs text-muted">{formatLogTimestamp(log.timestamp)}</span>
+                    </div>
+                    <p className="mt-2 text-sm font-semibold leading-5 text-white 2xl:text-base">{log.message}</p>
+                    {log.details && <p className="mt-1 font-mono text-xs leading-5 text-muted">{log.details}</p>}
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   );
@@ -7719,11 +8135,17 @@ function AppSidebar({
   activeView,
   onChangeView,
   profile,
+  showLogs,
 }: {
   activeView: View;
   onChangeView: (view: View) => void;
   profile: CandidateProfile;
+  showLogs: boolean;
 }) {
+  const visibleNavItems = showLogs
+    ? [...navItems, { label: "Logs", icon: FileText, href: "#logs", view: "Logs" as const }]
+    : navItems;
+
   return (
     <aside className="app-sidebar hidden h-screen w-[190px] shrink-0 overflow-y-auto border-r border-border bg-white/[0.025] px-2.5 py-4 lg:flex lg:flex-col 2xl:w-[220px] 2xl:px-3 2xl:py-5">
       <div className="app-sidebar-brand mb-5 flex items-center gap-2.5 px-2 2xl:mb-7 2xl:gap-3">
@@ -7742,7 +8164,7 @@ function AppSidebar({
       </div>
 
       <nav className="app-sidebar-nav space-y-1.5 2xl:space-y-2">
-        {navItems.map((item) => (
+        {visibleNavItems.map((item) => (
           <a
             href={item.href}
             key={item.label}
