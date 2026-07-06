@@ -1538,13 +1538,25 @@ function createApplicationFromJob(job: Job): TrackedApplication {
     job,
     status: "applied",
     appliedAt,
-    nextStep: "Follow up in 5 days",
+    nextStep: "",
     notes: "Moved from Jobs after applying.",
   };
 }
 
 function getApplicationEventTypeLabel(type: ApplicationEventType) {
   return applicationEventTypes.find((item) => item.type === type)?.label ?? type;
+}
+
+function getApplicationTimelineEventLabel(type: ApplicationEventType) {
+  const labels: Record<ApplicationEventType, string> = {
+    screening: "Phone screen",
+    interview: "Interview",
+    assessment: "Assessment deadline",
+    follow_up: "Follow-up",
+    offer_deadline: "Offer deadline",
+  };
+
+  return labels[type];
 }
 
 function getLocalTimezone() {
@@ -1792,6 +1804,32 @@ export default function HomePage() {
     if (!areApplicationsLoaded) return;
 
     window.localStorage.setItem(applicationsStorageKey, JSON.stringify(applications));
+
+    const abortController = new AbortController();
+
+    async function saveStoredApplications() {
+      try {
+        await fetch(`${apiBaseUrl}/applications`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            applications: applications.map((application) => ({
+              id: application.id,
+              data: application,
+            })),
+          }),
+          signal: abortController.signal,
+        });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      }
+    }
+
+    saveStoredApplications();
+
+    return () => {
+      abortController.abort();
+    };
   }, [areApplicationsLoaded, applications]);
 
   useEffect(() => {
@@ -1810,6 +1848,33 @@ export default function HomePage() {
     if (!areApplicationEventsLoaded) return;
 
     window.localStorage.setItem(applicationEventsStorageKey, JSON.stringify(applicationEvents));
+
+    const abortController = new AbortController();
+
+    async function saveStoredApplicationEvents() {
+      try {
+        await fetch(`${apiBaseUrl}/applications/events`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            events: applicationEvents.map((event) => ({
+              id: event.id,
+              application_id: event.applicationId,
+              data: event,
+            })),
+          }),
+          signal: abortController.signal,
+        });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      }
+    }
+
+    saveStoredApplicationEvents();
+
+    return () => {
+      abortController.abort();
+    };
   }, [areApplicationEventsLoaded, applicationEvents]);
 
   useEffect(() => {
@@ -1852,6 +1917,47 @@ export default function HomePage() {
       }
     }
 
+    async function loadStoredApplications() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/applications`, {
+          cache: "no-store",
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) return;
+
+        const storedApplications = (await response.json()) as Array<{ id: string; data: unknown }>;
+        const loadedApplications = normalizeStoredApplications(storedApplications.map((application) => application.data));
+        if (loadedApplications.length === 0) return;
+
+        setApplications(loadedApplications);
+        setSelectedApplicationId((currentId) => currentId || loadedApplications[0]?.id || "");
+        window.localStorage.setItem(applicationsStorageKey, JSON.stringify(loadedApplications));
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      }
+    }
+
+    async function loadStoredApplicationEvents() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/applications/events`, {
+          cache: "no-store",
+          signal: abortController.signal,
+        });
+
+        if (!response.ok) return;
+
+        const storedEvents = (await response.json()) as Array<{ id: string; data: unknown }>;
+        const loadedEvents = sortApplicationEvents(normalizeStoredApplicationEvents(storedEvents.map((event) => event.data)));
+        if (loadedEvents.length === 0) return;
+
+        setApplicationEvents(loadedEvents);
+        window.localStorage.setItem(applicationEventsStorageKey, JSON.stringify(loadedEvents));
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      }
+    }
+
     async function loadProfile() {
       try {
         const response = await fetch(`${apiBaseUrl}/profile`, {
@@ -1885,6 +1991,8 @@ export default function HomePage() {
     }
 
     loadStoredJobs();
+    loadStoredApplications();
+    loadStoredApplicationEvents();
     loadProfile();
     loadSettings();
 
@@ -1926,16 +2034,6 @@ export default function HomePage() {
           ? {
               ...application,
               status,
-              nextStep:
-                status === "interview"
-                  ? "Prepare interview"
-                  : status === "assessment"
-                    ? "Submit assessment"
-                    : status === "offer"
-                      ? "Review offer"
-                      : status === "rejected"
-                        ? "Archive and learn"
-                        : "Follow up in 5 days",
             }
           : application,
       ),
@@ -3929,7 +4027,7 @@ function ApplicationsView({
   const visibleApplicationEvents = visibleSelectedApplication
     ? sortApplicationEvents(events.filter((event) => event.applicationId === visibleSelectedApplication.id))
     : [];
-  const nextApplicationEvent = visibleApplicationEvents.find((event) => new Date(event.startsAt).getTime() >= Date.now()) ?? visibleApplicationEvents[0] ?? null;
+  const nextApplicationEvent = visibleApplicationEvents.find((event) => new Date(event.startsAt).getTime() >= Date.now()) ?? null;
   const upcomingEvents = sortApplicationEvents(
     events.filter(
       (event) =>
@@ -3940,13 +4038,16 @@ function ApplicationsView({
   const timelineItems = visibleSelectedApplication
     ? [
         { label: "Applied", date: formatApplicationDate(visibleSelectedApplication.appliedAt), state: "done" },
-        {
-          label: nextApplicationEvent ? getApplicationEventTypeLabel(nextApplicationEvent.type) : visibleSelectedApplication.status === "applied" ? "Follow-up" : getApplicationStatusLabel(visibleSelectedApplication.status),
-          date: nextApplicationEvent ? `${formatApplicationEventDate(nextApplicationEvent.startsAt)} at ${formatApplicationEventTime(nextApplicationEvent.startsAt)}` : visibleSelectedApplication.nextStep,
-          state: "current",
-        },
-        { label: "Hiring manager interview", date: visibleSelectedApplication.status === "interview" ? "Pending schedule" : "TBD", state: "future" },
-        { label: "Decision", date: visibleSelectedApplication.status === "offer" ? "Offer received" : "TBD", state: "future" },
+        ...visibleApplicationEvents.map((event) => {
+          const eventTime = new Date(event.startsAt).getTime();
+          const isNextEvent = nextApplicationEvent?.id === event.id;
+
+          return {
+            label: getApplicationTimelineEventLabel(event.type),
+            date: `${formatApplicationEventDate(event.startsAt)} at ${formatApplicationEventTime(event.startsAt)}`,
+            state: isNextEvent ? "current" : eventTime < Date.now() ? "done" : "future",
+          };
+        }),
       ]
     : [];
 
@@ -4174,12 +4275,12 @@ function ApplicationsView({
                         Next action
                       </h3>
                       <p className="mt-1 text-[12px] font-semibold text-[#d8dee8] 2xl:text-[13px]">
-                        {nextApplicationEvent ? nextApplicationEvent.title : visibleSelectedApplication.nextStep}
+                        {nextApplicationEvent ? nextApplicationEvent.title : "No event scheduled"}
                       </p>
                       <p className="mt-0.5 truncate text-[10px] text-muted 2xl:text-[11px]">
                         {nextApplicationEvent
                           ? `${formatApplicationEventDate(nextApplicationEvent.startsAt)} at ${formatApplicationEventTime(nextApplicationEvent.startsAt)}`
-                          : `${visibleSelectedApplication.job.company} • ${visibleSelectedApplication.job.title}`}
+                          : "Schedule a screening, interview, assessment, or follow-up"}
                       </p>
                     </div>
                     <Button
