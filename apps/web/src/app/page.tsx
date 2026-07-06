@@ -75,6 +75,7 @@ type Job = {
 };
 
 type ApplicationStatus = "applied" | "interview" | "assessment" | "offer" | "rejected";
+type ApplicationEventType = "screening" | "interview" | "assessment" | "follow_up" | "offer_deadline";
 
 type TrackedApplication = {
   id: string;
@@ -82,6 +83,28 @@ type TrackedApplication = {
   status: ApplicationStatus;
   appliedAt: string;
   nextStep: string;
+  notes: string;
+};
+
+type ApplicationEvent = {
+  id: string;
+  applicationId: string;
+  type: ApplicationEventType;
+  title: string;
+  startsAt: string;
+  durationMinutes: number;
+  timezone: string;
+  location: string;
+  notes: string;
+};
+
+type ApplicationEventDraft = {
+  type: ApplicationEventType;
+  title: string;
+  startsAt: string;
+  durationMinutes: string;
+  timezone: string;
+  location: string;
   notes: string;
 };
 
@@ -347,11 +370,20 @@ const applicationStatusStyles: Record<ApplicationStatus, string> = {
   rejected: "border-[#d94d4d]/45 bg-[#d94d4d]/13 text-[#ff8a8a]",
 };
 
+const applicationEventTypes: Array<{ type: ApplicationEventType; label: string }> = [
+  { type: "screening", label: "Screening" },
+  { type: "interview", label: "Interview" },
+  { type: "assessment", label: "Assessment deadline" },
+  { type: "follow_up", label: "Follow-up" },
+  { type: "offer_deadline", label: "Offer deadline" },
+];
+
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const snapshotPollDelayMs = 4000;
 const snapshotPollMaxAttempts = 30;
 const importedJobsStorageKey = "tasko.importedJobs.v1";
 const applicationsStorageKey = "tasko.applications.v1";
+const applicationEventsStorageKey = "tasko.applicationEvents.v1";
 const parserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v1";
 const parserSearchConfigsLocalUrl = "/parser-search-configs.local.json";
 
@@ -1478,6 +1510,26 @@ function normalizeStoredApplications(value: unknown) {
   });
 }
 
+function normalizeStoredApplicationEvents(value: unknown) {
+  if (!Array.isArray(value)) return [];
+
+  return value.filter((event): event is ApplicationEvent => {
+    if (!event || typeof event !== "object") return false;
+    const candidate = event as Partial<ApplicationEvent>;
+    return (
+      typeof candidate.id === "string" &&
+      typeof candidate.applicationId === "string" &&
+      applicationEventTypes.some((item) => item.type === candidate.type) &&
+      typeof candidate.title === "string" &&
+      typeof candidate.startsAt === "string" &&
+      typeof candidate.durationMinutes === "number" &&
+      typeof candidate.timezone === "string" &&
+      typeof candidate.location === "string" &&
+      typeof candidate.notes === "string"
+    );
+  });
+}
+
 function createApplicationFromJob(job: Job): TrackedApplication {
   const appliedAt = new Date().toISOString();
 
@@ -1489,6 +1541,70 @@ function createApplicationFromJob(job: Job): TrackedApplication {
     nextStep: "Follow up in 5 days",
     notes: "Moved from Jobs after applying.",
   };
+}
+
+function getApplicationEventTypeLabel(type: ApplicationEventType) {
+  return applicationEventTypes.find((item) => item.type === type)?.label ?? type;
+}
+
+function getLocalTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+}
+
+function toDateTimeLocalValue(date: Date) {
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function createDefaultEventDraft(application: TrackedApplication): ApplicationEventDraft {
+  const start = new Date();
+  start.setDate(start.getDate() + 5);
+  start.setHours(10, 0, 0, 0);
+
+  return {
+    type: "screening",
+    title: `${application.job.company} screening`,
+    startsAt: toDateTimeLocalValue(start),
+    durationMinutes: "30",
+    timezone: getLocalTimezone(),
+    location: "",
+    notes: "",
+  };
+}
+
+function createApplicationEvent(applicationId: string, draft: ApplicationEventDraft): ApplicationEvent {
+  const startDate = new Date(draft.startsAt);
+  const startsAt = Number.isNaN(startDate.getTime()) ? new Date().toISOString() : startDate.toISOString();
+
+  return {
+    id: createClientId("application-event"),
+    applicationId,
+    type: draft.type,
+    title: draft.title.trim() || getApplicationEventTypeLabel(draft.type),
+    startsAt,
+    durationMinutes: Number.parseInt(draft.durationMinutes, 10) || 30,
+    timezone: draft.timezone.trim() || getLocalTimezone(),
+    location: draft.location.trim(),
+    notes: draft.notes.trim(),
+  };
+}
+
+function sortApplicationEvents(events: ApplicationEvent[]) {
+  return [...events].sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
+}
+
+function formatApplicationEventDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Date TBD";
+
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function formatApplicationEventTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Time TBD";
+
+  return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
 function formatApplicationDate(value: string) {
@@ -1529,6 +1645,8 @@ export default function HomePage() {
   const [applications, setApplications] = useState<TrackedApplication[]>([]);
   const [selectedApplicationId, setSelectedApplicationId] = useState("");
   const [areApplicationsLoaded, setAreApplicationsLoaded] = useState(false);
+  const [applicationEvents, setApplicationEvents] = useState<ApplicationEvent[]>([]);
+  const [areApplicationEventsLoaded, setAreApplicationEventsLoaded] = useState(false);
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState("Best Match");
   const [alertsEnabled, setAlertsEnabled] = useState(false);
@@ -1677,6 +1795,24 @@ export default function HomePage() {
   }, [areApplicationsLoaded, applications]);
 
   useEffect(() => {
+    try {
+      const rawEvents = window.localStorage.getItem(applicationEventsStorageKey);
+      const storedEvents = normalizeStoredApplicationEvents(rawEvents ? JSON.parse(rawEvents) : []);
+      setApplicationEvents(sortApplicationEvents(storedEvents));
+    } catch {
+      window.localStorage.removeItem(applicationEventsStorageKey);
+    } finally {
+      setAreApplicationEventsLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!areApplicationEventsLoaded) return;
+
+    window.localStorage.setItem(applicationEventsStorageKey, JSON.stringify(applicationEvents));
+  }, [areApplicationEventsLoaded, applicationEvents]);
+
+  useEffect(() => {
     if (!isParserSearchConfigsLoaded) return;
 
     window.localStorage.setItem(parserSearchConfigsStorageKey, JSON.stringify(parserSearchConfigs));
@@ -1804,6 +1940,10 @@ export default function HomePage() {
           : application,
       ),
     );
+  }
+
+  function saveApplicationEvent(event: ApplicationEvent) {
+    setApplicationEvents((currentEvents) => sortApplicationEvents([event, ...currentEvents]));
   }
 
   function toggleSaved(jobId: string) {
@@ -3025,10 +3165,12 @@ export default function HomePage() {
         ) : activeView === "Applications" ? (
           <ApplicationsView
             applications={applications}
+            events={applicationEvents}
             selectedApplication={selectedApplication}
             onSelectApplication={setSelectedApplicationId}
             onOpenJobs={() => changeView("Jobs")}
             onChangeStatus={updateApplicationStatus}
+            onSaveEvent={saveApplicationEvent}
           />
         ) : activeView === "Profile" ? (
           <ProfileView
@@ -3734,19 +3876,25 @@ export default function HomePage() {
 
 function ApplicationsView({
   applications,
+  events,
   selectedApplication,
   onSelectApplication,
   onOpenJobs,
   onChangeStatus,
+  onSaveEvent,
 }: {
   applications: TrackedApplication[];
+  events: ApplicationEvent[];
   selectedApplication: TrackedApplication | null;
   onSelectApplication: (applicationId: string) => void;
   onOpenJobs: () => void;
   onChangeStatus: (applicationId: string, status: ApplicationStatus) => void;
+  onSaveEvent: (event: ApplicationEvent) => void;
 }) {
   const [applicationQuery, setApplicationQuery] = useState("");
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<ApplicationStatus | "all">("all");
+  const [isScheduleDialogOpen, setIsScheduleDialogOpen] = useState(false);
+  const [eventDraft, setEventDraft] = useState<ApplicationEventDraft | null>(null);
   const statusCounts = applications.reduce(
     (counts, application) => ({
       ...counts,
@@ -3778,19 +3926,48 @@ function ApplicationsView({
     selectedApplication && filteredApplications.some((application) => application.id === selectedApplication.id)
       ? selectedApplication
       : filteredApplications[0] ?? null;
-  const upcomingApplications = filteredApplications.filter((application) => application.status !== "rejected").slice(0, 2);
+  const visibleApplicationEvents = visibleSelectedApplication
+    ? sortApplicationEvents(events.filter((event) => event.applicationId === visibleSelectedApplication.id))
+    : [];
+  const nextApplicationEvent = visibleApplicationEvents.find((event) => new Date(event.startsAt).getTime() >= Date.now()) ?? visibleApplicationEvents[0] ?? null;
+  const upcomingEvents = sortApplicationEvents(
+    events.filter(
+      (event) =>
+        filteredApplications.some((application) => application.id === event.applicationId) &&
+        new Date(event.startsAt).getTime() >= Date.now(),
+    ),
+  ).slice(0, 3);
   const timelineItems = visibleSelectedApplication
     ? [
         { label: "Applied", date: formatApplicationDate(visibleSelectedApplication.appliedAt), state: "done" },
         {
-          label: visibleSelectedApplication.status === "applied" ? "Follow-up" : getApplicationStatusLabel(visibleSelectedApplication.status),
-          date: visibleSelectedApplication.nextStep,
+          label: nextApplicationEvent ? getApplicationEventTypeLabel(nextApplicationEvent.type) : visibleSelectedApplication.status === "applied" ? "Follow-up" : getApplicationStatusLabel(visibleSelectedApplication.status),
+          date: nextApplicationEvent ? `${formatApplicationEventDate(nextApplicationEvent.startsAt)} at ${formatApplicationEventTime(nextApplicationEvent.startsAt)}` : visibleSelectedApplication.nextStep,
           state: "current",
         },
         { label: "Hiring manager interview", date: visibleSelectedApplication.status === "interview" ? "Pending schedule" : "TBD", state: "future" },
         { label: "Decision", date: visibleSelectedApplication.status === "offer" ? "Offer received" : "TBD", state: "future" },
       ]
     : [];
+
+  function openScheduleDialog() {
+    if (!visibleSelectedApplication) return;
+
+    setEventDraft(createDefaultEventDraft(visibleSelectedApplication));
+    setIsScheduleDialogOpen(true);
+  }
+
+  function updateEventDraft<Field extends keyof ApplicationEventDraft>(field: Field, value: ApplicationEventDraft[Field]) {
+    setEventDraft((currentDraft) => (currentDraft ? { ...currentDraft, [field]: value } : currentDraft));
+  }
+
+  function saveEventDraft() {
+    if (!visibleSelectedApplication || !eventDraft || !eventDraft.startsAt) return;
+
+    onSaveEvent(createApplicationEvent(visibleSelectedApplication.id, eventDraft));
+    setIsScheduleDialogOpen(false);
+    setEventDraft(null);
+  }
 
   return (
     <section className="job-scroll flex h-screen min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
@@ -3996,11 +4173,22 @@ function ApplicationsView({
                         <Calendar className="h-3.5 w-3.5 text-accent" />
                         Next action
                       </h3>
-                      <p className="mt-1 text-[12px] font-semibold text-[#d8dee8] 2xl:text-[13px]">{visibleSelectedApplication.nextStep}</p>
-                      <p className="mt-0.5 truncate text-[10px] text-muted 2xl:text-[11px]">{visibleSelectedApplication.job.company} • {visibleSelectedApplication.job.title}</p>
+                      <p className="mt-1 text-[12px] font-semibold text-[#d8dee8] 2xl:text-[13px]">
+                        {nextApplicationEvent ? nextApplicationEvent.title : visibleSelectedApplication.nextStep}
+                      </p>
+                      <p className="mt-0.5 truncate text-[10px] text-muted 2xl:text-[11px]">
+                        {nextApplicationEvent
+                          ? `${formatApplicationEventDate(nextApplicationEvent.startsAt)} at ${formatApplicationEventTime(nextApplicationEvent.startsAt)}`
+                          : `${visibleSelectedApplication.job.company} • ${visibleSelectedApplication.job.title}`}
+                      </p>
                     </div>
-                    <Button variant="ghost" className="h-7 rounded-md border border-border bg-transparent px-3 text-[11px] text-[#e6ebf3] hover:bg-white/[0.06]">
-                      View details
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-7 rounded-md border border-border bg-transparent px-3 text-[11px] text-[#e6ebf3] hover:bg-white/[0.06]"
+                      onClick={openScheduleDialog}
+                    >
+                      Schedule
                     </Button>
                   </div>
                 </section>
@@ -4048,24 +4236,46 @@ function ApplicationsView({
                 <button type="button" className="text-xs font-bold text-accent">View calendar</button>
               </div>
               <div className="mt-4 space-y-3">
-                {(upcomingApplications.length > 0 ? upcomingApplications : filteredApplications.slice(0, 2)).map((application, index) => (
+                {upcomingEvents.length > 0 ? upcomingEvents.map((event) => {
+                  const application = applications.find((item) => item.id === event.applicationId);
+                  if (!application) return null;
+                  const eventDate = new Date(event.startsAt);
+
+                  return (
                   <button
-                    key={application.id}
+                    key={event.id}
                     type="button"
                     onClick={() => onSelectApplication(application.id)}
                     className="grid w-full grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-2.5 rounded-md border border-border bg-white/[0.025] p-2.5 text-left transition hover:bg-white/[0.055] 2xl:grid-cols-[52px_minmax(0,1fr)_auto] 2xl:gap-3 2xl:p-3"
                   >
                     <div className="rounded-md border border-accent/45 bg-accent/10 py-1.5 text-center">
-                      <p className="text-[9px] font-black uppercase text-accent 2xl:text-[10px]">Jul</p>
-                      <p className="text-lg font-bold leading-none text-white 2xl:text-xl">{6 + index * 5}</p>
+                      <p className="text-[9px] font-black uppercase text-accent 2xl:text-[10px]">
+                        {Number.isNaN(eventDate.getTime()) ? "TBD" : eventDate.toLocaleDateString(undefined, { month: "short" })}
+                      </p>
+                      <p className="text-lg font-bold leading-none text-white 2xl:text-xl">
+                        {Number.isNaN(eventDate.getTime()) ? "-" : eventDate.getDate()}
+                      </p>
                     </div>
                     <div className="min-w-0">
-                      <p className="truncate text-sm font-bold text-white">{application.nextStep}</p>
-                      <p className="mt-1 truncate text-xs text-muted">{application.job.company} • {application.job.title}</p>
+                      <p className="truncate text-sm font-bold text-white">{event.title}</p>
+                      <p className="mt-1 truncate text-xs text-muted">
+                        {formatApplicationEventTime(event.startsAt)} • {application.job.company}
+                      </p>
                     </div>
-                    <span className="rounded-md bg-white/[0.06] px-2 py-1 text-[11px] font-bold text-muted">{index === 0 ? "Next" : "Later"}</span>
+                    <span className="rounded-md bg-white/[0.06] px-2 py-1 text-[11px] font-bold text-muted">
+                      {getApplicationEventTypeLabel(event.type)}
+                    </span>
                   </button>
-                ))}
+                  );
+                }) : (
+                  <button
+                    type="button"
+                    onClick={openScheduleDialog}
+                    className="w-full rounded-md border border-dashed border-border bg-white/[0.018] p-3 text-left text-xs font-semibold leading-5 text-muted transition hover:border-accent/55 hover:text-white"
+                  >
+                    No scheduled events yet. Add a screening, interview, assessment deadline, or follow-up.
+                  </button>
+                )}
               </div>
             </section>
 
@@ -4100,6 +4310,140 @@ function ApplicationsView({
               </button>
             </section>
           </aside>
+        </div>
+      )}
+
+      {isScheduleDialogOpen && eventDraft && visibleSelectedApplication && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+          <div className="panel w-full max-w-[620px] border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] 2xl:p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-[22px] font-bold leading-tight text-white">Schedule event</h2>
+                <p className="mt-1 text-sm font-medium text-muted">
+                  {visibleSelectedApplication.job.company} • {visibleSelectedApplication.job.title}
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="Close schedule event"
+                onClick={() => {
+                  setIsScheduleDialogOpen(false);
+                  setEventDraft(null);
+                }}
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <label className="grid gap-2">
+                <span className="text-xs font-bold text-[#d8dee8]">Event type</span>
+                <select
+                  value={eventDraft.type}
+                  onChange={(event) => updateEventDraft("type", event.target.value as ApplicationEventType)}
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                >
+                  {applicationEventTypes.map((item) => (
+                    <option key={item.type} value={item.type}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-xs font-bold text-[#d8dee8]">Title</span>
+                <input
+                  value={eventDraft.title}
+                  onChange={(event) => updateEventDraft("title", event.target.value)}
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+                  placeholder="Phone screen with recruiter"
+                />
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-xs font-bold text-[#d8dee8]">Date and time</span>
+                <input
+                  type="datetime-local"
+                  value={eventDraft.startsAt}
+                  onChange={(event) => updateEventDraft("startsAt", event.target.value)}
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                />
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-xs font-bold text-[#d8dee8]">Duration</span>
+                <select
+                  value={eventDraft.durationMinutes}
+                  onChange={(event) => updateEventDraft("durationMinutes", event.target.value)}
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                >
+                  <option value="15">15 minutes</option>
+                  <option value="30">30 minutes</option>
+                  <option value="45">45 minutes</option>
+                  <option value="60">1 hour</option>
+                  <option value="90">1.5 hours</option>
+                </select>
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-xs font-bold text-[#d8dee8]">Timezone</span>
+                <input
+                  value={eventDraft.timezone}
+                  onChange={(event) => updateEventDraft("timezone", event.target.value)}
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+                  placeholder="Europe/Zurich"
+                />
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-xs font-bold text-[#d8dee8]">Location or link</span>
+                <input
+                  value={eventDraft.location}
+                  onChange={(event) => updateEventDraft("location", event.target.value)}
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+                  placeholder="Zoom, Google Meet, phone, office"
+                />
+              </label>
+
+              <label className="grid gap-2 md:col-span-2">
+                <span className="text-xs font-bold text-[#d8dee8]">Notes</span>
+                <textarea
+                  value={eventDraft.notes}
+                  onChange={(event) => updateEventDraft("notes", event.target.value)}
+                  className="min-h-[88px] resize-none rounded-md border border-border bg-[#0d131a] px-3 py-2 text-sm font-semibold leading-5 text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+                  placeholder="Recruiter name, prep notes, agenda, questions..."
+                />
+              </label>
+            </div>
+
+            <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs font-semibold text-muted">Saved locally in this browser for now.</p>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="h-10 rounded-md border border-border bg-transparent px-5 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+                  onClick={() => {
+                    setIsScheduleDialogOpen(false);
+                    setEventDraft(null);
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-5 text-[13px] text-white"
+                  disabled={!eventDraft.title.trim() || !eventDraft.startsAt}
+                  onClick={saveEventDraft}
+                >
+                  <Save className="h-4 w-4" />
+                  Save event
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </section>
