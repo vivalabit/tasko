@@ -70,6 +70,19 @@ type Job = {
   companyInfo: string;
   reviews: string[];
   similarJobs: string[];
+  applyUrl?: string;
+  sourceUrl?: string;
+};
+
+type ApplicationStatus = "applied" | "interview" | "assessment" | "offer" | "rejected";
+
+type TrackedApplication = {
+  id: string;
+  job: Job;
+  status: ApplicationStatus;
+  appliedAt: string;
+  nextStep: string;
+  notes: string;
 };
 
 type ParsedJob = {
@@ -315,13 +328,30 @@ const jobs: Job[] = [
 
 const filters = ["Location", "Remote", "Salary", "Experience", "Job Type", "AI Match"];
 const tabs = ["Overview", "Company", "AI Match", "Reviews", "Similar Jobs"];
-type View = "Dashboard" | "Jobs" | "Profile" | "Settings";
+type View = "Dashboard" | "Jobs" | "Applications" | "Profile" | "Settings";
 type ParserSearchStatus = "idle" | "loading" | "ready" | "error";
+
+const applicationStatuses: Array<{ status: ApplicationStatus; label: string }> = [
+  { status: "applied", label: "Applied" },
+  { status: "interview", label: "Interview" },
+  { status: "assessment", label: "Assessment" },
+  { status: "offer", label: "Offer" },
+  { status: "rejected", label: "Rejected" },
+];
+
+const applicationStatusStyles: Record<ApplicationStatus, string> = {
+  applied: "border-accent/35 bg-accent/12 text-accent",
+  interview: "border-success/35 bg-success/12 text-success",
+  assessment: "border-[#2f80ed]/40 bg-[#2f80ed]/14 text-[#8cc7ff]",
+  offer: "border-success/45 bg-success/18 text-success",
+  rejected: "border-[#d94d4d]/45 bg-[#d94d4d]/13 text-[#ff8a8a]",
+};
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const snapshotPollDelayMs = 4000;
 const snapshotPollMaxAttempts = 30;
 const importedJobsStorageKey = "tasko.importedJobs.v1";
+const applicationsStorageKey = "tasko.applications.v1";
 const parserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v1";
 const parserSearchConfigsLocalUrl = "/parser-search-configs.local.json";
 
@@ -342,7 +372,7 @@ const defaultParserSearchForm: ParserSearchForm = {
 const navItems: Array<{ label: string; icon: typeof Home; href: string; view?: View }> = [
   { label: "Dashboard", icon: Home, href: "#dashboard", view: "Dashboard" },
   { label: "Jobs", icon: BriefcaseBusiness, href: "#jobs", view: "Jobs" },
-  { label: "Applications", icon: Mail, href: "#" },
+  { label: "Applications", icon: Mail, href: "#applications", view: "Applications" },
   { label: "AI Assistant", icon: Sparkles, href: "#" },
 ];
 
@@ -1318,6 +1348,10 @@ function getViewFromHash(): View {
     return "Settings";
   }
 
+  if (window.location.hash === "#applications") {
+    return "Applications";
+  }
+
   return window.location.hash === "#jobs" ? "Jobs" : "Dashboard";
 }
 
@@ -1361,6 +1395,8 @@ function mapParsedJobToJob(job: ParsedJob, index: number): Job {
     companyInfo: `${company} vacancy imported from LinkedIn${job.url ? `: ${job.url}` : "."}`,
     reviews: ["This vacancy was imported automatically and has not been reviewed yet."],
     similarJobs: [],
+    applyUrl: job.apply_url?.trim() || job.url?.trim() || undefined,
+    sourceUrl: job.url?.trim() || undefined,
   };
 }
 
@@ -1424,6 +1460,49 @@ function normalizeStoredJobs(value: unknown) {
   });
 }
 
+function normalizeStoredApplications(value: unknown) {
+  if (!Array.isArray(value)) return [];
+
+  return value.filter((application): application is TrackedApplication => {
+    if (!application || typeof application !== "object") return false;
+    const candidate = application as Partial<TrackedApplication>;
+    return (
+      typeof candidate.id === "string" &&
+      candidate.job !== undefined &&
+      normalizeStoredJobs([candidate.job]).length === 1 &&
+      applicationStatuses.some((item) => item.status === candidate.status) &&
+      typeof candidate.appliedAt === "string" &&
+      typeof candidate.nextStep === "string" &&
+      typeof candidate.notes === "string"
+    );
+  });
+}
+
+function createApplicationFromJob(job: Job): TrackedApplication {
+  const appliedAt = new Date().toISOString();
+
+  return {
+    id: `application-${job.id}`,
+    job,
+    status: "applied",
+    appliedAt,
+    nextStep: "Follow up in 5 days",
+    notes: "Moved from Jobs after applying.",
+  };
+}
+
+function formatApplicationDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not set";
+
+  const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][date.getMonth()];
+  return `${month} ${date.getDate()}, ${date.getFullYear()}`;
+}
+
+function getApplicationStatusLabel(status: ApplicationStatus) {
+  return applicationStatuses.find((item) => item.status === status)?.label ?? status;
+}
+
 function mergeJobs(importedJobs: Job[], currentJobs: Job[]) {
   const importedIds = new Set(importedJobs.map((job) => job.id));
   return [...importedJobs, ...currentJobs.filter((job) => !importedIds.has(job.id))];
@@ -1447,6 +1526,9 @@ export default function HomePage() {
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState(tabs[0]);
   const [savedJobs, setSavedJobs] = useState<string[]>([]);
+  const [applications, setApplications] = useState<TrackedApplication[]>([]);
+  const [selectedApplicationId, setSelectedApplicationId] = useState("");
+  const [areApplicationsLoaded, setAreApplicationsLoaded] = useState(false);
   const [activeFilters, setActiveFilters] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState("Best Match");
   const [alertsEnabled, setAlertsEnabled] = useState(false);
@@ -1519,6 +1601,8 @@ export default function HomePage() {
 
   const selectedJob = filteredJobs.find((job) => job.id === selectedJobId) ?? filteredJobs[0] ?? jobList[0];
   const isSelectedSaved = savedJobs.includes(selectedJob.id);
+  const selectedJobApplication = applications.find((application) => application.job.id === selectedJob.id);
+  const selectedApplication = applications.find((application) => application.id === selectedApplicationId) ?? applications[0] ?? null;
 
   useEffect(() => {
     const syncViewFromHash = () => {
@@ -1572,6 +1656,25 @@ export default function HomePage() {
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    try {
+      const rawApplications = window.localStorage.getItem(applicationsStorageKey);
+      const storedApplications = normalizeStoredApplications(rawApplications ? JSON.parse(rawApplications) : []);
+      setApplications(storedApplications);
+      setSelectedApplicationId((currentId) => currentId || storedApplications[0]?.id || "");
+    } catch {
+      window.localStorage.removeItem(applicationsStorageKey);
+    } finally {
+      setAreApplicationsLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!areApplicationsLoaded) return;
+
+    window.localStorage.setItem(applicationsStorageKey, JSON.stringify(applications));
+  }, [areApplicationsLoaded, applications]);
 
   useEffect(() => {
     if (!isParserSearchConfigsLoaded) return;
@@ -1659,10 +1762,48 @@ export default function HomePage() {
     const viewHash: Record<View, string> = {
       Dashboard: "#dashboard",
       Jobs: "#jobs",
+      Applications: "#applications",
       Profile: "#profile",
       Settings: "#settings",
     };
     window.history.replaceState(null, "", viewHash[view]);
+  }
+
+  function markJobApplied(job: Job) {
+    const application = createApplicationFromJob(job);
+    const existingApplication = applications.find((item) => item.job.id === job.id);
+
+    if (existingApplication) {
+      setSelectedApplicationId(existingApplication.id);
+    } else {
+      setApplications((currentApplications) => [application, ...currentApplications]);
+      setSelectedApplicationId(application.id);
+    }
+
+    changeView("Applications");
+  }
+
+  function updateApplicationStatus(applicationId: string, status: ApplicationStatus) {
+    setApplications((currentApplications) =>
+      currentApplications.map((application) =>
+        application.id === applicationId
+          ? {
+              ...application,
+              status,
+              nextStep:
+                status === "interview"
+                  ? "Prepare interview"
+                  : status === "assessment"
+                    ? "Submit assessment"
+                    : status === "offer"
+                      ? "Review offer"
+                      : status === "rejected"
+                        ? "Archive and learn"
+                        : "Follow up in 5 days",
+            }
+          : application,
+      ),
+    );
   }
 
   function toggleSaved(jobId: string) {
@@ -2881,6 +3022,14 @@ export default function HomePage() {
 
         {activeView === "Dashboard" ? (
           <DashboardView onOpenJobs={() => changeView("Jobs")} />
+        ) : activeView === "Applications" ? (
+          <ApplicationsView
+            applications={applications}
+            selectedApplication={selectedApplication}
+            onSelectApplication={setSelectedApplicationId}
+            onOpenJobs={() => changeView("Jobs")}
+            onChangeStatus={updateApplicationStatus}
+          />
         ) : activeView === "Profile" ? (
           <ProfileView
             profile={profile}
@@ -3069,9 +3218,17 @@ export default function HomePage() {
               </div>
 
               <div className="grid gap-2">
-                <Button className="h-9 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] text-[13px] 2xl:h-10 2xl:text-sm">
-                  <ExternalLink className="h-4 w-4" />
-                  Apply Now
+                <Button
+                  className={cn(
+                    "h-9 rounded-md text-[13px] 2xl:h-10 2xl:text-sm",
+                    selectedJobApplication
+                      ? "border border-success/35 bg-success/14 text-success hover:bg-success/18"
+                      : "bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] text-white",
+                  )}
+                  onClick={() => markJobApplied(selectedJob)}
+                >
+                  {selectedJobApplication ? <Check className="h-4 w-4" /> : <ExternalLink className="h-4 w-4" />}
+                  {selectedJobApplication ? "In Applications" : "Mark applied"}
                 </Button>
                 <Button
                   variant="ghost"
@@ -3572,6 +3729,257 @@ export default function HomePage() {
       )}
       </div>
     </main>
+  );
+}
+
+function ApplicationsView({
+  applications,
+  selectedApplication,
+  onSelectApplication,
+  onOpenJobs,
+  onChangeStatus,
+}: {
+  applications: TrackedApplication[];
+  selectedApplication: TrackedApplication | null;
+  onSelectApplication: (applicationId: string) => void;
+  onOpenJobs: () => void;
+  onChangeStatus: (applicationId: string, status: ApplicationStatus) => void;
+}) {
+  const statusCounts = applications.reduce(
+    (counts, application) => ({
+      ...counts,
+      [application.status]: counts[application.status] + 1,
+    }),
+    { applied: 0, interview: 0, assessment: 0, offer: 0, rejected: 0 } satisfies Record<ApplicationStatus, number>,
+  );
+  const activeCount = statusCounts.interview + statusCounts.assessment + statusCounts.offer;
+  const responseRate = applications.length > 0 ? Math.round((activeCount / applications.length) * 100) : 0;
+  const stats = [
+    { label: "Total", value: applications.length.toString(), icon: FileText },
+    { label: "Interviews", value: statusCounts.interview.toString(), icon: CalendarDays },
+    { label: "Assessments", value: statusCounts.assessment.toString(), icon: Target },
+    { label: "Offers", value: statusCounts.offer.toString(), icon: BriefcaseBusiness },
+    { label: "Response rate", value: `${responseRate}%`, icon: Mail },
+  ];
+
+  return (
+    <section className="job-scroll flex h-screen min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
+      <header className="mb-4 flex shrink-0 flex-col gap-3 md:flex-row md:items-start md:justify-between 2xl:mb-5">
+        <div>
+          <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">Applications</h1>
+          <p className="mt-1 text-[13px] text-muted 2xl:mt-1.5 2xl:text-base">Track submitted roles and next steps</p>
+        </div>
+        <Button
+          className="h-10 w-full justify-center rounded-md bg-gradient-to-r from-[#ff5a00] to-[#dd3d00] text-[13px] md:w-auto 2xl:h-11 2xl:text-sm"
+          onClick={onOpenJobs}
+        >
+          <Plus className="h-4 w-4" />
+          Add from Jobs
+        </Button>
+      </header>
+
+      <div className="grid shrink-0 gap-2.5 sm:grid-cols-2 xl:grid-cols-5 2xl:gap-3">
+        {stats.map((stat) => (
+          <article key={stat.label} className="panel flex min-h-[92px] items-center gap-3 p-3 2xl:min-h-[108px] 2xl:p-4">
+            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-accent/18 text-accent 2xl:h-11 2xl:w-11">
+              <stat.icon className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-muted 2xl:text-sm">{stat.label}</p>
+              <p className="mt-1 text-[24px] font-bold leading-none text-white 2xl:text-[28px]">{stat.value}</p>
+            </div>
+          </article>
+        ))}
+      </div>
+
+      <div className="mt-3 flex shrink-0 flex-wrap gap-2 2xl:mt-4">
+        {applicationStatuses.map((item) => (
+          <span
+            key={item.status}
+            className={cn("inline-flex h-8 items-center gap-2 rounded-md border px-3 text-xs font-bold", applicationStatusStyles[item.status])}
+          >
+            {item.label}
+            <span className="text-white/75">{statusCounts[item.status]}</span>
+          </span>
+        ))}
+      </div>
+
+      {applications.length === 0 ? (
+        <section className="panel mt-3 grid min-h-0 flex-1 place-items-center p-6 text-center 2xl:mt-4">
+          <div className="max-w-[440px]">
+            <div className="mx-auto grid h-14 w-14 place-items-center rounded-md bg-accent/18 text-accent">
+              <Mail className="h-7 w-7" />
+            </div>
+            <h2 className="mt-4 text-xl font-bold text-white">No applications yet</h2>
+            <p className="mt-2 text-sm leading-6 text-muted">Open Jobs, choose a vacancy, and mark it as applied to move it into this tracker.</p>
+            <Button className="mt-5 h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#dd3d00] px-5 text-[13px]" onClick={onOpenJobs}>
+              Browse jobs
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </section>
+      ) : (
+        <div className="mt-3 grid min-h-0 flex-1 gap-3 xl:grid-cols-[360px_minmax(0,1fr)_300px] 2xl:mt-4 2xl:grid-cols-[420px_minmax(0,1fr)_340px] 2xl:gap-4">
+          <aside className="panel flex min-h-0 flex-col overflow-hidden p-3 2xl:p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-base font-bold text-white 2xl:text-lg">Pipeline</h2>
+              <span className="text-xs font-semibold text-muted">{applications.length} tracked</span>
+            </div>
+            <div className="job-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+              {applications.map((application) => (
+                <button
+                  key={application.id}
+                  type="button"
+                  onClick={() => onSelectApplication(application.id)}
+                  className={cn(
+                    "grid w-full grid-cols-[46px_minmax(0,1fr)] gap-3 rounded-md border p-3 text-left transition 2xl:grid-cols-[54px_minmax(0,1fr)] 2xl:p-4",
+                    selectedApplication?.id === application.id
+                      ? "border-accent bg-white/[0.055] shadow-[0_0_0_1px_rgba(255,90,0,0.12)]"
+                      : "border-border bg-white/[0.025] hover:bg-white/[0.055]",
+                  )}
+                >
+                  <CompanyLogo logo={application.job.logo} />
+                  <div className="min-w-0">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <h3 className="truncate text-sm font-bold text-white 2xl:text-base">{application.job.title}</h3>
+                        <p className="mt-0.5 truncate text-xs font-semibold text-[#cdd4df] 2xl:text-sm">{application.job.company}</p>
+                      </div>
+                      <span className={cn("shrink-0 rounded-md border px-2 py-1 text-[11px] font-bold", applicationStatusStyles[application.status])}>
+                        {getApplicationStatusLabel(application.status)}
+                      </span>
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+                      <span>{formatApplicationDate(application.appliedAt)}</span>
+                      <span>{application.job.match}% match</span>
+                      <span>{application.job.location}</span>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </aside>
+
+          <section className="panel job-scroll min-h-0 overflow-y-auto p-4 2xl:p-5">
+            {selectedApplication && (
+              <>
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <CompanyLogo logo={selectedApplication.job.logo} large />
+                    <div className="min-w-0">
+                      <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[28px]">{selectedApplication.job.title}</h2>
+                      <p className="mt-1.5 text-sm font-semibold text-muted 2xl:text-base">
+                        {selectedApplication.job.company} <span className="text-white/35">•</span> {selectedApplication.job.location}
+                      </p>
+                      <p className="mt-2 text-sm font-semibold text-muted">{selectedApplication.job.salary}</p>
+                    </div>
+                  </div>
+                  <span className={cn("inline-flex h-9 w-fit items-center rounded-md border px-3 text-xs font-bold", applicationStatusStyles[selectedApplication.status])}>
+                    {getApplicationStatusLabel(selectedApplication.status)}
+                  </span>
+                </div>
+
+                <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                  <InfoStat label="Applied" value={formatApplicationDate(selectedApplication.appliedAt)} />
+                  <InfoStat label="Next step" value={selectedApplication.nextStep} />
+                  <InfoStat label="Match" value={`${selectedApplication.job.match}%`} />
+                </div>
+
+                <section className="mt-5 rounded-md border border-border bg-white/[0.018] p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h3 className="text-base font-bold text-white">Status</h3>
+                    <span className="text-xs font-semibold text-muted">Move through the pipeline</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {applicationStatuses.map((item) => (
+                      <button
+                        key={item.status}
+                        type="button"
+                        onClick={() => onChangeStatus(selectedApplication.id, item.status)}
+                        className={cn(
+                          "h-9 rounded-md border px-3 text-xs font-bold transition hover:bg-white/[0.08]",
+                          selectedApplication.status === item.status
+                            ? applicationStatusStyles[item.status]
+                            : "border-border bg-transparent text-[#d8dee8]",
+                        )}
+                      >
+                        {item.label}
+                      </button>
+                    ))}
+                  </div>
+                </section>
+
+                <section className="mt-5 rounded-md border border-border bg-white/[0.018] p-4">
+                  <h3 className="text-base font-bold text-white">Application notes</h3>
+                  <p className="mt-3 text-sm leading-6 text-muted">{selectedApplication.notes}</p>
+                  <p className="mt-3 text-sm leading-6 text-muted">{selectedApplication.job.overview}</p>
+                </section>
+
+                <section className="mt-5 rounded-md border border-border bg-white/[0.018] p-4">
+                  <h3 className="text-base font-bold text-white">Documents</h3>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {["Resume", "Cover letter", "Portfolio", "Job description"].map((document) => (
+                      <div key={document} className="flex items-center gap-2 rounded-md border border-border bg-white/[0.025] px-3 py-2 text-sm font-semibold text-[#d8dee8]">
+                        <FileText className="h-4 w-4 text-accent" />
+                        {document}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              </>
+            )}
+          </section>
+
+          <aside className="grid min-h-0 content-start gap-3 2xl:gap-4">
+            <section className="panel p-4 2xl:p-5">
+              <h2 className="text-base font-bold text-white 2xl:text-lg">Upcoming</h2>
+              <div className="mt-4 space-y-3">
+                {(applications.slice(0, 3)).map((application) => (
+                  <button
+                    key={application.id}
+                    type="button"
+                    onClick={() => onSelectApplication(application.id)}
+                    className="w-full rounded-md border border-border bg-white/[0.025] p-3 text-left transition hover:bg-white/[0.055]"
+                  >
+                    <p className="text-sm font-bold text-white">{application.nextStep}</p>
+                    <p className="mt-1 truncate text-xs text-muted">{application.job.company} • {application.job.title}</p>
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="panel p-4 2xl:p-5">
+              <h2 className="text-base font-bold text-white 2xl:text-lg">AI Actions</h2>
+              <div className="mt-4 grid gap-2">
+                {["Prepare interview", "Write follow-up", "Tailor resume", "Summarize fit"].map((action) => (
+                  <Button key={action} variant="ghost" className="h-9 justify-start rounded-md border border-border bg-transparent text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]">
+                    <Sparkles className="h-4 w-4 text-accent" />
+                    {action}
+                  </Button>
+                ))}
+              </div>
+            </section>
+
+            <section className="panel p-4 2xl:p-5">
+              <h2 className="text-base font-bold text-white 2xl:text-lg">Source</h2>
+              {selectedApplication?.job.applyUrl || selectedApplication?.job.sourceUrl ? (
+                <a
+                  href={selectedApplication.job.applyUrl || selectedApplication.job.sourceUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="mt-4 inline-flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm font-bold text-accent transition hover:bg-white/[0.06]"
+                >
+                  Open vacancy
+                  <ExternalLink className="h-4 w-4" />
+                </a>
+              ) : (
+                <p className="mt-3 text-sm leading-6 text-muted">No external apply link was saved for this role.</p>
+              )}
+            </section>
+          </aside>
+        </div>
+      )}
+    </section>
   );
 }
 
