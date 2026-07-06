@@ -88,3 +88,60 @@ def upsert_application_events(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Application events database is unavailable",
         ) from exc
+
+
+@router.patch("/events/{event_id}", response_model=StoredApplicationEventPayload)
+def update_application_event(
+    event_id: str,
+    event: StoredApplicationEventPayload,
+    db: Session = Depends(get_db),
+) -> StoredApplicationEventPayload:
+    if event.id != event_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Application event id does not match request path",
+        )
+
+    try:
+        record = db.get(StoredApplicationEventRecord, event_id)
+        if not record:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application event not found",
+            )
+
+        record.application_id = event.application_id
+        record.data = event.data
+        db.commit()
+        db.refresh(record)
+        return StoredApplicationEventPayload(id=record.id, application_id=record.application_id, data=record.data)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Application events database is unavailable",
+        ) from exc
+
+
+@router.delete("/events/{event_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_application_event(event_id: str, db: Session = Depends(get_db)) -> None:
+    try:
+        record = db.get(StoredApplicationEventRecord, event_id)
+        if not record:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application event not found",
+            )
+
+        db.delete(record)
+        db.commit()
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Application events database is unavailable",
+        ) from exc

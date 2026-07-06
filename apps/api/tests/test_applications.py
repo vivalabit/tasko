@@ -84,5 +84,29 @@ def test_applications_and_events_can_be_upserted_and_read() -> None:
         assert events_read_response.status_code == 200
         assert events_read_response.json()[0]["application_id"] == "application-linkedin-product-designer"
         assert events_read_response.json()[0]["data"]["type"] == "screening"
+
+        updated_event_payload = {
+            "id": "application-event-phone-screen",
+            "application_id": "application-linkedin-product-designer",
+            "data": {
+                **event_payload["events"][0]["data"],
+                "status": "completed",
+                "outcome": "positive",
+            },
+        }
+
+        update_event_response = client.patch(
+            "/applications/events/application-event-phone-screen",
+            json=updated_event_payload,
+        )
+        delete_event_response = client.delete("/applications/events/application-event-phone-screen")
+        events_after_delete_response = client.get("/applications/events")
+
+        assert update_event_response.status_code == 200
+        assert update_event_response.json()["data"]["status"] == "completed"
+        assert update_event_response.json()["data"]["outcome"] == "positive"
+        assert delete_event_response.status_code == 204
+        assert events_after_delete_response.status_code == 200
+        assert events_after_delete_response.json() == []
     finally:
         app.dependency_overrides.clear()

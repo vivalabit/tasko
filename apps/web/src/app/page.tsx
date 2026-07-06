@@ -76,6 +76,8 @@ type Job = {
 
 type ApplicationStatus = "applied" | "interview" | "assessment" | "offer" | "rejected";
 type ApplicationEventType = "screening" | "interview" | "assessment" | "follow_up" | "offer_deadline";
+type ApplicationEventStatus = "scheduled" | "completed" | "canceled";
+type ApplicationEventOutcome = "positive" | "negative" | "neutral";
 
 type TrackedApplication = {
   id: string;
@@ -90,6 +92,8 @@ type ApplicationEvent = {
   id: string;
   applicationId: string;
   type: ApplicationEventType;
+  status: ApplicationEventStatus;
+  outcome?: ApplicationEventOutcome;
   title: string;
   startsAt: string;
   durationMinutes: number;
@@ -100,12 +104,22 @@ type ApplicationEvent = {
 
 type ApplicationEventDraft = {
   type: ApplicationEventType;
+  id?: string;
+  status: ApplicationEventStatus;
+  outcome: ApplicationEventOutcome | "";
   title: string;
   startsAt: string;
   durationMinutes: string;
   timezone: string;
   location: string;
   notes: string;
+};
+
+type ApplicationTimelineItem = {
+  label: string;
+  date: string;
+  state: "done" | "current" | "future" | "canceled" | "rejected";
+  event?: ApplicationEvent;
 };
 
 type ParsedJob = {
@@ -376,6 +390,18 @@ const applicationEventTypes: Array<{ type: ApplicationEventType; label: string }
   { type: "assessment", label: "Assessment deadline" },
   { type: "follow_up", label: "Follow-up" },
   { type: "offer_deadline", label: "Offer deadline" },
+];
+
+const applicationEventStatuses: Array<{ status: ApplicationEventStatus; label: string }> = [
+  { status: "scheduled", label: "Scheduled" },
+  { status: "completed", label: "Completed" },
+  { status: "canceled", label: "Canceled" },
+];
+
+const applicationEventOutcomes: Array<{ outcome: ApplicationEventOutcome; label: string }> = [
+  { outcome: "positive", label: "Positive" },
+  { outcome: "neutral", label: "Neutral" },
+  { outcome: "negative", label: "Rejected" },
 ];
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -1513,20 +1539,50 @@ function normalizeStoredApplications(value: unknown) {
 function normalizeStoredApplicationEvents(value: unknown) {
   if (!Array.isArray(value)) return [];
 
-  return value.filter((event): event is ApplicationEvent => {
-    if (!event || typeof event !== "object") return false;
+  return value.flatMap((event): ApplicationEvent[] => {
+    if (!event || typeof event !== "object") return [];
     const candidate = event as Partial<ApplicationEvent>;
-    return (
-      typeof candidate.id === "string" &&
-      typeof candidate.applicationId === "string" &&
-      applicationEventTypes.some((item) => item.type === candidate.type) &&
-      typeof candidate.title === "string" &&
-      typeof candidate.startsAt === "string" &&
-      typeof candidate.durationMinutes === "number" &&
-      typeof candidate.timezone === "string" &&
-      typeof candidate.location === "string" &&
-      typeof candidate.notes === "string"
-    );
+    const { id, applicationId, type, title, startsAt, durationMinutes, timezone, location, notes } = candidate;
+
+    if (
+      typeof id !== "string" ||
+      typeof applicationId !== "string" ||
+      !type ||
+      !applicationEventTypes.some((item) => item.type === type) ||
+      typeof title !== "string" ||
+      typeof startsAt !== "string" ||
+      typeof durationMinutes !== "number" ||
+      typeof timezone !== "string" ||
+      typeof location !== "string" ||
+      typeof notes !== "string"
+    ) {
+      return [];
+    }
+
+    const storedStatus = candidate.status;
+    const storedOutcome = candidate.outcome;
+    const status: ApplicationEventStatus = applicationEventStatuses.some((item) => item.status === storedStatus) && storedStatus
+      ? storedStatus
+      : "scheduled";
+    const outcome = applicationEventOutcomes.some((item) => item.outcome === storedOutcome)
+      ? storedOutcome
+      : undefined;
+
+    return [
+      {
+        id,
+        applicationId,
+        type,
+        status,
+        outcome,
+        title,
+        startsAt,
+        durationMinutes,
+        timezone,
+        location,
+        notes,
+      },
+    ];
   });
 }
 
@@ -1545,6 +1601,14 @@ function createApplicationFromJob(job: Job): TrackedApplication {
 
 function getApplicationEventTypeLabel(type: ApplicationEventType) {
   return applicationEventTypes.find((item) => item.type === type)?.label ?? type;
+}
+
+function getApplicationEventStatusLabel(status: ApplicationEventStatus) {
+  return applicationEventStatuses.find((item) => item.status === status)?.label ?? status;
+}
+
+function getApplicationEventOutcomeLabel(outcome?: ApplicationEventOutcome) {
+  return outcome ? applicationEventOutcomes.find((item) => item.outcome === outcome)?.label ?? outcome : "";
 }
 
 function getApplicationTimelineEventLabel(type: ApplicationEventType) {
@@ -1575,6 +1639,8 @@ function createDefaultEventDraft(application: TrackedApplication): ApplicationEv
 
   return {
     type: "screening",
+    status: "scheduled",
+    outcome: "",
     title: `${application.job.company} screening`,
     startsAt: toDateTimeLocalValue(start),
     durationMinutes: "30",
@@ -1584,14 +1650,31 @@ function createDefaultEventDraft(application: TrackedApplication): ApplicationEv
   };
 }
 
+function createEventDraftFromEvent(event: ApplicationEvent): ApplicationEventDraft {
+  return {
+    id: event.id,
+    type: event.type,
+    status: event.status,
+    outcome: event.outcome ?? "",
+    title: event.title,
+    startsAt: toDateTimeLocalValue(new Date(event.startsAt)),
+    durationMinutes: event.durationMinutes.toString(),
+    timezone: event.timezone,
+    location: event.location,
+    notes: event.notes,
+  };
+}
+
 function createApplicationEvent(applicationId: string, draft: ApplicationEventDraft): ApplicationEvent {
   const startDate = new Date(draft.startsAt);
   const startsAt = Number.isNaN(startDate.getTime()) ? new Date().toISOString() : startDate.toISOString();
 
   return {
-    id: createClientId("application-event"),
+    id: draft.id ?? createClientId("application-event"),
     applicationId,
     type: draft.type,
+    status: draft.status,
+    outcome: draft.status === "completed" ? draft.outcome || undefined : undefined,
     title: draft.title.trim() || getApplicationEventTypeLabel(draft.type),
     startsAt,
     durationMinutes: Number.parseInt(draft.durationMinutes, 10) || 30,
@@ -2041,7 +2124,40 @@ export default function HomePage() {
   }
 
   function saveApplicationEvent(event: ApplicationEvent) {
-    setApplicationEvents((currentEvents) => sortApplicationEvents([event, ...currentEvents]));
+    const isExistingEvent = applicationEvents.some((item) => item.id === event.id);
+
+    setApplicationEvents((currentEvents) => {
+      const existingEvent = currentEvents.find((item) => item.id === event.id);
+      const nextEvents = existingEvent
+        ? currentEvents.map((item) => (item.id === event.id ? event : item))
+        : [event, ...currentEvents];
+
+      return sortApplicationEvents(nextEvents);
+    });
+
+    if (event.outcome === "negative") {
+      updateApplicationStatus(event.applicationId, "rejected");
+    }
+
+    if (isExistingEvent) {
+      void fetch(`${apiBaseUrl}/applications/events/${encodeURIComponent(event.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: event.id,
+          application_id: event.applicationId,
+          data: event,
+        }),
+      }).catch(() => undefined);
+    }
+  }
+
+  function deleteApplicationEvent(eventId: string) {
+    setApplicationEvents((currentEvents) => currentEvents.filter((event) => event.id !== eventId));
+
+    void fetch(`${apiBaseUrl}/applications/events/${encodeURIComponent(eventId)}`, {
+      method: "DELETE",
+    }).catch(() => undefined);
   }
 
   function toggleSaved(jobId: string) {
@@ -3269,6 +3385,7 @@ export default function HomePage() {
             onOpenJobs={() => changeView("Jobs")}
             onChangeStatus={updateApplicationStatus}
             onSaveEvent={saveApplicationEvent}
+            onDeleteEvent={deleteApplicationEvent}
           />
         ) : activeView === "Profile" ? (
           <ProfileView
@@ -3980,6 +4097,7 @@ function ApplicationsView({
   onOpenJobs,
   onChangeStatus,
   onSaveEvent,
+  onDeleteEvent,
 }: {
   applications: TrackedApplication[];
   events: ApplicationEvent[];
@@ -3988,11 +4106,13 @@ function ApplicationsView({
   onOpenJobs: () => void;
   onChangeStatus: (applicationId: string, status: ApplicationStatus) => void;
   onSaveEvent: (event: ApplicationEvent) => void;
+  onDeleteEvent: (eventId: string) => void;
 }) {
   const [applicationQuery, setApplicationQuery] = useState("");
   const [selectedStatusFilter, setSelectedStatusFilter] = useState<ApplicationStatus | "all">("all");
   const [isScheduleDialogOpen, setIsScheduleDialogOpen] = useState(false);
   const [eventDraft, setEventDraft] = useState<ApplicationEventDraft | null>(null);
+  const [activeEventMenuId, setActiveEventMenuId] = useState("");
   const statusCounts = applications.reduce(
     (counts, application) => ({
       ...counts,
@@ -4027,25 +4147,40 @@ function ApplicationsView({
   const visibleApplicationEvents = visibleSelectedApplication
     ? sortApplicationEvents(events.filter((event) => event.applicationId === visibleSelectedApplication.id))
     : [];
-  const nextApplicationEvent = visibleApplicationEvents.find((event) => new Date(event.startsAt).getTime() >= Date.now()) ?? null;
+  const nextApplicationEvent =
+    visibleApplicationEvents.find(
+      (event) => event.status === "scheduled" && new Date(event.startsAt).getTime() >= Date.now(),
+    ) ?? null;
   const upcomingEvents = sortApplicationEvents(
     events.filter(
       (event) =>
         filteredApplications.some((application) => application.id === event.applicationId) &&
+        event.status === "scheduled" &&
         new Date(event.startsAt).getTime() >= Date.now(),
     ),
   ).slice(0, 3);
-  const timelineItems = visibleSelectedApplication
+  const isEditingEvent = Boolean(eventDraft?.id);
+  const timelineItems: ApplicationTimelineItem[] = visibleSelectedApplication
     ? [
         { label: "Applied", date: formatApplicationDate(visibleSelectedApplication.appliedAt), state: "done" },
         ...visibleApplicationEvents.map((event) => {
-          const eventTime = new Date(event.startsAt).getTime();
           const isNextEvent = nextApplicationEvent?.id === event.id;
+          const state: ApplicationTimelineItem["state"] =
+            event.status === "canceled"
+              ? "canceled"
+              : event.outcome === "negative"
+                ? "rejected"
+                : event.status === "completed"
+                  ? "done"
+                  : isNextEvent
+                    ? "current"
+                    : "future";
 
           return {
             label: getApplicationTimelineEventLabel(event.type),
             date: `${formatApplicationEventDate(event.startsAt)} at ${formatApplicationEventTime(event.startsAt)}`,
-            state: isNextEvent ? "current" : eventTime < Date.now() ? "done" : "future",
+            state,
+            event,
           };
         }),
       ]
@@ -4055,11 +4190,27 @@ function ApplicationsView({
     if (!visibleSelectedApplication) return;
 
     setEventDraft(createDefaultEventDraft(visibleSelectedApplication));
+    setActiveEventMenuId("");
+    setIsScheduleDialogOpen(true);
+  }
+
+  function openEditEventDialog(event: ApplicationEvent) {
+    setEventDraft(createEventDraftFromEvent(event));
+    setActiveEventMenuId("");
     setIsScheduleDialogOpen(true);
   }
 
   function updateEventDraft<Field extends keyof ApplicationEventDraft>(field: Field, value: ApplicationEventDraft[Field]) {
-    setEventDraft((currentDraft) => (currentDraft ? { ...currentDraft, [field]: value } : currentDraft));
+    setEventDraft((currentDraft) => {
+      if (!currentDraft) return currentDraft;
+
+      const nextDraft = { ...currentDraft, [field]: value };
+      if (field === "status" && value !== "completed") {
+        nextDraft.outcome = "";
+      }
+
+      return nextDraft;
+    });
   }
 
   function saveEventDraft() {
@@ -4068,6 +4219,19 @@ function ApplicationsView({
     onSaveEvent(createApplicationEvent(visibleSelectedApplication.id, eventDraft));
     setIsScheduleDialogOpen(false);
     setEventDraft(null);
+  }
+
+  function updateEvent(event: ApplicationEvent, updates: Partial<Pick<ApplicationEvent, "status" | "outcome">>) {
+    onSaveEvent({
+      ...event,
+      ...updates,
+    });
+    setActiveEventMenuId("");
+  }
+
+  function deleteEvent(eventId: string) {
+    onDeleteEvent(eventId);
+    setActiveEventMenuId("");
   }
 
   return (
@@ -4234,7 +4398,10 @@ function ApplicationsView({
                 <section className="mt-2 shrink-0 rounded-md border border-border bg-white/[0.018] p-2 2xl:p-2.5">
                   <h3 className="text-[13px] font-bold text-white 2xl:text-sm">Status timeline</h3>
                   <div className="mt-2 space-y-0">
-                    {timelineItems.map((item, index) => (
+                    {timelineItems.map((item, index) => {
+                      const event = item.event;
+
+                      return (
                       <div key={`${item.label}-${index}`} className="grid grid-cols-[28px_minmax(0,1fr)] gap-2">
                         <div className="relative flex justify-center">
                           <span
@@ -4242,28 +4409,80 @@ function ApplicationsView({
                               "z-10 mt-0.5 grid h-4 w-4 place-items-center rounded-full border",
                               item.state === "done"
                                 ? "border-accent bg-accent text-white"
+                                : item.state === "rejected"
+                                  ? "border-[#d94d4d] bg-[#d94d4d]/20 text-[#ff8a8a]"
+                                  : item.state === "canceled"
+                                    ? "border-white/25 bg-white/[0.04] text-muted"
                                 : item.state === "current"
                                   ? "border-accent bg-accent/18"
                                   : "border-white/25 bg-white/[0.04]",
                             )}
                           >
                             {item.state === "done" && <Check className="h-2.5 w-2.5" />}
+                            {(item.state === "canceled" || item.state === "rejected") && <X className="h-2.5 w-2.5" />}
                           </span>
                           {index < timelineItems.length - 1 && (
-                            <span className={cn("absolute bottom-0 top-4 w-px", index === 0 ? "bg-accent" : "bg-white/18")} />
+                            <span className={cn("absolute bottom-0 top-4 w-px", item.state === "done" ? "bg-accent" : "bg-white/18")} />
                           )}
                         </div>
-                        <div className="pb-1.5">
+                        <div className="relative pb-1.5">
                           <div className="flex items-center justify-between gap-3">
-                            <p className={cn("text-[12px] font-bold 2xl:text-[13px]", item.state === "current" ? "text-accent" : "text-white")}>{item.label}</p>
-                            {item.state === "current" && (
-                              <span className="rounded-md border border-accent/30 bg-accent/12 px-2 py-0.5 text-[10px] font-bold text-accent">Current</span>
-                            )}
+                            <p
+                              className={cn(
+                                "text-[12px] font-bold 2xl:text-[13px]",
+                                item.state === "current" ? "text-accent" : item.state === "rejected" ? "text-[#ff8a8a]" : "text-white",
+                              )}
+                            >
+                              {item.label}
+                            </p>
+                            <div className="flex shrink-0 items-center gap-1.5">
+                              {item.state === "current" && (
+                                <span className="rounded-md border border-accent/30 bg-accent/12 px-2 py-0.5 text-[10px] font-bold text-accent">Current</span>
+                              )}
+                              {event?.status === "completed" && (
+                                <span className="rounded-md border border-success/30 bg-success/12 px-2 py-0.5 text-[10px] font-bold text-success">
+                                  {getApplicationEventOutcomeLabel(event.outcome) || "Completed"}
+                                </span>
+                              )}
+                              {event?.status === "canceled" && (
+                                <span className="rounded-md border border-white/15 bg-white/[0.04] px-2 py-0.5 text-[10px] font-bold text-muted">Canceled</span>
+                              )}
+                              {event && (
+                                <button
+                                  type="button"
+                                  aria-label="Event actions"
+                                  onClick={() => setActiveEventMenuId((currentId) => (currentId === event.id ? "" : event.id))}
+                                  className="grid h-6 w-6 place-items-center rounded-md border border-border text-muted transition hover:bg-white/[0.06] hover:text-white"
+                                >
+                                  <MoreHorizontal className="h-3.5 w-3.5" />
+                                </button>
+                              )}
+                            </div>
                           </div>
                           <p className="mt-0.5 text-[10px] font-medium text-muted 2xl:text-[11px]">{item.date}</p>
+                          {event && activeEventMenuId === event.id && (
+                            <div className="absolute right-0 top-7 z-20 grid w-[158px] gap-1 rounded-md border border-border bg-[#101720] p-1.5 shadow-[0_16px_34px_rgba(0,0,0,0.38)]">
+                              <button type="button" onClick={() => openEditEventDialog(event)} className="rounded-md px-2 py-1.5 text-left text-[11px] font-bold text-[#e6ebf3] hover:bg-white/[0.06]">
+                                Edit time
+                              </button>
+                              <button type="button" onClick={() => updateEvent(event, { status: "completed", outcome: "positive" })} className="rounded-md px-2 py-1.5 text-left text-[11px] font-bold text-[#e6ebf3] hover:bg-white/[0.06]">
+                                Mark completed
+                              </button>
+                              <button type="button" onClick={() => updateEvent(event, { status: "canceled", outcome: undefined })} className="rounded-md px-2 py-1.5 text-left text-[11px] font-bold text-[#e6ebf3] hover:bg-white/[0.06]">
+                                Mark canceled
+                              </button>
+                              <button type="button" onClick={() => updateEvent(event, { status: "completed", outcome: "negative" })} className="rounded-md px-2 py-1.5 text-left text-[11px] font-bold text-[#ff8a8a] hover:bg-[#d94d4d]/12">
+                                Mark rejected
+                              </button>
+                              <button type="button" onClick={() => deleteEvent(event.id)} className="rounded-md px-2 py-1.5 text-left text-[11px] font-bold text-[#ff8a8a] hover:bg-[#d94d4d]/12">
+                                Delete
+                              </button>
+                            </div>
+                          )}
                         </div>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </section>
 
@@ -4419,7 +4638,7 @@ function ApplicationsView({
           <div className="panel w-full max-w-[620px] border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] 2xl:p-5">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-[22px] font-bold leading-tight text-white">Schedule event</h2>
+                <h2 className="text-[22px] font-bold leading-tight text-white">{isEditingEvent ? "Edit event" : "Schedule event"}</h2>
                 <p className="mt-1 text-sm font-medium text-muted">
                   {visibleSelectedApplication.job.company} • {visibleSelectedApplication.job.title}
                 </p>
@@ -4437,7 +4656,7 @@ function ApplicationsView({
               </button>
             </div>
 
-            <div className="mt-5 grid gap-4 md:grid-cols-2">
+            <div className="mt-5 grid max-h-[72vh] gap-4 overflow-y-auto pr-1 md:grid-cols-2">
               <label className="grid gap-2">
                 <span className="text-xs font-bold text-[#d8dee8]">Event type</span>
                 <select
@@ -4454,6 +4673,21 @@ function ApplicationsView({
               </label>
 
               <label className="grid gap-2">
+                <span className="text-xs font-bold text-[#d8dee8]">Status</span>
+                <select
+                  value={eventDraft.status}
+                  onChange={(event) => updateEventDraft("status", event.target.value as ApplicationEventStatus)}
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                >
+                  {applicationEventStatuses.map((item) => (
+                    <option key={item.status} value={item.status}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="grid gap-2">
                 <span className="text-xs font-bold text-[#d8dee8]">Title</span>
                 <input
                   value={eventDraft.title}
@@ -4461,6 +4695,23 @@ function ApplicationsView({
                   className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
                   placeholder="Phone screen with recruiter"
                 />
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-xs font-bold text-[#d8dee8]">Outcome</span>
+                <select
+                  value={eventDraft.outcome}
+                  onChange={(event) => updateEventDraft("outcome", event.target.value as ApplicationEventOutcome | "")}
+                  disabled={eventDraft.status !== "completed"}
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  <option value="">No outcome yet</option>
+                  {applicationEventOutcomes.map((item) => (
+                    <option key={item.outcome} value={item.outcome}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
               </label>
 
               <label className="grid gap-2">
@@ -4520,7 +4771,7 @@ function ApplicationsView({
             </div>
 
             <div className="mt-5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-xs font-semibold text-muted">Saved locally in this browser for now.</p>
+              <p className="text-xs font-semibold text-muted">Synced to backend with local fallback.</p>
               <div className="flex gap-2">
                 <Button
                   type="button"
@@ -4540,7 +4791,7 @@ function ApplicationsView({
                   onClick={saveEventDraft}
                 >
                   <Save className="h-4 w-4" />
-                  Save event
+                  {isEditingEvent ? "Update event" : "Save event"}
                 </Button>
               </div>
             </div>
