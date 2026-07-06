@@ -770,6 +770,17 @@ function displayProfileFirstName(value: string, fallback: string) {
   return hasProfileValue(value) ? value.trim().split(/\s+/)[0] : fallback;
 }
 
+function normalizeExternalUrl(value: string) {
+  const trimmedValue = value.trim();
+
+  if (!trimmedValue) return "";
+  if (/^https?:\/\//i.test(trimmedValue)) return trimmedValue;
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedValue)) return `mailto:${trimmedValue}`;
+  if (/^[a-z][a-z\d+\-.]*:/i.test(trimmedValue)) return "";
+
+  return `https://${trimmedValue.replace(/^\/+/, "")}`;
+}
+
 function parseProfileLines(value: string) {
   return value
     .split(/\r?\n/)
@@ -1084,6 +1095,58 @@ function formatPreferenceSummary(preferences: JobPreferences) {
   return items;
 }
 
+function hasQuantifiedAchievements(entries: ExperienceEntry[]) {
+  return entries.some((entry) => /\d|%|\bpercent\b|\busers?\b|\bclients?\b|\brevenue\b|\bcost\b|\bsaved\b|\breduced\b|\bincreased\b/i.test(entry.description));
+}
+
+function formatCompactList(values: string[], fallback: string) {
+  if (values.length === 0) return fallback;
+  if (values.length <= 3) return values.join(", ");
+  return `${values.slice(0, 3).join(", ")} +${values.length - 3} more`;
+}
+
+function getAiMatchProfile(profile: CandidateProfile) {
+  const skills = parseProfileLines(profile.skills);
+  const experienceEntries = parseExperienceEntries(profile.experience);
+  const educationEntries = parseEducationEntries(profile.education);
+  const preferences = parseJobPreferences(profile.job_preferences);
+  const hasResume = hasProfileValue(profile.resume_file_name) && hasProfileValue(profile.resume_data_url);
+  const hasSalaryPreference = preferences.no_preference.includes("salary") || hasProfileValue(preferences.salary_min);
+  const hasAuthorizationPreference = preferences.no_preference.includes("work_authorization") || hasProfileValue(preferences.work_authorization);
+  const hasLocationPreference = preferences.no_preference.includes("locations") || preferences.locations.length > 0;
+  const hasIndustryPreference = preferences.no_preference.includes("industries") || preferences.industries.length > 0;
+  const hasRolePreference = preferences.no_preference.includes("desired_roles") || preferences.desired_roles.length > 0 || hasProfileValue(profile.desired_role);
+
+  const signals = [
+    hasProfileValue(profile.current_role) ? `Current role: ${profile.current_role}` : "",
+    hasProfileValue(profile.desired_role) ? `Target: ${profile.desired_role}` : "",
+    skills.length > 0 ? `${skills.length} skills: ${formatCompactList(skills, "skills added")}` : "",
+    experienceEntries.length > 0 ? `${experienceEntries.length} experience entr${experienceEntries.length === 1 ? "y" : "ies"}` : "",
+    educationEntries.length > 0 ? `${educationEntries.length} education / certification entr${educationEntries.length === 1 ? "y" : "ies"}` : "",
+    hasLocationPreference ? `Locations: ${preferences.no_preference.includes("locations") ? "No preference" : formatCompactList(preferences.locations, "set")}` : "",
+    hasAuthorizationPreference ? `Work authorization: ${preferences.no_preference.includes("work_authorization") ? "No preference" : preferences.work_authorization}` : "",
+    hasResume ? `Resume attached: ${profile.resume_file_name}` : "",
+  ].filter(Boolean);
+
+  const gaps = [
+    !hasProfileValue(profile.current_role) ? "Add current role" : "",
+    !hasRolePreference ? "Add target role or desired roles" : "",
+    skills.length === 0 ? "Add skills" : "",
+    experienceEntries.length === 0 ? "Add or import work experience" : "",
+    experienceEntries.length > 0 && !hasQuantifiedAchievements(experienceEntries) ? "Add quantified achievements to experience" : "",
+    !hasLocationPreference ? "Add preferred locations or mark no preference" : "",
+    !hasIndustryPreference ? "Add preferred industries or mark no preference" : "",
+    !hasSalaryPreference ? "Add salary preference or mark no preference" : "",
+    !hasAuthorizationPreference ? "Add work authorization preference or mark no preference" : "",
+    !hasResume ? "Attach resume for imports and matching" : "",
+  ].filter(Boolean);
+
+  return {
+    signals,
+    gaps: gaps.slice(0, 5),
+  };
+}
+
 function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
@@ -1103,27 +1166,90 @@ function formatProfileDate(value: string) {
   });
 }
 
-function getProfileCompletion(profile: CandidateProfile) {
-  const fields: Array<keyof CandidateProfile> = [
-    "name",
-    "current_role",
-    "desired_role",
-    "location",
-    "work_format",
-    "headline",
-    "linkedin",
-    "github",
-    "portfolio",
-    "personal_site",
-    "experience",
-    "skills",
-    "education",
-    "job_preferences",
-    "resume_file_name",
-  ];
-  const completedFields = fields.filter((field) => hasProfileValue(profile[field]));
+function getProfileCompletionItems(profile: CandidateProfile) {
+  const skills = parseProfileLines(profile.skills);
+  const experienceEntries = parseExperienceEntries(profile.experience);
+  const educationEntries = parseEducationEntries(profile.education);
+  const preferences = parseJobPreferences(profile.job_preferences);
+  const hasRolePreference = preferences.no_preference.includes("desired_roles") || preferences.desired_roles.length > 0 || hasProfileValue(profile.desired_role);
+  const hasLocationPreference = preferences.no_preference.includes("locations") || preferences.locations.length > 0 || hasProfileValue(profile.location);
+  const hasAuthorizationPreference = preferences.no_preference.includes("work_authorization") || hasProfileValue(preferences.work_authorization);
+  const hasSalaryPreference = preferences.no_preference.includes("salary") || hasProfileValue(preferences.salary_min);
 
-  return Math.round((completedFields.length / fields.length) * 100);
+  return [
+    {
+      label: "Name and current role",
+      complete: hasProfileValue(profile.name) && hasProfileValue(profile.current_role),
+      action: "Add name and current role",
+    },
+    {
+      label: "Target role",
+      complete: hasRolePreference,
+      action: "Add target role or desired roles",
+    },
+    {
+      label: "Location and work format",
+      complete: hasProfileValue(profile.location) && hasProfileValue(profile.work_format),
+      action: "Add location and work format",
+    },
+    {
+      label: "Summary",
+      complete: hasProfileValue(profile.headline),
+      action: "Add short professional summary",
+    },
+    {
+      label: "Contact link",
+      complete: getProfileLinks(profile).some((link) => hasProfileValue(link.value) && link.href),
+      action: "Add LinkedIn, GitHub, or portfolio",
+    },
+    {
+      label: "Resume",
+      complete: hasProfileValue(profile.resume_file_name) && hasProfileValue(profile.resume_data_url),
+      action: "Attach resume",
+    },
+    {
+      label: "Experience",
+      complete: experienceEntries.length > 0,
+      action: "Add or import experience",
+    },
+    {
+      label: "Quantified achievements",
+      complete: experienceEntries.length > 0 && hasQuantifiedAchievements(experienceEntries),
+      action: "Add metrics to experience",
+    },
+    {
+      label: "Skills",
+      complete: skills.length >= 6,
+      action: skills.length > 0 ? "Add a few more skills" : "Add skills",
+    },
+    {
+      label: "Education or certification",
+      complete: educationEntries.length > 0,
+      action: "Add education or certification",
+    },
+    {
+      label: "Preferred locations",
+      complete: hasLocationPreference,
+      action: "Add preferred locations or mark no preference",
+    },
+    {
+      label: "Work authorization",
+      complete: hasAuthorizationPreference,
+      action: "Add work authorization preference",
+    },
+    {
+      label: "Salary preference",
+      complete: hasSalaryPreference,
+      action: "Add salary floor or mark no preference",
+    },
+  ];
+}
+
+function getProfileCompletion(profile: CandidateProfile) {
+  const completionItems = getProfileCompletionItems(profile);
+  const completedFields = completionItems.filter((item) => item.complete);
+
+  return Math.round((completedFields.length / completionItems.length) * 100);
 }
 
 const stats = [
@@ -2127,6 +2253,8 @@ export default function HomePage() {
   }
 
   async function deleteExperience(experienceId: string) {
+    if (!window.confirm("Delete this experience entry?")) return;
+
     const nextExperienceEntries = parseExperienceEntries(profile.experience).filter((entry) => entry.id !== experienceId);
     const nextProfile = normalizeCandidateProfile({
       ...profile,
@@ -2161,6 +2289,8 @@ export default function HomePage() {
   }
 
   async function deleteEducation(educationId: string) {
+    if (!window.confirm("Delete this education entry?")) return;
+
     const nextEducationEntries = parseEducationEntries(profile.education).filter((entry) => entry.id !== educationId);
     const nextProfile = normalizeCandidateProfile({
       ...profile,
@@ -2195,6 +2325,8 @@ export default function HomePage() {
   }
 
   async function deleteDocument(documentId: string) {
+    if (!window.confirm("Delete this supporting document?")) return;
+
     const nextDocumentEntries = parseDocumentEntries(profile.documents).filter((entry) => entry.id !== documentId);
     const nextProfile = normalizeCandidateProfile({
       ...profile,
@@ -2548,6 +2680,8 @@ export default function HomePage() {
 
       setProfile(nextProfile);
       setProfileDraft(nextProfile);
+      setProfileSaveStatus("loading");
+      setProfileSaveMessage("");
 
       try {
         const response = await fetch(`${apiBaseUrl}/profile`, {
@@ -2564,8 +2698,13 @@ export default function HomePage() {
         const normalizedProfile = normalizeCandidateProfile(savedProfile);
         setProfile(normalizedProfile);
         setProfileDraft(normalizedProfile);
+        setProfileSaveStatus("ready");
+        setProfileSaveMessage("Resume saved");
       } catch (error) {
-        window.alert(error instanceof Error ? error.message : "Resume save failed");
+        const message = error instanceof Error ? error.message : "Resume save failed";
+        setProfileSaveStatus("error");
+        setProfileSaveMessage(message);
+        window.alert(message);
       }
     };
     reader.readAsDataURL(file);
@@ -3555,7 +3694,7 @@ function getProfileLinks(profile: CandidateProfile) {
     { label: "GitHub", value: profile.github, icon: Github },
     { label: "Portfolio", value: profile.portfolio, icon: FileText },
     { label: "Personal Site", value: profile.personal_site, icon: Globe },
-  ];
+  ].map((link) => ({ ...link, href: normalizeExternalUrl(link.value) }));
 }
 
 function ProfileView({
@@ -3669,7 +3808,7 @@ function ProfileView({
 }
 
 function ProfileHero({ profile, onEditProfile }: { profile: CandidateProfile; onEditProfile: () => void }) {
-  const links = getProfileLinks(profile).filter((link) => hasProfileValue(link.value));
+  const links = getProfileLinks(profile).filter((link) => hasProfileValue(link.value) && link.href);
 
   return (
     <section className="panel grid shrink-0 overflow-hidden md:grid-cols-[minmax(0,1fr)_360px] 2xl:grid-cols-[minmax(0,1fr)_410px]">
@@ -3735,7 +3874,13 @@ function ProfileHero({ profile, onEditProfile }: { profile: CandidateProfile; on
         {links.length > 0 ? (
           <div className="mt-3 grid gap-2.5 2xl:gap-3">
             {links.map((link) => (
-              <a key={link.label} href="#" className="grid grid-cols-[36px_minmax(0,1fr)] items-center gap-3 rounded-md border border-transparent p-1.5 transition hover:border-white/[0.10] hover:bg-white/[0.035]">
+              <a
+                key={link.label}
+                href={link.href}
+                target="_blank"
+                rel="noreferrer"
+                className="grid grid-cols-[36px_minmax(0,1fr)_16px] items-center gap-3 rounded-md border border-transparent p-1.5 transition hover:border-white/[0.10] hover:bg-white/[0.035]"
+              >
                 <span className="grid h-9 w-9 place-items-center rounded-md border border-border bg-white/[0.035] text-[#d8dee8]">
                   <link.icon className="h-4 w-4" />
                 </span>
@@ -3743,6 +3888,7 @@ function ProfileHero({ profile, onEditProfile }: { profile: CandidateProfile; on
                   <span className="block text-[13px] font-bold text-white 2xl:text-sm">{link.label}</span>
                   <span className="block truncate text-xs text-muted 2xl:text-[13px]">{link.value}</span>
                 </span>
+                <ExternalLink className="h-4 w-4 text-muted" />
               </a>
             ))}
           </div>
@@ -3980,11 +4126,21 @@ function SkillsPanel({
 }) {
   const skillItems = parseProfileLines(profile.skills);
   const hasResume = hasProfileValue(profile.resume_data_url) && hasProfileValue(profile.resume_file_name);
+  const skillPreviewLimit = 24;
+  const visibleSkillItems = skillItems.slice(0, skillPreviewLimit);
+  const hiddenSkillCount = Math.max(skillItems.length - visibleSkillItems.length, 0);
 
   return (
     <section className="panel p-4 2xl:p-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <h2 className="text-base font-bold 2xl:text-lg">Skills</h2>
+        <div>
+          <h2 className="text-base font-bold 2xl:text-lg">Skills</h2>
+          {skillItems.length > 0 && (
+            <p className="mt-1 text-xs font-medium text-muted 2xl:text-[13px]">
+              {skillItems.length} skills available for matching
+            </p>
+          )}
+        </div>
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -4011,11 +4167,20 @@ function SkillsPanel({
       )}
       {skillItems.length > 0 ? (
         <div className="mt-4 flex flex-wrap gap-2">
-          {skillItems.map((skill) => (
+          {visibleSkillItems.map((skill) => (
             <span key={skill} className="inline-flex min-h-7 items-center rounded-md border border-border bg-white/[0.035] px-2.5 text-xs font-semibold text-[#d8dee8]">
               {skill}
             </span>
           ))}
+          {hiddenSkillCount > 0 && (
+            <button
+              type="button"
+              className="inline-flex min-h-7 items-center rounded-md border border-accent/35 bg-accent/10 px-2.5 text-xs font-bold text-[#ffd1b0] transition hover:border-accent/65 hover:bg-accent/15"
+              onClick={onEditSkills}
+            >
+              +{hiddenSkillCount} more
+            </button>
+          )}
         </div>
       ) : (
         <EmptyProfileState
@@ -4160,14 +4325,16 @@ function DocumentsPanel({
           <h2 className="text-base font-bold 2xl:text-lg">Supporting Documents</h2>
           <p className="mt-1 text-xs font-medium text-muted 2xl:text-[13px]">Personal files you choose to reuse across applications.</p>
         </div>
-        <button
-          type="button"
-          className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-bold text-accent transition hover:bg-accent/10 hover:text-[#ff7a1a] 2xl:text-[13px]"
-          onClick={onAddDocument}
-        >
-          <Plus className="h-4 w-4" />
-          Add Document
-        </button>
+        {documentItems.length > 0 && (
+          <button
+            type="button"
+            className="inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-xs font-bold text-accent transition hover:bg-accent/10 hover:text-[#ff7a1a] 2xl:text-[13px]"
+            onClick={onAddDocument}
+          >
+            <Plus className="h-4 w-4" />
+            Add Document
+          </button>
+        )}
       </div>
 
       {documentItems.length > 0 ? (
@@ -4250,7 +4417,7 @@ function ActivityPanel({ profile, onEditProfile }: { profile: CandidateProfile; 
       <div className="mt-4 grid grid-cols-3 gap-2">
         <MiniMetric icon={FileText} value={parseExperienceEntries(profile.experience).length.toString()} label="Experience" color="blue" />
         <MiniMetric icon={Star} value={parseProfileLines(profile.skills).length.toString()} label="Skills" color="orange" />
-        <MiniMetric icon={Globe} value={getProfileLinks(profile).filter((link) => hasProfileValue(link.value)).length.toString()} label="Links" color="green" />
+        <MiniMetric icon={Globe} value={getProfileLinks(profile).filter((link) => hasProfileValue(link.value) && link.href).length.toString()} label="Links" color="green" />
       </div>
       <div className="mt-4 rounded-md border border-border bg-white/[0.025] p-3">
         <div className="flex items-end gap-3">
@@ -4269,7 +4436,8 @@ function ActivityPanel({ profile, onEditProfile }: { profile: CandidateProfile; 
 }
 
 function AiMatchProfilePanel({ profile, onEditProfile }: { profile: CandidateProfile; onEditProfile: () => void }) {
-  const hasEnoughSignal = hasProfileValue(profile.current_role) && hasProfileValue(profile.desired_role) && parseProfileLines(profile.skills).length > 0;
+  const matchProfile = getAiMatchProfile(profile);
+  const hasSignals = matchProfile.signals.length > 0;
 
   return (
     <section className="panel p-4 2xl:p-5">
@@ -4277,10 +4445,14 @@ function AiMatchProfilePanel({ profile, onEditProfile }: { profile: CandidatePro
         <span className="grid h-8 w-8 place-items-center rounded-full bg-[#2f80ed]/20 text-sm font-black text-[#9cc6ff]">AI</span>
         <h2 className="text-base font-bold 2xl:text-lg">AI Match Profile</h2>
       </div>
-      {hasEnoughSignal ? (
+      {hasSignals ? (
         <div className="mt-4 divide-y divide-border rounded-md border border-border">
-          <AiProfileGroup title="Signals" icon={Check} iconClassName="text-success" items={[profile.current_role, profile.desired_role, `${parseProfileLines(profile.skills).length} skills added`]} />
-          <AiProfileGroup title="Next gaps" icon={CircleDot} iconClassName="text-[#ffb020]" items={["Add quantified achievements", "Add preferred industries or countries", "Add salary or work authorization preferences"]} />
+          <AiProfileGroup title="Signals" icon={Check} iconClassName="text-success" items={matchProfile.signals} />
+          {matchProfile.gaps.length > 0 ? (
+            <AiProfileGroup title="Next gaps" icon={CircleDot} iconClassName="text-[#ffb020]" items={matchProfile.gaps} />
+          ) : (
+            <AiProfileGroup title="Ready for matching" icon={Check} iconClassName="text-success" items={["Profile has enough structured signal for job matching"]} />
+          )}
         </div>
       ) : (
         <EmptyProfileState
@@ -4309,17 +4481,27 @@ function PreferencesPanel({
     <section className="panel p-4 2xl:p-5">
       <ProfileSectionHeader title="Job Preferences" action="Edit Preferences" onAction={onEditPreferences} />
       {preferenceSummary.length > 0 ? (
-        <div className="mt-4 space-y-3">
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
           {preferenceSummary.map((group) => (
-            <div key={group.label} className="rounded-md border border-border bg-white/[0.025] p-3">
+            <div
+              key={group.label}
+              className={cn(
+                "rounded-md border border-border bg-white/[0.025] p-3",
+                group.label === "Notes" && "md:col-span-2",
+              )}
+            >
               <p className="text-[11px] font-bold uppercase tracking-normal text-muted">{group.label}</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {group.values.map((value) => (
-                  <span key={value} className="inline-flex min-h-7 items-center rounded-md border border-border bg-white/[0.035] px-2.5 text-xs font-semibold text-[#d8dee8]">
-                    {value}
-                  </span>
-                ))}
-              </div>
+              {group.label === "Notes" ? (
+                <p className="mt-2 whitespace-pre-line text-[13px] leading-5 text-[#d8dee8]">{group.values.join("\n")}</p>
+              ) : (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {group.values.map((value) => (
+                    <span key={value} className="inline-flex min-h-7 items-center rounded-md border border-border bg-white/[0.035] px-2.5 text-xs font-semibold text-[#d8dee8]">
+                      {value}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -4398,22 +4580,49 @@ function AdditionalNotesPanel({
 }
 
 function ProfileCompletenessPanel({ profile }: { profile: CandidateProfile }) {
-  const completion = getProfileCompletion(profile);
+  const completionItems = getProfileCompletionItems(profile);
+  const missingItems = completionItems.filter((item) => !item.complete);
+  const completedCount = completionItems.length - missingItems.length;
+  const visibleMissingItems = missingItems.slice(0, 5);
 
   return (
     <section className="panel p-4 2xl:p-5">
-      <div>
-        <div className="mb-2 flex justify-between text-xs font-semibold text-muted">
-          <span>Profile completeness</span>
-          <span className="text-white">{completion}%</span>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-base font-bold 2xl:text-lg">Profile Readiness</h2>
+          <p className="mt-1 text-xs font-medium text-muted 2xl:text-[13px]">
+            {completedCount} of {completionItems.length} matching signals are complete
+          </p>
         </div>
-        <div className="h-2 rounded-full bg-white/[0.08]">
-          <div className="h-full rounded-full bg-success" style={{ width: `${completion}%` }} />
-        </div>
-        <p className="mt-2 text-xs text-muted">
-          {completion === 0 ? "Start with the basics, then add experience and skills." : "Keep adding details to improve job matching."}
-        </p>
+        <span className={cn(
+          "inline-flex min-h-8 items-center self-start rounded-md border px-2.5 text-xs font-bold",
+          missingItems.length === 0
+            ? "border-success/40 bg-success/12 text-success"
+            : "border-[#ffb020]/35 bg-[#ffb020]/10 text-[#ffd18a]",
+        )}>
+          {missingItems.length === 0 ? "Ready" : `${missingItems.length} next step${missingItems.length === 1 ? "" : "s"}`}
+        </span>
       </div>
+      {missingItems.length === 0 ? (
+        <div className="mt-4 rounded-md border border-success/25 bg-success/10 p-3">
+          <p className="text-sm font-bold text-white">Profile has enough signal for matching</p>
+          <p className="mt-1 text-xs leading-5 text-muted 2xl:text-[13px]">
+            Keep it fresh when your resume, target roles, or application constraints change.
+          </p>
+        </div>
+      ) : (
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          {visibleMissingItems.map((item) => (
+            <div key={item.label} className="flex items-start gap-2 rounded-md border border-border bg-white/[0.025] p-3">
+              <CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-[#ffb020]" />
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-white 2xl:text-[13px]">{item.label}</p>
+                <p className="mt-1 text-xs leading-5 text-muted">{item.action}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
