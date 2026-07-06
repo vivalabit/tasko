@@ -3846,18 +3846,18 @@ function ApplicationsView({
         </div>
       </header>
 
-      <div className="grid shrink-0 gap-2.5 sm:grid-cols-2 xl:grid-cols-5 2xl:gap-3">
+      <div className="grid shrink-0 gap-2 sm:grid-cols-2 xl:grid-cols-5 2xl:gap-3">
         {statCards.map((stat) => (
-          <article key={stat.label} className="panel flex min-h-[78px] items-start justify-between gap-2.5 p-2.5 2xl:min-h-[118px] 2xl:gap-3 2xl:p-5">
+          <article key={stat.label} className="panel flex min-h-[62px] items-start justify-between gap-2 p-2 2xl:min-h-[104px] 2xl:gap-3 2xl:p-4">
             <div className="min-w-0">
-              <p className="text-[11px] font-semibold text-muted 2xl:text-sm">{stat.label}</p>
-              <p className="mt-1 text-[21px] font-bold leading-none text-white 2xl:mt-2 2xl:text-[30px]">{stat.value}</p>
-              <p className="mt-1 text-[11px] font-semibold leading-tight text-success 2xl:mt-2 2xl:text-sm">
+              <p className="text-[10px] font-semibold leading-tight text-muted 2xl:text-xs">{stat.label}</p>
+              <p className="mt-0.5 text-[18px] font-bold leading-none text-white 2xl:mt-1.5 2xl:text-[26px]">{stat.value}</p>
+              <p className="mt-0.5 text-[10px] font-semibold leading-tight text-success 2xl:mt-1.5 2xl:text-xs">
                 <span className="mr-1">↑</span>{stat.note}
               </p>
             </div>
-            <div className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-md border border-white/[0.08] 2xl:h-12 2xl:w-12", stat.iconClassName)}>
-              <stat.icon className="h-3.5 w-3.5 2xl:h-5 2xl:w-5" />
+            <div className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-md border border-white/[0.08] 2xl:h-10 2xl:w-10", stat.iconClassName)}>
+              <stat.icon className="h-3.5 w-3.5 2xl:h-4 2xl:w-4" />
             </div>
           </article>
         ))}
@@ -3878,7 +3878,7 @@ function ApplicationsView({
           </div>
         </section>
       ) : (
-        <div className="mt-3 grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(280px,0.86fr)_minmax(360px,1.18fr)_minmax(240px,0.7fr)] 2xl:mt-4 2xl:grid-cols-[minmax(420px,0.95fr)_minmax(480px,1.2fr)_minmax(320px,0.75fr)] 2xl:gap-4">
+        <div className="mt-2 grid min-h-0 flex-1 gap-3 xl:grid-cols-[minmax(280px,0.86fr)_minmax(360px,1.18fr)_minmax(240px,0.7fr)] 2xl:mt-3 2xl:grid-cols-[minmax(420px,0.95fr)_minmax(480px,1.2fr)_minmax(320px,0.75fr)] 2xl:gap-4">
           <aside className="panel flex min-h-0 flex-col overflow-hidden p-2.5 2xl:p-4">
             <div className="mb-2.5 flex items-center justify-between 2xl:mb-3">
               <h2 className="text-sm font-bold text-white 2xl:text-lg">Applications ({filteredApplications.length})</h2>
@@ -3922,23 +3922,23 @@ function ApplicationsView({
             </div>
           </aside>
 
-          <section className="panel job-scroll min-h-0 overflow-y-auto p-3 2xl:p-5">
+          <section className="panel min-h-0 overflow-hidden p-2.5 2xl:p-3">
             {visibleSelectedApplication ? (
-              <>
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between 2xl:gap-4">
-                  <div className="flex min-w-0 items-start gap-2.5 2xl:gap-3">
-                    <CompanyLogo logo={visibleSelectedApplication.job.logo} large />
+              <div className="flex h-full min-h-0 flex-col">
+                <div className="flex shrink-0 flex-col gap-2.5 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="flex min-w-0 items-start gap-2.5">
+                    <CompanyLogo logo={visibleSelectedApplication.job.logo} compact />
                     <div className="min-w-0">
-                      <h2 className="text-[19px] font-bold leading-tight text-white 2xl:text-[28px]">{visibleSelectedApplication.job.title}</h2>
-                      <p className="mt-1 text-xs font-semibold text-muted 2xl:mt-1.5 2xl:text-base">
-                        {visibleSelectedApplication.job.company} <span className="text-white/35">•</span> {visibleSelectedApplication.job.location}
+                      <h2 className="text-[16px] font-bold leading-tight text-white 2xl:text-[18px]">{visibleSelectedApplication.job.title}</h2>
+                      <p className="mt-0.5 text-[11px] font-semibold text-muted 2xl:text-xs">
+                        {visibleSelectedApplication.job.company} <span className="text-white/35">•</span> {visibleSelectedApplication.job.location} <span className="text-white/35">•</span> {visibleSelectedApplication.job.type}
                       </p>
                       {visibleSelectedApplication.job.applyUrl || visibleSelectedApplication.job.sourceUrl ? (
                         <a
                           href={visibleSelectedApplication.job.applyUrl || visibleSelectedApplication.job.sourceUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] font-bold text-[#8cc7ff] hover:text-white 2xl:mt-2 2xl:text-sm"
+                          className="mt-1 inline-flex items-center gap-1.5 text-[10px] font-bold text-[#8cc7ff] hover:text-white 2xl:text-xs"
                         >
                           View job posting
                           <ExternalLink className="h-3.5 w-3.5" />
@@ -3948,20 +3948,20 @@ function ApplicationsView({
                       )}
                     </div>
                   </div>
-                  <button type="button" className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-border text-muted transition hover:bg-white/[0.06] hover:text-white">
-                    <MoreHorizontal className="h-5 w-5" />
+                  <button type="button" className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-border text-muted transition hover:bg-white/[0.06] hover:text-white 2xl:h-9 2xl:w-9">
+                    <MoreHorizontal className="h-4 w-4" />
                   </button>
                 </div>
 
-                <section className="mt-4 rounded-md border border-border bg-white/[0.018] p-3 2xl:mt-6 2xl:p-5">
-                  <h3 className="text-sm font-bold text-white 2xl:text-base">Status timeline</h3>
-                  <div className="mt-3 space-y-0 2xl:mt-4">
+                <section className="mt-2 shrink-0 rounded-md border border-border bg-white/[0.018] p-2 2xl:p-2.5">
+                  <h3 className="text-[13px] font-bold text-white 2xl:text-sm">Status timeline</h3>
+                  <div className="mt-2 space-y-0">
                     {timelineItems.map((item, index) => (
-                      <div key={`${item.label}-${index}`} className="grid grid-cols-[24px_minmax(0,1fr)] gap-3">
+                      <div key={`${item.label}-${index}`} className="grid grid-cols-[28px_minmax(0,1fr)] gap-2">
                         <div className="relative flex justify-center">
                           <span
                             className={cn(
-                              "mt-1 grid h-4 w-4 place-items-center rounded-full border",
+                              "z-10 mt-0.5 grid h-4 w-4 place-items-center rounded-full border",
                               item.state === "done"
                                 ? "border-accent bg-accent text-white"
                                 : item.state === "current"
@@ -3971,83 +3971,65 @@ function ApplicationsView({
                           >
                             {item.state === "done" && <Check className="h-2.5 w-2.5" />}
                           </span>
-                          {index < timelineItems.length - 1 && <span className="absolute bottom-0 top-5 w-px bg-white/12" />}
+                          {index < timelineItems.length - 1 && (
+                            <span className={cn("absolute bottom-0 top-4 w-px", index === 0 ? "bg-accent" : "bg-white/18")} />
+                          )}
                         </div>
-                        <div className="pb-4">
+                        <div className="pb-1.5">
                           <div className="flex items-center justify-between gap-3">
-                            <p className={cn("text-[13px] font-bold 2xl:text-sm", item.state === "current" ? "text-accent" : "text-white")}>{item.label}</p>
+                            <p className={cn("text-[12px] font-bold 2xl:text-[13px]", item.state === "current" ? "text-accent" : "text-white")}>{item.label}</p>
                             {item.state === "current" && (
-                              <span className="rounded-md border border-accent/30 bg-accent/12 px-2 py-1 text-[11px] font-bold text-accent">Current</span>
+                              <span className="rounded-md border border-accent/30 bg-accent/12 px-2 py-0.5 text-[10px] font-bold text-accent">Current</span>
                             )}
                           </div>
-                          <p className="mt-1 text-[11px] font-medium text-muted 2xl:text-sm">{item.date}</p>
+                          <p className="mt-0.5 text-[10px] font-medium text-muted 2xl:text-[11px]">{item.date}</p>
                         </div>
                       </div>
                     ))}
                   </div>
                 </section>
 
-                <section className="mt-3 rounded-md border border-border bg-white/[0.018] p-3 2xl:mt-4 2xl:p-4">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <h3 className="text-sm font-bold text-white 2xl:text-base">Next action</h3>
-                      <p className="mt-1.5 text-[13px] font-semibold text-[#d8dee8] 2xl:mt-2 2xl:text-sm">{visibleSelectedApplication.nextStep}</p>
-                      <p className="mt-1 text-xs text-muted">{visibleSelectedApplication.job.company} • {visibleSelectedApplication.job.title}</p>
+                <section className="mt-2 shrink-0 rounded-md border border-border bg-white/[0.018] p-2 2xl:p-2.5">
+                  <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="min-w-0">
+                      <h3 className="flex items-center gap-2 text-[13px] font-bold text-white 2xl:text-sm">
+                        <Calendar className="h-3.5 w-3.5 text-accent" />
+                        Next action
+                      </h3>
+                      <p className="mt-1 text-[12px] font-semibold text-[#d8dee8] 2xl:text-[13px]">{visibleSelectedApplication.nextStep}</p>
+                      <p className="mt-0.5 truncate text-[10px] text-muted 2xl:text-[11px]">{visibleSelectedApplication.job.company} • {visibleSelectedApplication.job.title}</p>
                     </div>
-                    <Button variant="ghost" className="h-9 rounded-md border border-border bg-transparent px-4 text-xs text-[#e6ebf3] hover:bg-white/[0.06]">
+                    <Button variant="ghost" className="h-7 rounded-md border border-border bg-transparent px-3 text-[11px] text-[#e6ebf3] hover:bg-white/[0.06]">
                       View details
                     </Button>
                   </div>
                 </section>
 
-                <section className="mt-3 rounded-md border border-border bg-white/[0.018] p-3 2xl:mt-4 2xl:p-4">
-                  <div className="flex items-center justify-between gap-3">
-                    <h3 className="text-sm font-bold text-white 2xl:text-base">Status</h3>
-                    <span className="text-xs font-semibold text-muted">Move through the pipeline</span>
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {applicationStatuses.map((item) => (
-                      <button
-                        key={item.status}
-                        type="button"
-                        onClick={() => onChangeStatus(visibleSelectedApplication.id, item.status)}
-                        className={cn(
-                          "h-9 rounded-md border px-3 text-xs font-bold transition hover:bg-white/[0.08]",
-                          visibleSelectedApplication.status === item.status
-                            ? applicationStatusStyles[item.status]
-                            : "border-border bg-transparent text-[#d8dee8]",
-                        )}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
-                  </div>
-                </section>
-
-                <section className="mt-3 rounded-md border border-border bg-white/[0.018] p-3 2xl:mt-4 2xl:p-4">
-                  <h3 className="text-sm font-bold text-white 2xl:text-base">Documents used</h3>
-                  <div className="mt-3 divide-y divide-border overflow-hidden rounded-md border border-border">
-                    {["Resume.pdf", "Cover letter.pdf", "Job description"].map((document) => (
-                      <div key={document} className="flex items-center gap-3 bg-white/[0.018] px-3 py-2.5 text-sm font-semibold text-[#d8dee8]">
-                        <span className="grid h-6 w-6 place-items-center rounded bg-[#d94d4d]/18 text-[10px] font-black text-[#ff8a8a]">PDF</span>
+                <section className="mt-2 shrink-0">
+                  <h3 className="text-[13px] font-bold text-white 2xl:text-sm">Documents used</h3>
+                  <div className="mt-1.5 divide-y divide-border overflow-hidden rounded-md border border-border">
+                    {["Resume.pdf", "Cover letter.pdf"].map((document) => (
+                      <div key={document} className="flex items-center gap-2.5 bg-white/[0.018] px-2.5 py-1.5 text-[12px] font-semibold text-[#d8dee8] 2xl:text-[13px]">
+                        <span className="grid h-5 w-5 place-items-center rounded-sm bg-[#ff3d3d] text-[7px] font-black leading-none text-white">PDF</span>
                         <span className="min-w-0 flex-1 truncate">{document}</span>
-                        <Download className="h-4 w-4 text-muted" />
-                        <MoreHorizontal className="h-4 w-4 text-muted" />
+                        <Info className="h-3.5 w-3.5 text-muted" />
+                        <Download className="h-3.5 w-3.5 text-muted" />
+                        <MoreHorizontal className="h-3.5 w-3.5 text-muted" />
                       </div>
                     ))}
                   </div>
                 </section>
 
-                <section className="mt-3 rounded-md border border-border bg-white/[0.018] p-3 2xl:mt-4 2xl:p-4">
+                <section className="mt-2 min-h-0 shrink rounded-md border border-border bg-white/[0.018] p-2 2xl:p-2.5">
                   <div className="flex items-center justify-between gap-3">
-                    <h3 className="text-sm font-bold text-white 2xl:text-base">Notes</h3>
-                    <Button variant="ghost" className="h-8 rounded-md border border-border bg-transparent px-3 text-xs text-[#e6ebf3] hover:bg-white/[0.06]">
+                    <h3 className="text-[13px] font-bold text-white 2xl:text-sm">Notes</h3>
+                    <Button variant="ghost" className="h-7 rounded-md border border-border bg-transparent px-2.5 text-[11px] text-[#e6ebf3] hover:bg-white/[0.06]">
                       Edit note
                     </Button>
                   </div>
-                  <p className="mt-3 text-sm leading-6 text-muted">{visibleSelectedApplication.notes}</p>
+                  <p className="mt-1.5 line-clamp-2 text-[11px] leading-4 text-muted 2xl:text-xs 2xl:leading-5">{visibleSelectedApplication.notes}</p>
                 </section>
-              </>
+              </div>
             ) : (
               <div className="grid min-h-[320px] place-items-center text-center">
                 <div className="max-w-[360px]">
@@ -7141,12 +7123,12 @@ function InfoStat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CompanyLogo({ logo, large = false }: { logo: Job["logo"] | "airbnb"; large?: boolean }) {
-  const sizeClass = large ? "h-16 w-16 2xl:h-[88px] 2xl:w-[88px]" : "h-11 w-11 2xl:h-14 2xl:w-14";
+function CompanyLogo({ logo, large = false, compact = false }: { logo: Job["logo"] | "airbnb"; large?: boolean; compact?: boolean }) {
+  const sizeClass = compact ? "h-10 w-10 2xl:h-11 2xl:w-11" : large ? "h-16 w-16 2xl:h-[88px] 2xl:w-[88px]" : "h-11 w-11 2xl:h-14 2xl:w-14";
 
   if (logo === "linkedin") {
     return (
-      <div className={cn("grid shrink-0 place-items-center rounded-md bg-[#0a66c2] font-black text-white", large ? "text-2xl 2xl:text-3xl" : "text-lg 2xl:text-xl", sizeClass)}>
+      <div className={cn("grid shrink-0 place-items-center rounded-md bg-[#0a66c2] font-black text-white", large ? "text-2xl 2xl:text-3xl" : compact ? "text-base" : "text-lg 2xl:text-xl", sizeClass)}>
         in
       </div>
     );
@@ -7155,7 +7137,7 @@ function CompanyLogo({ logo, large = false }: { logo: Job["logo"] | "airbnb"; la
   if (logo === "figma") {
     return (
       <div className={cn("grid shrink-0 place-items-center rounded-md bg-black", sizeClass)}>
-        <div className={cn("grid grid-cols-2", large ? "scale-125 2xl:scale-150" : "scale-90 2xl:scale-100")}>
+        <div className={cn("grid grid-cols-2", large ? "scale-125 2xl:scale-150" : compact ? "scale-75" : "scale-90 2xl:scale-100")}>
           <span className="h-4 w-4 rounded-l-full bg-[#ff7262]" />
           <span className="h-4 w-4 rounded-r-full bg-[#f24e1e]" />
           <span className="h-4 w-4 rounded-l-full bg-[#a259ff]" />
@@ -7169,13 +7151,13 @@ function CompanyLogo({ logo, large = false }: { logo: Job["logo"] | "airbnb"; la
   if (logo === "airbnb") {
     return (
       <div className={cn("grid shrink-0 place-items-center rounded-md bg-black text-[#ff385c]", sizeClass)}>
-        <span className={cn("font-black", large ? "text-3xl 2xl:text-4xl" : "text-xl 2xl:text-2xl")}>A</span>
+        <span className={cn("font-black", large ? "text-3xl 2xl:text-4xl" : compact ? "text-lg" : "text-xl 2xl:text-2xl")}>A</span>
       </div>
     );
   }
 
   return (
-    <div className={cn("grid shrink-0 place-items-center rounded-md bg-black font-black text-white", large ? "text-xl 2xl:text-2xl" : "text-base 2xl:text-xl", sizeClass)}>
+    <div className={cn("grid shrink-0 place-items-center rounded-md bg-black font-black text-white", large ? "text-xl 2xl:text-2xl" : compact ? "text-sm 2xl:text-base" : "text-base 2xl:text-xl", sizeClass)}>
       stripe
     </div>
   );
