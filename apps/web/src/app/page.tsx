@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  Archive,
+  ArchiveRestore,
   Ban,
   Bell,
   Bookmark,
@@ -35,6 +37,7 @@ import {
   RotateCcw,
   Save,
   Search,
+  Send,
   Share2,
   ShieldCheck,
   SlidersHorizontal,
@@ -75,6 +78,8 @@ type Job = {
   similarJobs: string[];
   applyUrl?: string;
   sourceUrl?: string;
+  archived?: boolean;
+  archivedAt?: string;
 };
 
 type ApplicationStatus = "applied" | "interview" | "assessment" | "offer" | "rejected";
@@ -140,6 +145,7 @@ type ParsedJob = {
 type ParserApiResponse = {
   status: "completed" | "queued" | "running";
   jobs?: ParsedJob[];
+  search_url?: string;
   snapshot_id?: string | null;
   message?: string | null;
 };
@@ -431,6 +437,8 @@ const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const snapshotPollDelayMs = 4000;
 const snapshotPollMaxAttempts = 30;
 const importedJobsStorageKey = "tasko.importedJobs.v1";
+const archivedJobIdsStorageKey = "tasko.archivedJobIds.v1";
+const deletedJobIdsStorageKey = "tasko.deletedJobIds.v1";
 const applicationsStorageKey = "tasko.applications.v1";
 const applicationEventsStorageKey = "tasko.applicationEvents.v1";
 const parserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v1";
@@ -1563,10 +1571,10 @@ function isImportedJob(job: Job) {
 function normalizeStoredJobs(value: unknown) {
   if (!Array.isArray(value)) return [];
 
-  return value.filter((job): job is Job => {
-    if (!job || typeof job !== "object") return false;
+  return value.flatMap((job): Job[] => {
+    if (!job || typeof job !== "object") return [];
     const candidate = job as Partial<Job>;
-    return (
+    const isValidJob =
       typeof candidate.id === "string" &&
       typeof candidate.company === "string" &&
       typeof candidate.title === "string" &&
@@ -1581,9 +1589,24 @@ function normalizeStoredJobs(value: unknown) {
       typeof candidate.overview === "string" &&
       Array.isArray(candidate.responsibilities) &&
       Array.isArray(candidate.requirements) &&
-      Array.isArray(candidate.skills)
-    );
+      Array.isArray(candidate.skills);
+
+    if (!isValidJob) return [];
+
+    return [
+      {
+        ...(candidate as Job),
+        archived: Boolean(candidate.archived),
+        archivedAt: typeof candidate.archivedAt === "string" ? candidate.archivedAt : undefined,
+      },
+    ];
   });
+}
+
+function normalizeStoredJobIds(value: unknown) {
+  if (!Array.isArray(value)) return [];
+
+  return Array.from(new Set(value.filter((id): id is string => typeof id === "string" && id.trim().length > 0)));
 }
 
 function normalizeStoredApplications(value: unknown) {
@@ -1665,6 +1688,10 @@ function createApplicationFromJob(job: Job): TrackedApplication {
     nextStep: "",
     notes: "",
   };
+}
+
+function getJobApplyUrl(job: Job) {
+  return job.applyUrl || job.sourceUrl || "";
 }
 
 function getApplicationEventTypeLabel(type: ApplicationEventType) {
@@ -1809,6 +1836,9 @@ export default function HomePage() {
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState(tabs[0]);
   const [savedJobs, setSavedJobs] = useState<string[]>([]);
+  const [archivedJobIds, setArchivedJobIds] = useState<string[]>([]);
+  const [deletedJobIds, setDeletedJobIds] = useState<string[]>([]);
+  const [showArchivedJobs, setShowArchivedJobs] = useState(false);
   const [applications, setApplications] = useState<TrackedApplication[]>([]);
   const [selectedApplicationId, setSelectedApplicationId] = useState("");
   const [areApplicationsLoaded, setAreApplicationsLoaded] = useState(false);
@@ -1867,15 +1897,29 @@ export default function HomePage() {
   const [appLogs, setAppLogs] = useState<AppLogEntry[]>([]);
   const [areAppLogsLoaded, setAreAppLogsLoaded] = useState(false);
 
+  const availableJobs = useMemo(
+    () =>
+      jobList
+        .filter((job) => !deletedJobIds.includes(job.id))
+        .map((job) => ({
+          ...job,
+          archived: job.archived || archivedJobIds.includes(job.id),
+        })),
+    [archivedJobIds, deletedJobIds, jobList],
+  );
+
+  const archivedJobsCount = useMemo(() => availableJobs.filter((job) => job.archived).length, [availableJobs]);
+
   const filteredJobs = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
+    const jobsForCurrentMode = availableJobs.filter((job) => Boolean(job.archived) === showArchivedJobs);
     const results = normalizedQuery
-      ? jobList.filter((job) =>
+      ? jobsForCurrentMode.filter((job) =>
           [job.title, job.company, job.location, job.type, job.salary].some((value) =>
             value.toLowerCase().includes(normalizedQuery),
           ),
         )
-      : jobList;
+      : jobsForCurrentMode;
 
     return [...results].sort((a, b) => {
       if (sortBy === "Newest") return a.posted.localeCompare(b.posted);
@@ -1886,11 +1930,13 @@ export default function HomePage() {
       }
       return b.match - a.match;
     });
-  }, [jobList, query, sortBy]);
+  }, [availableJobs, query, showArchivedJobs, sortBy]);
 
-  const selectedJob = filteredJobs.find((job) => job.id === selectedJobId) ?? filteredJobs[0] ?? jobList[0];
-  const isSelectedSaved = savedJobs.includes(selectedJob.id);
-  const selectedJobApplication = applications.find((application) => application.job.id === selectedJob.id);
+  const selectedJob = filteredJobs.find((job) => job.id === selectedJobId) ?? filteredJobs[0] ?? null;
+  const isSelectedSaved = selectedJob ? savedJobs.includes(selectedJob.id) : false;
+  const selectedJobApplication = selectedJob
+    ? applications.find((application) => application.job.id === selectedJob.id)
+    : undefined;
   const selectedApplication = applications.find((application) => application.id === selectedApplicationId) ?? applications[0] ?? null;
 
   useEffect(() => {
@@ -2079,6 +2125,20 @@ export default function HomePage() {
 
   useEffect(() => {
     const abortController = new AbortController();
+
+    try {
+      const rawArchivedJobIds = window.localStorage.getItem(archivedJobIdsStorageKey);
+      setArchivedJobIds(normalizeStoredJobIds(rawArchivedJobIds ? JSON.parse(rawArchivedJobIds) : []));
+    } catch {
+      window.localStorage.removeItem(archivedJobIdsStorageKey);
+    }
+
+    try {
+      const rawDeletedJobIds = window.localStorage.getItem(deletedJobIdsStorageKey);
+      setDeletedJobIds(normalizeStoredJobIds(rawDeletedJobIds ? JSON.parse(rawDeletedJobIds) : []));
+    } catch {
+      window.localStorage.removeItem(deletedJobIdsStorageKey);
+    }
 
     try {
       const rawImportedJobs = window.localStorage.getItem(importedJobsStorageKey);
@@ -2328,6 +2388,76 @@ export default function HomePage() {
 
   function toggleSaved(jobId: string) {
     setSavedJobs((current) => (current.includes(jobId) ? current.filter((id) => id !== jobId) : [...current, jobId]));
+  }
+
+  function persistArchivedJobIds(jobIds: string[]) {
+    window.localStorage.setItem(archivedJobIdsStorageKey, JSON.stringify(jobIds));
+  }
+
+  function persistDeletedJobIds(jobIds: string[]) {
+    window.localStorage.setItem(deletedJobIdsStorageKey, JSON.stringify(jobIds));
+  }
+
+  function updateJobArchiveState(job: Job, archived: boolean) {
+    const archivedAt = archived ? new Date().toISOString() : undefined;
+
+    setArchivedJobIds((currentIds) => {
+      const nextIds = archived
+        ? Array.from(new Set([...currentIds, job.id]))
+        : currentIds.filter((id) => id !== job.id);
+      persistArchivedJobIds(nextIds);
+      return nextIds;
+    });
+
+    setJobList((currentJobs) => {
+      const nextJobs = currentJobs.map((item) =>
+        item.id === job.id
+          ? {
+              ...item,
+              archived,
+              archivedAt,
+            }
+          : item,
+      );
+      void persistImportedJobs(nextJobs.filter(isImportedJob));
+      return nextJobs;
+    });
+
+    setSelectedJobId("");
+  }
+
+  function deleteJob(job: Job) {
+    const existingApplication = applications.find((application) => application.job.id === job.id);
+    const shouldDelete = window.confirm(
+      existingApplication
+        ? `Delete ${job.title} at ${job.company} from Jobs? The application record will stay in Applications.`
+        : `Delete ${job.title} at ${job.company}?`,
+    );
+
+    if (!shouldDelete) return;
+
+    setDeletedJobIds((currentIds) => {
+      const nextIds = Array.from(new Set([...currentIds, job.id]));
+      persistDeletedJobIds(nextIds);
+      return nextIds;
+    });
+    setArchivedJobIds((currentIds) => {
+      const nextIds = currentIds.filter((id) => id !== job.id);
+      persistArchivedJobIds(nextIds);
+      return nextIds;
+    });
+    setSavedJobs((currentIds) => currentIds.filter((id) => id !== job.id));
+
+    setJobList((currentJobs) => {
+      const nextJobs = currentJobs.filter((item) => item.id !== job.id);
+      void persistImportedJobs(nextJobs.filter(isImportedJob));
+      return nextJobs;
+    });
+    setSelectedJobId("");
+
+    void fetch(`${apiBaseUrl}/jobs/${encodeURIComponent(job.id)}`, {
+      method: "DELETE",
+    }).catch(() => undefined);
   }
 
   function toggleFilter(filter: string) {
@@ -3502,16 +3632,16 @@ export default function HomePage() {
   async function runParsers() {
     setParserSearchStatus("loading");
     setParserSearchMessage("");
-    appendAppLog({
-      level: "info",
-      area: "Vacancy search",
-      message: "LinkedIn vacancy search started",
+      appendAppLog({
+        level: "info",
+        area: "Vacancy search",
+        message: "LinkedIn vacancy search started",
       details: [
         `Keywords: ${parserSearchForm.keywords || "Any"}`,
         `Location: ${parserSearchForm.location || parserSearchForm.country || "Any"}`,
         `Remote: ${parserSearchForm.remote}`,
         `Limit: ${parserSearchForm.resultsLimit || "100"}`,
-      ].join(" | "),
+      ].join("\n"),
     });
 
     try {
@@ -3538,14 +3668,15 @@ export default function HomePage() {
         throw new Error(data.detail ?? "LinkedIn parser request failed");
       }
 
+      const initialJobsCount = (data.jobs ?? []).length;
       appendAppLog({
-        level: data.status === "completed" ? "success" : "info",
+        level: data.status === "completed" ? (initialJobsCount > 0 ? "success" : "warning") : "info",
         area: "Vacancy search",
         message:
           data.status === "completed"
-            ? `LinkedIn parser returned ${(data.jobs ?? []).length} vacancies immediately`
+            ? `LinkedIn parser returned ${initialJobsCount} vacancies immediately`
             : `Bright Data snapshot queued: ${data.snapshot_id ?? "waiting"}`,
-        details: data.message || undefined,
+        details: [data.search_url ? `Search URL: ${data.search_url}` : "", data.message || ""].filter(Boolean).join("\n") || undefined,
       });
 
       const finalData =
@@ -3557,16 +3688,21 @@ export default function HomePage() {
       const addedCount = finalData.status === "completed" ? addParsedJobsToList(finalData.jobs ?? []) : 0;
       const finalMessage =
         finalData.status === "completed"
-          ? `Added ${addedCount} LinkedIn vacancies to Jobs`
+          ? addedCount > 0
+            ? `Added ${addedCount} LinkedIn vacancies to Jobs`
+            : "No LinkedIn vacancies returned for this search"
           : `Bright Data snapshot queued: ${finalData.snapshot_id ?? data.snapshot_id ?? "waiting"}`;
 
       setParserSearchStatus("ready");
       setParserSearchMessage(finalMessage);
       appendAppLog({
-        level: finalData.status === "completed" ? "success" : "info",
+        level: finalData.status === "completed" ? (addedCount > 0 ? "success" : "warning") : "info",
         area: "Vacancy search",
         message: finalMessage,
-        details: finalData.snapshot_id ? `Snapshot: ${finalData.snapshot_id}` : undefined,
+        details: [
+          finalData.search_url ? `Search URL: ${finalData.search_url}` : "",
+          finalData.snapshot_id ? `Snapshot: ${finalData.snapshot_id}` : "",
+        ].filter(Boolean).join("\n") || undefined,
       });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "LinkedIn parser request failed";
@@ -3677,10 +3813,28 @@ export default function HomePage() {
             <Button
               variant="ghost"
               className="h-10 rounded-md border border-border bg-white/[0.03] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm"
-              onClick={() => setActiveTab("Overview")}
+              onClick={() => {
+                setShowArchivedJobs(false);
+                setActiveTab("Overview");
+              }}
             >
               <Heart className={cn("h-[18px] w-[18px] 2xl:h-5 2xl:w-5", savedJobs.length > 0 && "fill-accent text-accent")} />
               Saved Jobs
+            </Button>
+            <Button
+              variant="ghost"
+              className={cn(
+                "h-10 rounded-md border border-border bg-white/[0.03] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
+                showArchivedJobs && "border-accent/70 text-white",
+              )}
+              onClick={() => {
+                setShowArchivedJobs((current) => !current);
+                setSelectedJobId("");
+                setActiveTab("Overview");
+              }}
+            >
+              <Archive className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
+              Archived {archivedJobsCount > 0 ? `(${archivedJobsCount})` : ""}
             </Button>
             <Button
               variant="ghost"
@@ -3738,7 +3892,9 @@ export default function HomePage() {
 
         <div className="mt-3 grid min-h-0 flex-1 gap-3 xl:grid-cols-[350px_minmax(0,1fr)] 2xl:mt-4 2xl:grid-cols-[420px_minmax(0,1fr)] 2xl:gap-4">
           <aside className="flex min-h-0 flex-col overflow-hidden rounded-md bg-white/[0.02]">
-            <p className="shrink-0 px-1 pb-3 pt-3 text-sm font-semibold text-muted 2xl:pb-4 2xl:pt-5 2xl:text-base">{filteredJobs.length} jobs found</p>
+            <p className="shrink-0 px-1 pb-3 pt-3 text-sm font-semibold text-muted 2xl:pb-4 2xl:pt-5 2xl:text-base">
+              {filteredJobs.length} {showArchivedJobs ? "archived jobs" : "jobs"} found
+            </p>
             <div className="job-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 2xl:space-y-3">
               {filteredJobs.map((job) => (
                 <button
@@ -3750,7 +3906,7 @@ export default function HomePage() {
                   }}
                   className={cn(
                     "grid w-full grid-cols-[46px_minmax(0,1fr)_78px_22px] items-center gap-3 rounded-md border p-3 text-left transition 2xl:grid-cols-[58px_minmax(0,1fr)_96px_26px] 2xl:p-4",
-                    selectedJob.id === job.id
+                    selectedJob?.id === job.id
                       ? "border-accent bg-white/[0.055] shadow-[0_0_0_1px_rgba(255,90,0,0.12)]"
                       : "border-transparent bg-white/[0.035] hover:border-white/[0.13] hover:bg-white/[0.055]",
                   )}
@@ -3765,6 +3921,12 @@ export default function HomePage() {
                     <p className="mt-1.5 text-xs text-muted 2xl:mt-2 2xl:text-sm">
                       {job.salary} <span className="mx-2 text-white/15">|</span> {job.posted}
                     </p>
+                    {job.archived && (
+                      <p className="mt-1.5 inline-flex w-fit items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] font-bold text-muted">
+                        <Archive className="h-3 w-3" />
+                        Archived
+                      </p>
+                    )}
                   </div>
                   <p className="justify-self-end whitespace-nowrap text-xs font-bold text-success 2xl:text-sm">{job.match}% match</p>
                   <Bookmark
@@ -3780,46 +3942,95 @@ export default function HomePage() {
           </aside>
 
           <section className="panel job-scroll min-h-0 overflow-y-auto p-3 md:p-4 2xl:p-5">
-            <div className="grid gap-4 lg:grid-cols-[1fr_170px] 2xl:gap-5 2xl:grid-cols-[1fr_188px]">
-              <div className="flex min-w-0 items-start gap-3 2xl:gap-4">
-                <CompanyLogo logo={selectedJob.logo} large />
-                <div className="min-w-0 pt-0.5">
-                  <h2 className="text-[22px] font-bold leading-tight text-white md:text-[24px] 2xl:text-[29px]">{selectedJob.title}</h2>
-                  <p className="mt-1.5 text-sm font-semibold text-muted 2xl:mt-2 2xl:text-base">
-                    {selectedJob.company} <span className="text-white/35">•</span> {selectedJob.location} <span className="text-white/35">•</span> {selectedJob.type}
-                  </p>
-                  <p className="mt-2 text-sm font-semibold text-muted 2xl:mt-3 2xl:text-base">{selectedJob.salary}</p>
+            {selectedJob ? (
+              <>
+            <div className="grid gap-5 2xl:gap-7">
+              <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(300px,0.58fr)] min-[1500px]:grid-cols-[minmax(0,1fr)_minmax(470px,0.72fr)] 2xl:gap-7">
+                <div className="flex min-w-0 items-start gap-3 2xl:gap-4">
+                  <CompanyLogo logo={selectedJob.logo} large />
+                  <div className="min-w-0 pt-0.5">
+                    <h2 className="text-[22px] font-bold leading-tight text-white lg:text-[20px] min-[1400px]:text-[22px] min-[1500px]:text-[24px] 2xl:text-[29px]">{selectedJob.title}</h2>
+                    <p className="mt-1.5 text-sm font-semibold text-muted 2xl:mt-2 2xl:text-base">
+                      {selectedJob.company} <span className="text-white/35">•</span> {selectedJob.location} <span className="text-white/35">•</span> {selectedJob.type}
+                    </p>
+                    <p className="mt-2 text-sm font-semibold text-muted 2xl:mt-3 2xl:text-base">{selectedJob.salary}</p>
+                  </div>
+                </div>
+
+                <div className="grid content-start gap-3 sm:grid-cols-2">
+                  <Button
+                    className={cn(
+                      "h-12 rounded-md border bg-transparent px-3 text-sm font-bold xl:px-4 xl:text-[15px] 2xl:h-[54px] 2xl:text-lg",
+                      selectedJobApplication
+                        ? "border-success/40 text-success hover:bg-success/12"
+                        : "border-accent/70 text-accent hover:bg-accent/12",
+                    )}
+                    onClick={() => markJobApplied(selectedJob)}
+                  >
+                    <Check className="h-5 w-5 2xl:h-6 2xl:w-6" />
+                    {selectedJobApplication ? "In Applications" : "Mark as Applied"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    aria-disabled={!getJobApplyUrl(selectedJob)}
+                    className="h-12 rounded-md border border-[#3d7cff] bg-[#2f80ed] px-3 text-sm font-bold text-white shadow-[0_12px_28px_rgba(47,128,237,0.26)] hover:bg-[#3d8bff] xl:px-4 xl:text-[15px] 2xl:h-[54px] 2xl:text-lg"
+                    onClick={() => {
+                      const applyUrl = getJobApplyUrl(selectedJob);
+                      if (applyUrl) window.open(applyUrl, "_blank", "noopener,noreferrer");
+                    }}
+                  >
+                    <Send className="h-5 w-5 2xl:h-6 2xl:w-6" />
+                    Apply to Job
+                  </Button>
                 </div>
               </div>
 
-              <div className="grid gap-2">
+              <div className="h-px bg-border" />
+
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <Button
-                  className={cn(
-                    "h-9 rounded-md text-[13px] 2xl:h-10 2xl:text-sm",
-                    selectedJobApplication
-                      ? "border border-success/35 bg-success/14 text-success hover:bg-success/18"
-                      : "bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] text-white",
-                  )}
-                  onClick={() => markJobApplied(selectedJob)}
-                >
-                  {selectedJobApplication ? <Check className="h-4 w-4" /> : <ExternalLink className="h-4 w-4" />}
-                  {selectedJobApplication ? "In Applications" : "Mark applied"}
-                </Button>
-                <Button
+                  type="button"
                   variant="ghost"
-                  className="h-9 rounded-md border border-border bg-transparent text-[13px] text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-10 2xl:text-sm"
+                  aria-label={isSelectedSaved ? "Unsave job" : "Save job"}
+                  title={isSelectedSaved ? "Unsave job" : "Save job"}
+                  className="h-11 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-12 2xl:text-sm"
                   onClick={() => toggleSaved(selectedJob.id)}
                 >
                   <Heart className={cn("h-[18px] w-[18px] 2xl:h-5 2xl:w-5", isSelectedSaved && "fill-accent text-accent")} />
-                  {isSelectedSaved ? "Saved" : "Save Job"}
+                  {isSelectedSaved ? "Saved" : "Save"}
                 </Button>
                 <Button
+                  type="button"
                   variant="ghost"
-                  className="h-9 rounded-md border border-border bg-transparent text-[13px] text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-10 2xl:text-sm"
+                  aria-label="Share job"
+                  title="Share job"
+                  className="h-11 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-12 2xl:text-sm"
                   onClick={() => navigator.clipboard?.writeText(`${selectedJob.title} at ${selectedJob.company}`)}
                 >
                   <Share2 className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
-                  Share Job
+                  Share
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  aria-label={selectedJob.archived ? "Restore job" : "Archive job"}
+                  title={selectedJob.archived ? "Restore job" : "Archive job"}
+                  className="h-11 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-12 2xl:text-sm"
+                  onClick={() => updateJobArchiveState(selectedJob, !selectedJob.archived)}
+                >
+                  {selectedJob.archived ? <ArchiveRestore className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" /> : <Archive className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />}
+                  {selectedJob.archived ? "Restore" : "Archive"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  aria-label="Delete job"
+                  title="Delete job"
+                  className="h-11 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#ff5d5d] hover:border-[#d94d4d]/55 hover:bg-[#d94d4d]/12 2xl:h-12 2xl:text-sm"
+                  onClick={() => deleteJob(selectedJob)}
+                >
+                  <Trash2 className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
+                  Remove
                 </Button>
               </div>
             </div>
@@ -3852,6 +4063,22 @@ export default function HomePage() {
                 <JobDetails job={selectedJob} />
               </div>
             </div>
+              </>
+            ) : (
+              <div className="grid min-h-[360px] place-items-center rounded-md border border-dashed border-border bg-white/[0.018] p-6 text-center">
+                <div>
+                  <Archive className="mx-auto h-9 w-9 text-muted" />
+                  <h2 className="mt-4 text-xl font-bold text-white">
+                    {showArchivedJobs ? "No archived jobs" : "No jobs found"}
+                  </h2>
+                  <p className="mt-2 max-w-md text-sm font-medium text-muted">
+                    {showArchivedJobs
+                      ? "Archived vacancies will appear here after you archive them."
+                      : "Try changing the search, resetting filters, or searching for new vacancies."}
+                  </p>
+                </div>
+              </div>
+            )}
           </section>
         </div>
 
@@ -5509,7 +5736,7 @@ function LogsView({ logs, onClear }: { logs: AppLogEntry[]; onClear: () => void 
                       <span className="text-xs text-muted">{formatLogTimestamp(log.timestamp)}</span>
                     </div>
                     <p className="mt-2 text-sm font-semibold leading-5 text-white 2xl:text-base">{log.message}</p>
-                    {log.details && <p className="mt-1 font-mono text-xs leading-5 text-muted">{log.details}</p>}
+                    {log.details && <p className="mt-1 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-muted [overflow-wrap:anywhere]">{log.details}</p>}
                   </div>
                 </div>
               </article>

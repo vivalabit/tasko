@@ -39,3 +39,21 @@ def upsert_jobs(request: StoredJobsRequest, db: Session = Depends(get_db)) -> li
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Jobs database is unavailable",
         ) from exc
+
+
+@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_job(job_id: str, db: Session = Depends(get_db)) -> None:
+    try:
+        record = db.get(StoredJobRecord, job_id)
+        if not record:
+            return None
+
+        db.delete(record)
+        db.commit()
+        return None
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Jobs database is unavailable",
+        ) from exc
