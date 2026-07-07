@@ -28,6 +28,7 @@ class AiMatchJobManager:
         jobs: list[dict[str, Any]],
         settings: Settings,
         session_factory: SessionFactory,
+        force: bool = False,
     ) -> tuple[bool, AiMatchJobStatus]:
         with self._lock:
             if self._status.status in {"queued", "running"}:
@@ -50,6 +51,7 @@ class AiMatchJobManager:
                 "jobs": jobs,
                 "settings": settings,
                 "session_factory": session_factory,
+                "force": force,
             },
             daemon=True,
         )
@@ -68,6 +70,7 @@ class AiMatchJobManager:
         jobs: list[dict[str, Any]],
         settings: Settings,
         session_factory: SessionFactory,
+        force: bool,
     ) -> None:
         self._update(run_id, status="running")
         local_jobs: list[dict[str, Any]] = []
@@ -83,6 +86,7 @@ class AiMatchJobManager:
                     timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
                     openclaw_enabled=False,
                     openclaw_max_jobs=0,
+                    force=force,
                 )
                 if not matched_job:
                     self._increment(run_id)
@@ -111,6 +115,7 @@ class AiMatchJobManager:
                     timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
                     openclaw_enabled=True,
                     openclaw_max_jobs=1,
+                    force=force,
                 )
                 if not matched_job:
                     self._increment(run_id)

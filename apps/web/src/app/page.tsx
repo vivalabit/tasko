@@ -91,6 +91,7 @@ type Job = {
   similarJobs: string[];
   applyUrl?: string;
   sourceUrl?: string;
+  addedAt?: string;
   archived?: boolean;
   archivedAt?: string;
   aiMatch?: AiMatchMetadata;
@@ -1605,6 +1606,7 @@ function mapParsedJobToJob(job: ParsedJob, index: number): Job {
     similarJobs: [],
     applyUrl: job.apply_url?.trim() || job.url?.trim() || undefined,
     sourceUrl: job.url?.trim() || undefined,
+    addedAt: new Date().toISOString(),
   };
 }
 
@@ -2157,6 +2159,7 @@ export default function HomePage() {
   const [isParserDialogOpen, setIsParserDialogOpen] = useState(false);
   const [parserSearchStatus, setParserSearchStatus] = useState<ParserSearchStatus>("idle");
   const [parserSearchMessage, setParserSearchMessage] = useState("");
+  const [forceMatchingJobId, setForceMatchingJobId] = useState("");
   const [parserSearchForm, setParserSearchForm] = useState<ParserSearchForm>(defaultParserSearchForm);
   const [parserSearchConfigs, setParserSearchConfigs] = useState<ParserSearchConfig[]>([]);
   const [selectedParserSearchConfigId, setSelectedParserSearchConfigId] = useState("");
@@ -3993,11 +3996,11 @@ export default function HomePage() {
     });
   }
 
-  async function refreshAiMatches(jobsToMatch: Job[], runSignature?: string) {
+  async function refreshAiMatches(jobsToMatch: Job[], runSignature?: string, force = false) {
     if (jobsToMatch.length === 0) return false;
 
     try {
-      const response = await fetch(`${apiBaseUrl}/jobs/ai-match/run`, {
+      const response = await fetch(`${apiBaseUrl}/jobs/ai-match/run${force ? "?force=true" : ""}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -4022,6 +4025,15 @@ export default function HomePage() {
     } catch {
       // AI match is progressive enhancement; imported jobs remain usable without it.
       return false;
+    }
+  }
+
+  async function rerunAiMatch(job: Job) {
+    setForceMatchingJobId(job.id);
+    try {
+      await refreshAiMatches([job], undefined, true);
+    } finally {
+      setForceMatchingJobId((currentId) => (currentId === job.id ? "" : currentId));
     }
   }
 
@@ -4517,7 +4529,19 @@ export default function HomePage() {
 
               <div className="h-px bg-border" />
 
-              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 2xl:gap-3">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5 2xl:gap-3">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  aria-label="Force AI match rerun"
+                  title="Force AI match rerun"
+                  disabled={forceMatchingJobId === selectedJob.id}
+                  className="h-10 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#d8dee8] hover:bg-white/[0.055] disabled:cursor-not-allowed disabled:opacity-55 2xl:h-11 2xl:text-sm"
+                  onClick={() => rerunAiMatch(selectedJob)}
+                >
+                  <RotateCcw className={cn("h-4 w-4 2xl:h-[18px] 2xl:w-[18px]", forceMatchingJobId === selectedJob.id && "animate-spin")} />
+                  {forceMatchingJobId === selectedJob.id ? "Matching" : "Rerun AI"}
+                </Button>
                 <Button
                   type="button"
                   variant="ghost"

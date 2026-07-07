@@ -1,3 +1,6 @@
+from datetime import UTC, datetime
+from typing import Any
+
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -7,7 +10,7 @@ from app.core.database import get_db
 from app.core.settings import Settings, get_settings
 from app.models.jobs import AiMatchJobStatus, StoredJobPayload, StoredJobRecord, StoredJobsRequest
 from app.models.profile import ProfilePayload, ProfileRecord
-from app.services.ai_match import calculate_ai_matches
+from app.services.ai_match import JOB_ADDED_AT_FIELDS, calculate_ai_matches
 from app.services.ai_match_jobs import ai_match_jobs
 
 router = APIRouter()
@@ -28,12 +31,14 @@ def list_jobs(db: Session = Depends(get_db)) -> list[StoredJobPayload]:
 @router.put("", response_model=list[StoredJobPayload])
 def upsert_jobs(request: StoredJobsRequest, db: Session = Depends(get_db)) -> list[StoredJobPayload]:
     try:
+        now = datetime.now(UTC).isoformat()
         for job in request.jobs:
             record = db.get(StoredJobRecord, job.id)
+            job_data = prepare_job_data(job.data, record, now)
             if record:
-                record.data = job.data
+                record.data = job_data
             else:
-                db.add(StoredJobRecord(id=job.id, data=job.data))
+                db.add(StoredJobRecord(id=job.id, data=job_data))
 
         db.commit()
         return list_jobs(db)
@@ -48,10 +53,16 @@ def upsert_jobs(request: StoredJobsRequest, db: Session = Depends(get_db)) -> li
 @router.post("/ai-match", response_model=list[StoredJobPayload])
 def match_jobs(
     request: StoredJobsRequest,
+    force: bool = False,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> list[StoredJobPayload]:
     try:
+        now = datetime.now(UTC).isoformat()
+        jobs_to_match = [
+            prepare_job_data(job.data, db.get(StoredJobRecord, job.id), now)
+            for job in request.jobs
+        ]
         profile_record = db.get(ProfileRecord, "default")
         profile = (
             ProfilePayload.model_validate(profile_record.data)
@@ -60,13 +71,14 @@ def match_jobs(
         )
         matched_jobs = calculate_ai_matches(
             profile,
-            [job.data for job in request.jobs],
+            jobs_to_match,
             command=settings.openclaw_command,
             agent_id=settings.openclaw_agent_id,
             thinking=settings.openclaw_ai_match_thinking,
             timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
             openclaw_enabled=settings.openclaw_ai_match_enabled,
             openclaw_max_jobs=settings.openclaw_ai_match_max_jobs,
+            force=force,
         )
 
         for job in matched_jobs:
@@ -92,10 +104,16 @@ def match_jobs(
 @router.post("/ai-match/run", response_model=AiMatchJobStatus, status_code=status.HTTP_202_ACCEPTED)
 def run_match_jobs(
     request: StoredJobsRequest,
+    force: bool = False,
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> AiMatchJobStatus:
     try:
+        now = datetime.now(UTC).isoformat()
+        jobs_to_match = [
+            prepare_job_data(job.data, db.get(StoredJobRecord, job.id), now)
+            for job in request.jobs
+        ]
         profile_record = db.get(ProfileRecord, "default")
         profile = (
             ProfilePayload.model_validate(profile_record.data)
@@ -105,9 +123,10 @@ def run_match_jobs(
         session_factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False)
         started, current_status = ai_match_jobs.start(
             profile=profile,
-            jobs=[job.data for job in request.jobs],
+            jobs=jobs_to_match,
             settings=settings,
             session_factory=session_factory,
+            force=force,
         )
     except SQLAlchemyError as exc:
         raise HTTPException(
@@ -127,6 +146,39 @@ def run_match_jobs(
 @router.get("/ai-match/status", response_model=AiMatchJobStatus)
 def get_match_jobs_status() -> AiMatchJobStatus:
     return ai_match_jobs.status()
+
+
+def prepare_job_data(
+    job_data: dict[str, Any],
+    record: StoredJobRecord | None,
+    now: str,
+) -> dict[str, Any]:
+    next_job_data = dict(job_data)
+    if has_added_at(next_job_data):
+        return next_job_data
+
+    if record and isinstance(record.data, dict):
+        added_at = first_added_at(record.data)
+        if added_at:
+            next_job_data["addedAt"] = added_at
+            return next_job_data
+
+        return next_job_data
+
+    next_job_data["addedAt"] = now
+    return next_job_data
+
+
+def has_added_at(job_data: dict[str, Any]) -> bool:
+    return bool(first_added_at(job_data))
+
+
+def first_added_at(job_data: dict[str, Any]) -> str:
+    for field in JOB_ADDED_AT_FIELDS:
+        value = job_data.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)

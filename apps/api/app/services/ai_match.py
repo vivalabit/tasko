@@ -6,7 +6,7 @@ import math
 import re
 import shutil
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from app.models.profile import ProfilePayload
@@ -15,6 +15,8 @@ from app.services.resume_import import extract_json_object, extract_json_objects
 MATCHER_VERSION = "ai-match-v1"
 MAX_REASON_COUNT = 3
 MAX_GAP_COUNT = 3
+FORCE_RERUN_WINDOW = timedelta(days=2)
+JOB_ADDED_AT_FIELDS = ("addedAt", "importedAt", "createdAt", "created_at")
 
 WEIGHTS = {
     "role_fit": 20,
@@ -58,10 +60,12 @@ def calculate_ai_matches(
     timeout_seconds: int,
     openclaw_enabled: bool,
     openclaw_max_jobs: int,
+    force: bool = False,
 ) -> list[dict[str, Any]]:
     profile_snapshot = build_candidate_snapshot(profile)
     prepared_jobs: list[dict[str, Any]] = []
-    now = datetime.now(UTC).isoformat()
+    now_datetime = datetime.now(UTC)
+    now = now_datetime.isoformat()
 
     for job in jobs:
         if not isinstance(job, dict):
@@ -70,7 +74,8 @@ def calculate_ai_matches(
         job_snapshot = build_job_snapshot(job)
         cache_key = build_cache_key(profile_snapshot, job_snapshot)
         cached_match = job.get("aiMatch")
-        if is_cached_match_valid(cached_match, cache_key) and (
+        force_rerun = force and is_force_rerun_allowed(job, now_datetime)
+        if not force_rerun and is_cached_match_valid(cached_match, cache_key) and (
             not openclaw_enabled or cached_match.get("source") == "openclaw"
         ):
             prepared_jobs.append(job)
@@ -435,6 +440,34 @@ def is_cached_match_valid(value: Any, cache_key: str) -> bool:
         and value.get("cacheKey") == cache_key
         and isinstance(value.get("score"), int)
     )
+
+
+def is_force_rerun_allowed(job: dict[str, Any], now: datetime | None = None) -> bool:
+    added_at = parse_job_added_at(job)
+    if not added_at:
+        return False
+
+    current_time = now or datetime.now(UTC)
+    return current_time - FORCE_RERUN_WINDOW <= added_at <= current_time + timedelta(minutes=5)
+
+
+def parse_job_added_at(job: dict[str, Any]) -> datetime | None:
+    for field in JOB_ADDED_AT_FIELDS:
+        value = job.get(field)
+        if not isinstance(value, str) or not value.strip():
+            continue
+
+        normalized_value = value.strip().replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(normalized_value)
+        except ValueError:
+            continue
+
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    return None
 
 
 def score_role_fit(candidate: dict[str, Any], job: dict[str, Any]) -> float:
