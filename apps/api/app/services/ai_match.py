@@ -6,6 +6,7 @@ import math
 import re
 import shutil
 import subprocess
+import unicodedata
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -31,11 +32,33 @@ WEIGHTS = {
 SKILL_ALIASES = {
     "ai": "artificial intelligence",
     "ar": "augmented reality",
+    "backend": "back end",
+    "back-end": "back end",
+    "computer vision": "computer vision",
     "ci cd": "ci/cd",
     "cv": "computer vision",
+    "devops": "development operations",
+    "front-end": "front end",
+    "frontend": "front end",
+    "gen ai": "generative artificial intelligence",
+    "gen-ai": "generative artificial intelligence",
+    "genai": "generative artificial intelligence",
+    "generative ai": "generative artificial intelligence",
+    "gpt": "large language model",
     "js": "javascript",
+    "large language models": "large language model",
+    "llms": "large language model",
+    "llm": "large language model",
     "ml": "machine learning",
+    "ml ops": "machine learning operations",
+    "ml-ops": "machine learning operations",
+    "mlops": "machine learning operations",
     "nlp": "natural language processing",
+    "node": "node",
+    "node.js": "node",
+    "nodejs": "node",
+    "react.js": "react",
+    "reactjs": "react",
     "ts": "typescript",
     "vr": "virtual reality",
     "xr": "extended reality",
@@ -44,6 +67,30 @@ SKILL_ALIASES = {
 REMOTE_TERMS = {"remote", "work from home", "wfh"}
 HYBRID_TERMS = {"hybrid"}
 ONSITE_TERMS = {"onsite", "on-site", "office"}
+EU_REMOTE_TERMS = {"remote eu", "remote europe", "europe remote", "eu remote", "emea remote", "remote emea"}
+EUROPE_LOCATION_TERMS = {"europe", "eu", "emea", "switzerland", "schweiz", "suisse", "zurich", "zuerich"}
+SWITZERLAND_LOCATION_TERMS = {"switzerland", "schweiz", "suisse", "ch", "zurich", "zuerich", "geneva", "basel", "bern", "lausanne", "zug"}
+LOCATION_ALIASES = {
+    "zurich": "zuerich",
+    "zurich switzerland": "zuerich switzerland",
+    "zuerich schweiz": "zuerich switzerland",
+    "zuerich suisse": "zuerich switzerland",
+    "schweiz": "switzerland",
+    "suisse": "switzerland",
+}
+CURRENCY_ALIASES = {
+    "CHF": {"chf", "fr", "sfr", "swiss franc", "swiss francs"},
+    "EUR": {"eur", "euro", "euros", "€"},
+    "GBP": {"gbp", "pound", "pounds", "£"},
+    "USD": {"usd", "dollar", "dollars", "$"},
+}
+SENIORITY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("lead", ("principal", "staff", "lead", "manager", "head", "director", "vp", "chief", "architect")),
+    ("senior", ("senior", "sr", "experienced", "expert", "advanced")),
+    ("mid", ("mid", "mid level", "mid-level", "intermediate", "regular", "professional")),
+    ("junior", ("junior", "jr", "entry", "entry level", "graduate", "new grad", "associate")),
+    ("intern", ("intern", "internship", "trainee", "apprentice", "working student", "student")),
+)
 
 
 class OpenClawAiMatchError(RuntimeError):
@@ -167,7 +214,7 @@ def build_candidate_snapshot(profile: ProfilePayload) -> dict[str, Any]:
         "industries": normalize_list(preferences.get("industries", [])),
         "seniority": normalize_list(preferences.get("seniority", [])),
         "salary_min": parse_number(preferences.get("salary_min", "")),
-        "salary_currency": str(preferences.get("salary_currency") or "CHF"),
+        "salary_currency": normalize_currency(preferences.get("salary_currency") or "CHF") or "CHF",
         "work_authorization": str(preferences.get("work_authorization") or "").strip(),
         "languages": normalize_list(preferences.get("languages", [])),
         "company_sizes": normalize_list(preferences.get("company_sizes", [])),
@@ -207,6 +254,7 @@ def build_job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
         "employment_type": employment_type.strip(),
         "salary": str(job.get("salary") or "").strip(),
         "salary_amount": parse_job_salary(job),
+        "salary_currency": parse_job_salary_currency(job),
         "experience": experience.strip(),
         "department": str(job.get("department") or "").strip(),
         "overview": overview.strip()[:1200],
@@ -497,9 +545,10 @@ def score_skills_fit(candidate: dict[str, Any], job: dict[str, Any]) -> float:
 def score_experience_fit(candidate: dict[str, Any], job: dict[str, Any]) -> float:
     job_seniority = infer_seniority(" ".join([job["title"], job["experience"]]))
     candidate_seniority = infer_candidate_seniority(candidate)
-    explicit_preferences = " ".join(candidate.get("seniority", []))
+    preferred_seniority = {infer_seniority(value) for value in candidate.get("seniority", [])}
+    preferred_seniority.discard("")
 
-    if explicit_preferences and normalize_text(job_seniority) in normalize_text(explicit_preferences):
+    if preferred_seniority and job_seniority in preferred_seniority:
         return WEIGHTS["experience_fit"]
 
     if not job_seniority or not candidate_seniority:
@@ -516,7 +565,7 @@ def score_experience_fit(candidate: dict[str, Any], job: dict[str, Any]) -> floa
 def score_preferences_fit(candidate: dict[str, Any], job: dict[str, Any]) -> float:
     checks: list[float] = []
     if candidate.get("locations") and "locations" not in candidate.get("no_preference", []):
-        checks.append(1.0 if matches_any(job["location"], candidate["locations"]) else 0.25)
+        checks.append(1.0 if matches_location(job, candidate["locations"]) else 0.25)
     if candidate.get("work_formats") and "work_formats" not in candidate.get("no_preference", []):
         checks.append(1.0 if matches_work_format(job, candidate["work_formats"]) else 0.35)
     if candidate.get("employment_types") and "employment_types" not in candidate.get("no_preference", []):
@@ -569,7 +618,10 @@ def calculate_caps(candidate: dict[str, Any], job: dict[str, Any]) -> tuple[list
 
     salary_min = candidate.get("salary_min")
     salary_amount = job.get("salary_amount")
-    if salary_min and salary_amount and salary_amount < salary_min:
+    currency_warning = salary_currency_warning(candidate, job)
+    if currency_warning:
+        reasons.append(currency_warning)
+    elif salary_min and salary_amount and salary_amount < salary_min:
         caps.append(50)
         reasons.append("Salary appears below your minimum")
 
@@ -646,17 +698,11 @@ def infer_candidate_seniority(candidate: dict[str, Any]) -> str:
 
 
 def infer_seniority(text: str) -> str:
-    normalized = normalize_text(text)
-    if any(term in normalized for term in ("intern", "trainee", "apprentice")):
-        return "intern"
-    if any(term in normalized for term in ("junior", "entry", "associate")):
-        return "junior"
-    if any(term in normalized for term in ("principal", "staff", "lead", "manager", "head")):
-        return "lead"
-    if any(term in normalized for term in ("senior", "sr ")):
-        return "senior"
-    if any(term in normalized for term in ("mid", "intermediate")):
-        return "mid"
+    normalized = normalize_text(text).replace(".", " ").replace("-", " ").replace("/", " ")
+    padded = f" {normalized} "
+    for seniority, terms in SENIORITY_PATTERNS:
+        if any(f" {normalize_text(term).replace('.', ' ').replace('-', ' ').replace('/', ' ')} " in padded for term in terms):
+            return seniority
     return ""
 
 
@@ -702,6 +748,41 @@ def parse_job_salary(job: dict[str, Any]) -> int:
         parse_number(job.get("salary", "")),
     ]
     return max(amounts)
+
+
+def parse_job_salary_currency(job: dict[str, Any]) -> str:
+    explicit_currency = normalize_currency(job.get("salaryCurrency") or job.get("salary_currency"))
+    if explicit_currency:
+        return explicit_currency
+
+    salary_text = " ".join(
+        str(job.get(field) or "")
+        for field in ("salary", "salaryAverage", "salaryMin", "salaryMax")
+    )
+    return normalize_currency(salary_text)
+
+
+def normalize_currency(value: Any) -> str:
+    normalized = normalize_text(str(value or ""))
+    raw_value = str(value or "")
+    for currency, aliases in CURRENCY_ALIASES.items():
+        if any(alias in raw_value for alias in aliases if alias in {"€", "£", "$"}):
+            return currency
+        if any(f" {normalize_text(alias)} " in f" {normalized} " for alias in aliases):
+            return currency
+    return ""
+
+
+def salary_currency_warning(candidate: dict[str, Any], job: dict[str, Any]) -> str:
+    salary_min = candidate.get("salary_min")
+    salary_amount = job.get("salary_amount")
+    candidate_currency = normalize_currency(candidate.get("salary_currency"))
+    job_currency = normalize_currency(job.get("salary_currency"))
+    if not salary_min or not salary_amount or not candidate_currency or not job_currency:
+        return ""
+    if candidate_currency == job_currency:
+        return ""
+    return f"Salary currency differs: job is {job_currency}, profile minimum is {candidate_currency}"
 
 
 def parse_number(value: Any) -> int:
@@ -798,13 +879,46 @@ def token_overlap_score(value: str, target_tokens: set[str]) -> float:
 
 def canonical_term(value: str) -> str:
     normalized = normalize_text(value)
-    for alias, canonical in SKILL_ALIASES.items():
+    for alias, canonical in sorted(SKILL_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
         normalized = re.sub(rf"\b{re.escape(alias)}\b", canonical, normalized)
     return normalized
 
 
 def normalize_text(value: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9+#./-]+", " ", str(value).lower())).strip()
+    ascii_value = unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9+#./-]+", " ", ascii_value.lower())).strip()
+
+
+def normalize_location_text(value: str) -> str:
+    normalized = normalize_text(value)
+    for alias, canonical in sorted(LOCATION_ALIASES.items(), key=lambda item: len(item[0]), reverse=True):
+        normalized = re.sub(rf"\b{re.escape(alias)}\b", canonical, normalized)
+    return normalized
+
+
+def matches_location(job: dict[str, Any], candidate_locations: list[str]) -> bool:
+    job_location = normalize_location_text(job.get("location", ""))
+    if not job_location:
+        return False
+
+    job_terms = set(job_location.split())
+    is_remote_eu_job = any(term in job_location for term in EU_REMOTE_TERMS)
+    is_swiss_job = bool(job_terms & SWITZERLAND_LOCATION_TERMS)
+
+    for location in candidate_locations:
+        candidate_location = normalize_location_text(location)
+        if not candidate_location:
+            continue
+
+        candidate_terms = set(candidate_location.split())
+        if candidate_location in job_location or job_location in candidate_location:
+            return True
+        if is_swiss_job and candidate_terms & SWITZERLAND_LOCATION_TERMS:
+            return True
+        if is_remote_eu_job and candidate_terms & EUROPE_LOCATION_TERMS:
+            return True
+
+    return False
 
 
 def matches_any(text: str, candidates: list[str]) -> bool:

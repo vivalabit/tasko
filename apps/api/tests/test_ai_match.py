@@ -12,7 +12,7 @@ from app.core.database import Base, get_db
 from app.core.settings import Settings, get_settings
 from app.main import app
 from app.models.profile import ProfilePayload, ProfileRecord
-from app.services.ai_match import calculate_ai_matches, parse_number
+from app.services.ai_match import calculate_ai_matches, infer_seniority, parse_number
 
 
 def test_parse_number_reads_spaced_salary_values() -> None:
@@ -79,6 +79,67 @@ def test_local_ai_match_scores_relevant_job_higher() -> None:
     assert matched[0]["match"] > matched[1]["match"]
     assert matched[0]["aiMatch"]["source"] == "local"
     assert matched[0]["aiMatch"]["reasons"]
+
+
+def test_local_ai_match_understands_aliases_locations_and_currency_warning() -> None:
+    profile = ProfilePayload(
+        current_role="Senior LLM Engineer",
+        desired_role="GenAI Platform Engineer",
+        location="Zurich",
+        skills="LLM\nMLOps\nReact.js\nNode",
+        job_preferences=json.dumps(
+            {
+                "desired_roles": ["Generative AI Engineer"],
+                "locations": ["Zurich"],
+                "work_formats": ["Remote"],
+                "employment_types": ["Full-Time"],
+                "salary_min": "130000",
+                "salary_currency": "CHF",
+                "seniority": ["Senior"],
+            }
+        ),
+    )
+    job = {
+        "id": "linkedin-genai-platform",
+        "title": "Sr. GenAI Platform Engineer",
+        "company": "Open Systems",
+        "location": "Zürich, Switzerland / Remote EU",
+        "type": "Full-Time Remote",
+        "salary": "€140k - €160k",
+        "posted": "LinkedIn",
+        "experience": "Experienced",
+        "department": "AI Platform",
+        "match": 50,
+        "logo": "linkedin",
+        "overview": "Build LLM products with React, Node.js, and production ML Ops workflows.",
+        "responsibilities": ["Ship large language model features"],
+        "requirements": ["Generative AI", "React", "Node.js", "Machine Learning Operations"],
+        "skills": ["GenAI", "React", "Node.js", "MLOps"],
+    }
+
+    matched = calculate_ai_matches(
+        profile,
+        [job],
+        command="openclaw",
+        agent_id="main",
+        thinking="low",
+        timeout_seconds=1,
+        openclaw_enabled=False,
+        openclaw_max_jobs=0,
+    )
+
+    ai_match = matched[0]["aiMatch"]
+    assert ai_match["breakdown"]["skills_fit"] >= 20
+    assert ai_match["breakdown"]["preferences_fit"] == 15
+    assert ai_match["breakdown"]["experience_fit"] == 15
+    assert any("currency differs" in gap.lower() for gap in ai_match["gaps"])
+
+
+def test_seniority_normalization_handles_common_variants() -> None:
+    assert infer_seniority("Sr. Machine Learning Engineer") == "senior"
+    assert infer_seniority("Mid-Senior level software engineer") == "senior"
+    assert infer_seniority("Principal AI Architect") == "lead"
+    assert infer_seniority("Entry level graduate developer") == "junior"
 
 
 def test_ai_match_endpoint_updates_and_persists_job_scores() -> None:
