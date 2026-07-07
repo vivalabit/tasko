@@ -441,6 +441,7 @@ const archivedJobIdsStorageKey = "tasko.archivedJobIds.v1";
 const deletedJobIdsStorageKey = "tasko.deletedJobIds.v1";
 const applicationsStorageKey = "tasko.applications.v1";
 const applicationEventsStorageKey = "tasko.applicationEvents.v1";
+const profileStorageKey = "tasko.profile.v1";
 const parserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v1";
 const uiSettingsStorageKey = "tasko.uiSettings.v1";
 const appLogsStorageKey = "tasko.appLogs.v1";
@@ -497,6 +498,10 @@ const defaultCandidateProfile: CandidateProfile = {
   resume_updated_at: "",
   resume_data_url: "",
 };
+
+const candidateProfileDataFields = Object.keys(defaultCandidateProfile).filter(
+  (field) => field !== "avatar_url",
+) as Array<keyof CandidateProfile>;
 
 const defaultExperienceDraft: ExperienceEntry = {
   id: "",
@@ -893,6 +898,31 @@ function normalizeCandidateProfile(profile: Partial<CandidateProfile>): Candidat
 
 function hasProfileValue(value: string | undefined) {
   return Boolean(value?.trim());
+}
+
+function hasCandidateProfileData(profile: CandidateProfile) {
+  return candidateProfileDataFields.some((field) => hasProfileValue(profile[field]));
+}
+
+function readStoredCandidateProfile() {
+  try {
+    const rawProfile = window.localStorage.getItem(profileStorageKey);
+    if (!rawProfile) return null;
+
+    const storedProfile = normalizeCandidateProfile(JSON.parse(rawProfile) as Partial<CandidateProfile>);
+    return hasCandidateProfileData(storedProfile) ? storedProfile : null;
+  } catch {
+    window.localStorage.removeItem(profileStorageKey);
+    return null;
+  }
+}
+
+function cacheCandidateProfile(profile: CandidateProfile) {
+  if (hasCandidateProfileData(profile)) {
+    window.localStorage.setItem(profileStorageKey, JSON.stringify(profile));
+  } else {
+    window.localStorage.removeItem(profileStorageKey);
+  }
 }
 
 function displayProfileValue(value: string, fallback: string) {
@@ -1856,6 +1886,7 @@ export default function HomePage() {
   const [isParserSearchConfigsLoaded, setIsParserSearchConfigsLoaded] = useState(false);
   const [profile, setProfile] = useState<CandidateProfile>(defaultCandidateProfile);
   const [profileDraft, setProfileDraft] = useState<CandidateProfile>(defaultCandidateProfile);
+  const [isProfileLoaded, setIsProfileLoaded] = useState(false);
   const [isProfileDialogOpen, setIsProfileDialogOpen] = useState(false);
   const [isExperienceDialogOpen, setIsExperienceDialogOpen] = useState(false);
   const [isExperienceEditMode, setIsExperienceEditMode] = useState(false);
@@ -2124,6 +2155,12 @@ export default function HomePage() {
   }, [areAppLogsLoaded, appLogs]);
 
   useEffect(() => {
+    if (!isProfileLoaded) return;
+
+    cacheCandidateProfile(profile);
+  }, [isProfileLoaded, profile]);
+
+  useEffect(() => {
     const abortController = new AbortController();
 
     try {
@@ -2213,6 +2250,12 @@ export default function HomePage() {
     }
 
     async function loadProfile() {
+      const storedProfile = readStoredCandidateProfile();
+      if (storedProfile) {
+        setProfile(storedProfile);
+        setProfileDraft(storedProfile);
+      }
+
       try {
         const response = await fetch(`${apiBaseUrl}/profile`, {
           cache: "no-store",
@@ -2222,10 +2265,28 @@ export default function HomePage() {
         if (!response.ok) return;
 
         const loadedProfile = normalizeCandidateProfile((await response.json()) as Partial<CandidateProfile>);
+
+        if (!hasCandidateProfileData(loadedProfile) && storedProfile) {
+          setProfile(storedProfile);
+          setProfileDraft(storedProfile);
+
+          await fetch(`${apiBaseUrl}/profile`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(storedProfile),
+            signal: abortController.signal,
+          });
+          return;
+        }
+
         setProfile(loadedProfile);
         setProfileDraft(loadedProfile);
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
+      } finally {
+        if (!abortController.signal.aborted) {
+          setIsProfileLoaded(true);
+        }
       }
     }
 
@@ -3993,10 +4054,10 @@ export default function HomePage() {
                   variant="ghost"
                   aria-label={isSelectedSaved ? "Unsave job" : "Save job"}
                   title={isSelectedSaved ? "Unsave job" : "Save job"}
-                  className="h-11 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-12 2xl:text-sm"
+                  className="h-14 rounded-md border border-border bg-transparent px-4 text-sm font-bold text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-16 2xl:text-base"
                   onClick={() => toggleSaved(selectedJob.id)}
                 >
-                  <Heart className={cn("h-[18px] w-[18px] 2xl:h-5 2xl:w-5", isSelectedSaved && "fill-accent text-accent")} />
+                  <Heart className={cn("h-6 w-6 2xl:h-7 2xl:w-7", isSelectedSaved && "fill-accent text-accent")} />
                   {isSelectedSaved ? "Saved" : "Save"}
                 </Button>
                 <Button
@@ -4004,10 +4065,10 @@ export default function HomePage() {
                   variant="ghost"
                   aria-label="Share job"
                   title="Share job"
-                  className="h-11 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-12 2xl:text-sm"
+                  className="h-14 rounded-md border border-border bg-transparent px-4 text-sm font-bold text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-16 2xl:text-base"
                   onClick={() => navigator.clipboard?.writeText(`${selectedJob.title} at ${selectedJob.company}`)}
                 >
-                  <Share2 className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
+                  <Share2 className="h-5 w-5 2xl:h-6 2xl:w-6" />
                   Share
                 </Button>
                 <Button
@@ -4015,10 +4076,10 @@ export default function HomePage() {
                   variant="ghost"
                   aria-label={selectedJob.archived ? "Restore job" : "Archive job"}
                   title={selectedJob.archived ? "Restore job" : "Archive job"}
-                  className="h-11 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-12 2xl:text-sm"
+                  className="h-14 rounded-md border border-border bg-transparent px-4 text-sm font-bold text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-16 2xl:text-base"
                   onClick={() => updateJobArchiveState(selectedJob, !selectedJob.archived)}
                 >
-                  {selectedJob.archived ? <ArchiveRestore className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" /> : <Archive className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />}
+                  {selectedJob.archived ? <ArchiveRestore className="h-5 w-5 2xl:h-6 2xl:w-6" /> : <Archive className="h-5 w-5 2xl:h-6 2xl:w-6" />}
                   {selectedJob.archived ? "Restore" : "Archive"}
                 </Button>
                 <Button
@@ -4026,10 +4087,10 @@ export default function HomePage() {
                   variant="ghost"
                   aria-label="Delete job"
                   title="Delete job"
-                  className="h-11 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#ff5d5d] hover:border-[#d94d4d]/55 hover:bg-[#d94d4d]/12 2xl:h-12 2xl:text-sm"
+                  className="h-14 rounded-md border border-border bg-transparent px-4 text-sm font-bold text-[#ff5d5d] hover:border-[#d94d4d]/55 hover:bg-[#d94d4d]/12 2xl:h-16 2xl:text-base"
                   onClick={() => deleteJob(selectedJob)}
                 >
-                  <Trash2 className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
+                  <Trash2 className="h-5 w-5 2xl:h-6 2xl:w-6" />
                   Remove
                 </Button>
               </div>

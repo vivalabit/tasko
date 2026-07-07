@@ -7,7 +7,10 @@
     "dev:web": "pnpm --filter @tasko/web dev",
     "build:web": "pnpm --filter @tasko/web build",
     "lint:web": "pnpm --filter @tasko/web lint",
-    "typecheck:web": "pnpm --filter @tasko/web typecheck"
+    "typecheck:web": "pnpm --filter @tasko/web typecheck",
+    "docker:up": "docker compose up --build",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f"
   },
   "devDependencies": {
     "prettier": "^3.5.3"
