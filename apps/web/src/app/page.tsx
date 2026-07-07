@@ -193,6 +193,8 @@ type JobFilterKey = "location" | "remote" | "salary" | "experience" | "type" | "
 
 type JobFilters = Record<JobFilterKey, string>;
 
+type JobSortBy = "AI Match" | "Time" | "Salary";
+
 type ParserSearchConfig = {
   id: string;
   name: string;
@@ -499,6 +501,8 @@ const matchFilterOptions = [
   { value: "80", label: "80%+" },
   { value: "90", label: "90%+" },
 ];
+
+const jobSortOptions: JobSortBy[] = ["AI Match", "Time", "Salary"];
 
 const defaultUiSettings: UiSettings = {
   showLogs: false,
@@ -1906,6 +1910,41 @@ function getJobSalaryAmount(job: Job) {
   return parseSalaryAmount(job.salaryAverage) || parseSalaryAmount(job.salaryMax) || parseSalaryAmount(job.salary);
 }
 
+function getRelativePostedTime(value: string) {
+  const normalizedValue = value.trim().toLowerCase();
+  const relativeMatch = normalizedValue.match(/^(\d+)\s*([hdw])(?:\s+ago)?$/);
+  if (!relativeMatch) return 0;
+
+  const amount = Number.parseInt(relativeMatch[1], 10);
+  const unit = relativeMatch[2];
+  const multiplier = unit === "h" ? 60 * 60 * 1000 : unit === "d" ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+
+  return Date.now() - amount * multiplier;
+}
+
+function getJobPostedTime(job: Job) {
+  const parsedDate = Date.parse(job.posted);
+  if (!Number.isNaN(parsedDate)) return parsedDate;
+
+  return getRelativePostedTime(job.posted);
+}
+
+function formatJobPosted(value: string) {
+  const parsedDate = Date.parse(value);
+  if (!Number.isNaN(parsedDate)) {
+    return new Intl.DateTimeFormat("de-CH", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(parsedDate));
+  }
+
+  return value.replace(/^(\d+)h ago$/i, "$1 hours ago").replace(/^(\d+)d ago$/i, "$1 days ago");
+}
+
 function getJobExperienceYears(job: Job) {
   const normalizedExperience = job.experience.toLowerCase();
   const explicitYears = normalizedExperience.match(/\d+/)?.[0];
@@ -2013,7 +2052,7 @@ export default function HomePage() {
   const [applicationEvents, setApplicationEvents] = useState<ApplicationEvent[]>([]);
   const [areApplicationEventsLoaded, setAreApplicationEventsLoaded] = useState(false);
   const [jobFilters, setJobFilters] = useState<JobFilters>(defaultJobFilters);
-  const [sortBy, setSortBy] = useState("Best Match");
+  const [sortBy, setSortBy] = useState<JobSortBy>("AI Match");
   const [alertsEnabled, setAlertsEnabled] = useState(false);
   const [isParserDialogOpen, setIsParserDialogOpen] = useState(false);
   const [parserSearchStatus, setParserSearchStatus] = useState<ParserSearchStatus>("idle");
@@ -2122,11 +2161,9 @@ export default function HomePage() {
       : jobsForCurrentMode;
 
     return [...results].sort((a, b) => {
-      if (sortBy === "Newest") return a.posted.localeCompare(b.posted);
+      if (sortBy === "Time") return getJobPostedTime(b) - getJobPostedTime(a);
       if (sortBy === "Salary") {
-        const aSalary = Number.parseInt(a.salaryAverage.replace(/\D/g, ""), 10) || 0;
-        const bSalary = Number.parseInt(b.salaryAverage.replace(/\D/g, ""), 10) || 0;
-        return bSalary - aSalary;
+        return getJobSalaryAmount(b) - getJobSalaryAmount(a);
       }
       return b.match - a.match;
     });
@@ -4113,28 +4150,35 @@ export default function HomePage() {
               onClick={() => {
                 setQuery("");
                 setJobFilters(defaultJobFilters);
-                setSortBy("Best Match");
+                setSortBy("AI Match");
                 setSelectedJobId("");
                 setActiveTab("Overview");
               }}
               className={cn(
                 "inline-flex h-9 items-center rounded-md border border-border bg-white/[0.09] px-4 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.13] 2xl:h-10 2xl:px-5 2xl:text-sm",
-                (query || hasActiveJobFilters(jobFilters) || sortBy !== "Best Match") && "border-accent/60 text-white",
+                (query || hasActiveJobFilters(jobFilters) || sortBy !== "AI Match") && "border-accent/60 text-white",
               )}
             >
               Reset
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setSortBy((current) => (current === "Best Match" ? "Newest" : current === "Newest" ? "Salary" : "Best Match"))}
-            className="inline-flex h-9 w-fit items-center gap-2 whitespace-nowrap rounded-md bg-white/[0.045] px-3 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.08] 2xl:h-10 2xl:px-4 2xl:text-sm"
-          >
+          <label className="relative inline-flex h-9 w-fit min-w-[164px] items-center gap-2 whitespace-nowrap rounded-md bg-white/[0.045] px-3 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.08] 2xl:h-10 2xl:min-w-[184px] 2xl:px-4 2xl:text-sm">
             <SlidersHorizontal className="h-3.5 w-3.5 text-muted 2xl:h-4 2xl:w-4" />
-            Sort by: {sortBy}
-            <ChevronDown className="h-3.5 w-3.5 text-muted 2xl:h-4 2xl:w-4" />
-          </button>
+            <select
+              aria-label="Sort jobs"
+              value={sortBy}
+              onChange={(event) => setSortBy(event.target.value as JobSortBy)}
+              className="h-full min-w-0 flex-1 appearance-none bg-transparent pr-6 font-semibold outline-none"
+            >
+              {jobSortOptions.map((option) => (
+                <option key={option} value={option}>
+                  Sort by: {option}
+                </option>
+              ))}
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-3 h-3.5 w-3.5 text-muted 2xl:right-4 2xl:h-4 2xl:w-4" />
+          </label>
         </div>
 
         <div className="mt-3 grid min-h-0 flex-1 gap-3 xl:grid-cols-[350px_minmax(0,1fr)] 2xl:mt-4 2xl:grid-cols-[420px_minmax(0,1fr)] 2xl:gap-4">
@@ -4166,7 +4210,7 @@ export default function HomePage() {
                       {job.location} <span className="text-white/30">•</span> {job.type}
                     </p>
                     <p className="mt-1.5 text-xs text-muted 2xl:mt-2 2xl:text-sm">
-                      {job.salary} <span className="mx-2 text-white/15">|</span> {job.posted}
+                      {job.salary} <span className="mx-2 text-white/15">|</span> {formatJobPosted(job.posted)}
                     </p>
                     {job.archived && (
                       <p className="mt-1.5 inline-flex w-fit items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] font-bold text-muted">
@@ -6084,7 +6128,7 @@ function DashboardView({ onOpenJobs }: { onOpenJobs: () => void }) {
                   </div>
                   <div className="hidden text-left sm:block">
                     <p className="text-xs font-semibold text-success 2xl:text-sm">{job.match}% match</p>
-                    <p className="mt-0.5 text-xs text-muted 2xl:mt-1">{job.posted}</p>
+                    <p className="mt-0.5 text-xs text-muted 2xl:mt-1">{formatJobPosted(job.posted)}</p>
                   </div>
                   <Bookmark className="h-[18px] w-[18px] text-muted 2xl:h-5 2xl:w-5" />
                 </button>
@@ -8873,7 +8917,7 @@ function SalaryInsights({ job }: { job: Job }) {
 
 function JobDetails({ job }: { job: Job }) {
   const details = [
-    ["Posted", job.posted.replace("h", " hours").replace("d", " days")],
+    ["Posted", formatJobPosted(job.posted)],
     ["Job Type", job.type],
     ["Experience", job.experience],
     ["Location", job.location],
