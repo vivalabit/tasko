@@ -25,7 +25,6 @@ import {
   Github,
   GraduationCap,
   Globe,
-  Heart,
   Home,
   KeyRound,
   Linkedin,
@@ -1958,20 +1957,24 @@ function formatJobPosted(value: string) {
 function formatJobPostedCompact(value: string) {
   const parsedDate = Date.parse(value);
   if (!Number.isNaN(parsedDate)) {
-    const date = new Intl.DateTimeFormat("de-CH", {
-      day: "2-digit",
-      month: "2-digit",
-    }).format(new Date(parsedDate));
+    const parsedDateValue = new Date(parsedDate);
+    const day = parsedDateValue.getDate().toString().padStart(2, "0");
+    const month = (parsedDateValue.getMonth() + 1).toString().padStart(2, "0");
+    const date = `${day}.${month}`;
     const time = new Intl.DateTimeFormat("de-CH", {
       hour: "2-digit",
       minute: "2-digit",
       hour12: false,
-    }).format(new Date(parsedDate));
+    }).format(parsedDateValue);
 
     return `${date} • ${time}`;
   }
 
   return formatJobPosted(value);
+}
+
+function formatJobLocationCompact(value: string) {
+  return value.split(",")[0]?.trim() || value;
 }
 
 function getJobExperienceYears(job: Job) {
@@ -4145,7 +4148,7 @@ export default function HomePage() {
                 setActiveTab("Overview");
               }}
             >
-              <Heart className={cn("h-[18px] w-[18px] 2xl:h-5 2xl:w-5", (showSavedJobs || savedJobsCount > 0) && "fill-accent text-accent")} />
+              <Bookmark className={cn("h-[18px] w-[18px] 2xl:h-5 2xl:w-5", (showSavedJobs || savedJobsCount > 0) && "fill-accent text-accent")} />
               Saved Jobs {savedJobsCount > 0 ? `(${savedJobsCount})` : ""}
             </Button>
             <Button
@@ -4299,7 +4302,7 @@ export default function HomePage() {
                     <div className="grid gap-1.5 text-xs font-semibold text-muted sm:grid-cols-[minmax(0,1fr)_auto] 2xl:gap-2 2xl:text-sm">
                       <p className="flex min-w-0 flex-nowrap items-center gap-x-1.5">
                         <MapPin className="h-3.5 w-3.5 shrink-0 2xl:h-4 2xl:w-4" />
-                        <span className="truncate">{job.location}</span>
+                        <span className="truncate">{formatJobLocationCompact(job.location)}</span>
                         <span className="text-white/25">•</span>
                         <span className="shrink-0 capitalize">{job.type}</span>
                       </p>
@@ -4338,14 +4341,21 @@ export default function HomePage() {
                   <Button
                     className={cn(
                       "h-12 rounded-md border bg-transparent px-3 text-sm font-bold xl:px-4 xl:text-[15px] 2xl:h-[54px] 2xl:text-lg",
+                      selectedJobApplication && "gap-1 px-2 text-[10px] shadow-none xl:px-2 xl:text-[10px] 2xl:gap-1.5 2xl:px-3 2xl:text-sm",
                       selectedJobApplication
-                        ? "border-success/40 text-success hover:bg-success/12"
+                        ? "border-border text-[#c7ced9] hover:bg-white/[0.045] hover:text-white"
                         : "border-accent/70 text-accent hover:bg-accent/12",
                     )}
-                    onClick={() => markJobApplied(selectedJob)}
+                    onClick={() => {
+                      if (selectedJobApplication) {
+                        deleteApplication(selectedJobApplication.id);
+                      } else {
+                        markJobApplied(selectedJob);
+                      }
+                    }}
                   >
-                    <Check className="h-5 w-5 2xl:h-6 2xl:w-6" />
-                    {selectedJobApplication ? "In Applications" : "Mark as Applied"}
+                    {selectedJobApplication ? <X className="h-3.5 w-3.5 2xl:h-4 2xl:w-4" /> : <Check className="h-5 w-5 2xl:h-6 2xl:w-6" />}
+                    {selectedJobApplication ? "Remove from Applications" : "Mark as Applied"}
                   </Button>
                   <Button
                     variant="ghost"
@@ -4364,16 +4374,16 @@ export default function HomePage() {
 
               <div className="h-px bg-border" />
 
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 2xl:gap-3">
                 <Button
                   type="button"
                   variant="ghost"
                   aria-label={isSelectedSaved ? "Unsave job" : "Save job"}
                   title={isSelectedSaved ? "Unsave job" : "Save job"}
-                  className="h-14 rounded-md border border-border bg-transparent px-4 text-sm font-bold text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-16 2xl:text-base"
+                  className="h-10 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#d8dee8] hover:bg-white/[0.055] 2xl:h-11 2xl:text-sm"
                   onClick={() => toggleSaved(selectedJob.id)}
                 >
-                  <Heart className={cn("h-6 w-6 2xl:h-7 2xl:w-7", isSelectedSaved && "fill-accent text-accent")} />
+                  <Bookmark className={cn("h-4 w-4 2xl:h-[18px] 2xl:w-[18px]", isSelectedSaved && "fill-accent text-accent")} />
                   {isSelectedSaved ? "Saved" : "Save"}
                 </Button>
                 <Button
@@ -4381,10 +4391,10 @@ export default function HomePage() {
                   variant="ghost"
                   aria-label="Share job"
                   title="Share job"
-                  className="h-14 rounded-md border border-border bg-transparent px-4 text-sm font-bold text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-16 2xl:text-base"
+                  className="h-10 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#d8dee8] hover:bg-white/[0.055] 2xl:h-11 2xl:text-sm"
                   onClick={() => navigator.clipboard?.writeText(`${selectedJob.title} at ${selectedJob.company}`)}
                 >
-                  <Share2 className="h-5 w-5 2xl:h-6 2xl:w-6" />
+                  <Share2 className="h-4 w-4 2xl:h-[18px] 2xl:w-[18px]" />
                   Share
                 </Button>
                 <Button
@@ -4392,10 +4402,10 @@ export default function HomePage() {
                   variant="ghost"
                   aria-label={selectedJob.archived ? "Restore job" : "Archive job"}
                   title={selectedJob.archived ? "Restore job" : "Archive job"}
-                  className="h-14 rounded-md border border-border bg-transparent px-4 text-sm font-bold text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-16 2xl:text-base"
+                  className="h-10 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#d8dee8] hover:bg-white/[0.055] 2xl:h-11 2xl:text-sm"
                   onClick={() => updateJobArchiveState(selectedJob, !selectedJob.archived)}
                 >
-                  {selectedJob.archived ? <ArchiveRestore className="h-5 w-5 2xl:h-6 2xl:w-6" /> : <Archive className="h-5 w-5 2xl:h-6 2xl:w-6" />}
+                  {selectedJob.archived ? <ArchiveRestore className="h-4 w-4 2xl:h-[18px] 2xl:w-[18px]" /> : <Archive className="h-4 w-4 2xl:h-[18px] 2xl:w-[18px]" />}
                   {selectedJob.archived ? "Restore" : "Archive"}
                 </Button>
                 <Button
@@ -4403,11 +4413,11 @@ export default function HomePage() {
                   variant="ghost"
                   aria-label="Delete job"
                   title="Delete job"
-                  className="h-14 rounded-md border border-border bg-transparent px-4 text-sm font-bold text-[#ff5d5d] hover:border-[#d94d4d]/55 hover:bg-[#d94d4d]/12 2xl:h-16 2xl:text-base"
+                  className="h-10 rounded-md border border-border bg-transparent px-3 text-xs font-semibold text-[#ff6b6b] hover:border-[#d94d4d]/55 hover:bg-[#d94d4d]/12 2xl:h-11 2xl:text-sm"
                   onClick={() => deleteJob(selectedJob)}
                 >
-                  <Trash2 className="h-5 w-5 2xl:h-6 2xl:w-6" />
-                  Remove
+                  <Trash2 className="h-4 w-4 2xl:h-[18px] 2xl:w-[18px]" />
+                  Delete
                 </Button>
               </div>
             </div>
@@ -9038,17 +9048,42 @@ function InfoStat({ label, value }: { label: string; value: string }) {
 
 function JobMatchRing({ match }: { match: number }) {
   const normalizedMatch = Math.max(0, Math.min(100, match));
+  const ringColor = normalizedMatch >= 85 ? "#52c7a2" : normalizedMatch >= 70 ? "#f0b75a" : "#e56b6f";
+  const radius = 19;
+  const strokeWidth = 5;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference * (1 - normalizedMatch / 100);
 
   return (
-    <div
-      className="grid h-10 w-10 shrink-0 place-items-center rounded-full 2xl:h-14 2xl:w-14"
-      style={{ background: `conic-gradient(#52c7a2 ${normalizedMatch}%, rgba(255,255,255,0.08) 0)` }}
-      aria-label={`${match}% AI match`}
-      title={`${match}% match`}
-    >
-      <div className="grid h-8 w-8 place-items-center rounded-full bg-[#171a21] text-xs font-black text-white 2xl:h-[44px] 2xl:w-[44px] 2xl:text-base">
-        {match}%
-      </div>
+    <div className="h-10 w-10 shrink-0 2xl:h-14 2xl:w-14" aria-label={`${match}% AI match`} title={`${match}% match`}>
+      <svg className="block h-full w-full" viewBox="0 0 48 48" aria-hidden="true">
+        <circle cx="24" cy="24" r="14.5" fill="#171a21" />
+        <circle cx="24" cy="24" r={radius} fill="none" stroke="rgba(255,255,255,0.10)" strokeWidth={strokeWidth} />
+        <circle
+          cx="24"
+          cy="24"
+          r={radius}
+          fill="none"
+          stroke={ringColor}
+          strokeWidth={strokeWidth}
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+          strokeLinecap="round"
+          transform="rotate(-90 24 24)"
+        />
+        <text
+          x="24"
+          y="24"
+          fill="white"
+          fontSize="13"
+          fontWeight="900"
+          textAnchor="middle"
+          dominantBaseline="central"
+          letterSpacing="-0.2"
+        >
+          {normalizedMatch}%
+        </text>
+      </svg>
     </div>
   );
 }
