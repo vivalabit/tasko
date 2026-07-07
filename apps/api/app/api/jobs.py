@@ -1,13 +1,14 @@
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.database import get_db
 from app.core.settings import Settings, get_settings
-from app.models.jobs import StoredJobPayload, StoredJobRecord, StoredJobsRequest
+from app.models.jobs import AiMatchJobStatus, StoredJobPayload, StoredJobRecord, StoredJobsRequest
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.ai_match import calculate_ai_matches
+from app.services.ai_match_jobs import ai_match_jobs
 
 router = APIRouter()
 
@@ -86,6 +87,46 @@ def match_jobs(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Jobs database is unavailable",
         ) from exc
+
+
+@router.post("/ai-match/run", response_model=AiMatchJobStatus, status_code=status.HTTP_202_ACCEPTED)
+def run_match_jobs(
+    request: StoredJobsRequest,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> AiMatchJobStatus:
+    try:
+        profile_record = db.get(ProfileRecord, "default")
+        profile = (
+            ProfilePayload.model_validate(profile_record.data)
+            if profile_record
+            else ProfilePayload()
+        )
+        session_factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False)
+        started, current_status = ai_match_jobs.start(
+            profile=profile,
+            jobs=[job.data for job in request.jobs],
+            settings=settings,
+            session_factory=session_factory,
+        )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Jobs database is unavailable",
+        ) from exc
+
+    if not started:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="AI match job is already running",
+        )
+
+    return current_status
+
+
+@router.get("/ai-match/status", response_model=AiMatchJobStatus)
+def get_match_jobs_status() -> AiMatchJobStatus:
+    return ai_match_jobs.status()
 
 
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)

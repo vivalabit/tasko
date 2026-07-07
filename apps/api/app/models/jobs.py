@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, String
@@ -21,3 +21,14 @@ class StoredJobPayload(BaseModel):
 
 class StoredJobsRequest(BaseModel):
     jobs: list[StoredJobPayload] = Field(default_factory=list)
+
+
+class AiMatchJobStatus(BaseModel):
+    run_id: str = Field(default="", alias="runId")
+    status: Literal["idle", "queued", "running", "completed", "failed"] = "idle"
+    total: int = 0
+    processed: int = 0
+    updated_jobs: list[StoredJobPayload] = Field(default_factory=list, alias="updatedJobs")
+    error: str | None = None
+
+    model_config = {"populate_by_name": True}

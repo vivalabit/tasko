@@ -1,4 +1,5 @@
 import json
+import time
 from collections.abc import Generator
 
 from fastapi.testclient import TestClient
@@ -141,6 +142,89 @@ def test_ai_match_endpoint_updates_and_persists_job_scores() -> None:
         assert payload["match"] != 50
         assert payload["aiMatch"]["source"] == "local"
         assert payload["aiMatch"]["cacheKey"]
+        assert read_response.json()[0]["data"]["aiMatch"]["score"] == payload["match"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ai_match_run_endpoint_updates_status_and_persists_job_scores() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        db = testing_session_local()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_ai_match_enabled=False)
+    client = TestClient(app)
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                ProfileRecord(
+                    id="default",
+                    data=ProfilePayload(
+                        current_role="Machine Learning Engineer",
+                        desired_role="ML Software Engineer",
+                        location="Zurich",
+                        skills="Python\nMachine Learning\nPyTorch",
+                        job_preferences=json.dumps({"locations": ["Zurich"], "work_formats": ["Hybrid"]}),
+                    ).model_dump(),
+                )
+            )
+            db.commit()
+
+        job = {
+            "id": "linkedin-async-ml-engineer",
+            "company": "Google",
+            "title": "XR Audio Face Tracking ML Software Engineer",
+            "location": "Zurich",
+            "type": "Full-Time",
+            "salary": "Not specified",
+            "posted": "LinkedIn",
+            "experience": "Mid-Senior level",
+            "department": "LinkedIn import",
+            "match": 50,
+            "logo": "linkedin",
+            "overview": "Work on machine learning systems using Python and PyTorch.",
+            "responsibilities": ["Build ML systems"],
+            "requirements": ["Python", "Machine Learning"],
+            "skills": ["Python", "Machine Learning"],
+        }
+
+        run_response = client.post(
+            "/jobs/ai-match/run",
+            json={"jobs": [{"id": job["id"], "data": job}]},
+        )
+
+        assert run_response.status_code == 202
+        assert run_response.json()["status"] in {"queued", "running"}
+
+        status_payload = {}
+        for _ in range(20):
+            status_response = client.get("/jobs/ai-match/status")
+            assert status_response.status_code == 200
+            status_payload = status_response.json()
+            if status_payload["status"] == "completed":
+                break
+            time.sleep(0.05)
+
+        assert status_payload["status"] == "completed"
+        assert status_payload["processed"] == status_payload["total"] == 1
+        payload = status_payload["updatedJobs"][0]["data"]
+        assert payload["match"] != 50
+        assert payload["aiMatch"]["source"] == "local"
+
+        read_response = client.get("/jobs")
         assert read_response.json()[0]["data"]["aiMatch"]["score"] == payload["match"]
     finally:
         app.dependency_overrides.clear()

@@ -1,0 +1,182 @@
+from __future__ import annotations
+
+import threading
+from collections.abc import Callable
+from typing import Any
+from uuid import uuid4
+
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from app.core.settings import Settings
+from app.models.jobs import AiMatchJobStatus, StoredJobPayload, StoredJobRecord
+from app.models.profile import ProfilePayload
+from app.services.ai_match import calculate_ai_matches, select_openclaw_candidates
+
+SessionFactory = Callable[[], Session]
+
+
+class AiMatchJobManager:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._status = AiMatchJobStatus()
+
+    def start(
+        self,
+        *,
+        profile: ProfilePayload,
+        jobs: list[dict[str, Any]],
+        settings: Settings,
+        session_factory: SessionFactory,
+    ) -> tuple[bool, AiMatchJobStatus]:
+        with self._lock:
+            if self._status.status in {"queued", "running"}:
+                return False, self._status.model_copy(deep=True)
+
+            run_id = uuid4().hex
+            self._status = AiMatchJobStatus(
+                runId=run_id,
+                status="queued",
+                total=len(jobs),
+                processed=0,
+                updatedJobs=[],
+            )
+
+        thread = threading.Thread(
+            target=self._run,
+            kwargs={
+                "run_id": run_id,
+                "profile": profile,
+                "jobs": jobs,
+                "settings": settings,
+                "session_factory": session_factory,
+            },
+            daemon=True,
+        )
+        thread.start()
+        return True, self.status()
+
+    def status(self) -> AiMatchJobStatus:
+        with self._lock:
+            return self._status.model_copy(deep=True)
+
+    def _run(
+        self,
+        *,
+        run_id: str,
+        profile: ProfilePayload,
+        jobs: list[dict[str, Any]],
+        settings: Settings,
+        session_factory: SessionFactory,
+    ) -> None:
+        self._update(run_id, status="running")
+        local_jobs: list[dict[str, Any]] = []
+
+        try:
+            for job in jobs:
+                matched_job = calculate_ai_matches(
+                    profile,
+                    [job],
+                    command=settings.openclaw_command,
+                    agent_id=settings.openclaw_agent_id,
+                    thinking=settings.openclaw_ai_match_thinking,
+                    timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
+                    openclaw_enabled=False,
+                    openclaw_max_jobs=0,
+                )
+                if not matched_job:
+                    self._increment(run_id)
+                    continue
+
+                local_job = matched_job[0]
+                local_jobs.append(local_job)
+                self._persist_job(session_factory, local_job)
+                self._append_update(run_id, local_job)
+
+            openclaw_candidates = (
+                select_openclaw_candidates(local_jobs, settings.openclaw_ai_match_max_jobs)
+                if settings.openclaw_ai_match_enabled
+                else []
+            )
+            if openclaw_candidates:
+                self._add_total(run_id, len(openclaw_candidates))
+
+            for job in openclaw_candidates:
+                matched_job = calculate_ai_matches(
+                    profile,
+                    [job],
+                    command=settings.openclaw_command,
+                    agent_id=settings.openclaw_agent_id,
+                    thinking=settings.openclaw_ai_match_thinking,
+                    timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
+                    openclaw_enabled=True,
+                    openclaw_max_jobs=1,
+                )
+                if not matched_job:
+                    self._increment(run_id)
+                    continue
+
+                openclaw_job = matched_job[0]
+                self._persist_job(session_factory, openclaw_job)
+                self._append_update(run_id, openclaw_job)
+
+            self._update(run_id, status="completed")
+        except Exception as exc:
+            self._update(run_id, status="failed", error=str(exc)[:240])
+
+    def _persist_job(self, session_factory: SessionFactory, job: dict[str, Any]) -> None:
+        job_id = str(job.get("id") or "")
+        if not job_id:
+            return
+
+        db = session_factory()
+        try:
+            record = db.get(StoredJobRecord, job_id)
+            if record:
+                record.data = job
+            else:
+                db.add(StoredJobRecord(id=job_id, data=job))
+            db.commit()
+        except SQLAlchemyError:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def _append_update(self, run_id: str, job: dict[str, Any]) -> None:
+        job_id = str(job.get("id") or "")
+        if not job_id:
+            self._increment(run_id)
+            return
+
+        payload = StoredJobPayload(id=job_id, data=job)
+        with self._lock:
+            if self._status.run_id != run_id:
+                return
+
+            updates = [item for item in self._status.updated_jobs if item.id != job_id]
+            updates.append(payload)
+            self._status.updated_jobs = updates
+            self._status.processed = min(self._status.total, self._status.processed + 1)
+
+    def _increment(self, run_id: str) -> None:
+        with self._lock:
+            if self._status.run_id != run_id:
+                return
+            self._status.processed = min(self._status.total, self._status.processed + 1)
+
+    def _add_total(self, run_id: str, amount: int) -> None:
+        with self._lock:
+            if self._status.run_id != run_id:
+                return
+            self._status.total += amount
+
+    def _update(self, run_id: str, **changes: Any) -> None:
+        with self._lock:
+            if self._status.run_id != run_id:
+                return
+            for key, value in changes.items():
+                setattr(self._status, key, value)
+
+
+ai_match_jobs = AiMatchJobManager()

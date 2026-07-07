@@ -96,6 +96,15 @@ type Job = {
   aiMatch?: AiMatchMetadata;
 };
 
+type AiMatchJobStatus = {
+  runId: string;
+  status: "idle" | "queued" | "running" | "completed" | "failed";
+  total: number;
+  processed: number;
+  updatedJobs: Array<{ id: string; data: unknown }>;
+  error?: string | null;
+};
+
 type ApplicationStatus = "applied" | "interview" | "assessment" | "offer" | "rejected";
 type ApplicationEventType = "screening" | "interview" | "assessment" | "follow_up" | "offer_deadline";
 type ApplicationEventStatus = "scheduled" | "completed" | "canceled";
@@ -455,6 +464,8 @@ const applicationEventOutcomes: Array<{ outcome: ApplicationEventOutcome; label:
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const snapshotPollDelayMs = 4000;
 const snapshotPollMaxAttempts = 30;
+const aiMatchStatusPollDelayMs = 2500;
+const aiMatchStatusPollMaxAttempts = 720;
 const importedJobsStorageKey = "tasko.importedJobs.v1";
 const aiMatchRunStorageKey = "tasko.aiMatchRun.v1";
 const savedJobIdsStorageKey = "tasko.savedJobIds.v1";
@@ -2644,8 +2655,7 @@ export default function HomePage() {
     const runSignature = `${aiMatchProfileSignature}:${importedJobSignature}`;
     if (window.localStorage.getItem(aiMatchRunStorageKey) === runSignature) return;
 
-    window.localStorage.setItem(aiMatchRunStorageKey, runSignature);
-    void refreshAiMatches(jobList.filter(isImportedJob));
+    void refreshAiMatches(jobList.filter(isImportedJob), runSignature);
   }, [aiMatchProfileSignature, importedJobSignature, isProfileLoaded, jobList]);
 
   function changeView(view: View) {
@@ -3972,11 +3982,22 @@ export default function HomePage() {
     }
   }
 
-  async function refreshAiMatches(jobsToMatch: Job[]) {
-    if (jobsToMatch.length === 0) return;
+  function applyAiMatchStatus(status: AiMatchJobStatus) {
+    const matchedJobs = normalizeStoredJobs(status.updatedJobs.map((job) => job.data));
+    if (matchedJobs.length === 0) return;
+
+    setJobList((currentJobs) => {
+      const nextJobs = mergeJobs(matchedJobs, currentJobs);
+      window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(nextJobs.filter(isImportedJob)));
+      return nextJobs;
+    });
+  }
+
+  async function refreshAiMatches(jobsToMatch: Job[], runSignature?: string) {
+    if (jobsToMatch.length === 0) return false;
 
     try {
-      const response = await fetch(`${apiBaseUrl}/jobs/ai-match`, {
+      const response = await fetch(`${apiBaseUrl}/jobs/ai-match/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3984,20 +4005,43 @@ export default function HomePage() {
         }),
       });
 
-      if (!response.ok) return;
+      if (response.status === 409) {
+        return pollAiMatchStatus();
+      }
 
-      const payload = (await response.json()) as Array<{ id: string; data: unknown }>;
-      const matchedJobs = normalizeStoredJobs(payload.map((job) => job.data));
-      if (matchedJobs.length === 0) return;
+      if (!response.ok) return false;
 
-      setJobList((currentJobs) => {
-        const nextJobs = mergeJobs(matchedJobs, currentJobs);
-        window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(nextJobs.filter(isImportedJob)));
-        return nextJobs;
-      });
+      if (runSignature) {
+        window.localStorage.setItem(aiMatchRunStorageKey, runSignature);
+      }
+
+      const startedStatus = (await response.json()) as AiMatchJobStatus;
+      applyAiMatchStatus(startedStatus);
+
+      return pollAiMatchStatus();
     } catch {
       // AI match is progressive enhancement; imported jobs remain usable without it.
+      return false;
     }
+  }
+
+  async function pollAiMatchStatus() {
+    for (let attempt = 0; attempt < aiMatchStatusPollMaxAttempts; attempt += 1) {
+      await wait(aiMatchStatusPollDelayMs);
+
+      const response = await fetch(`${apiBaseUrl}/jobs/ai-match/status`, {
+        cache: "no-store",
+      });
+      if (!response.ok) return false;
+
+      const status = (await response.json()) as AiMatchJobStatus;
+      applyAiMatchStatus(status);
+
+      if (status.status === "completed") return true;
+      if (status.status === "failed" || status.status === "idle") return false;
+    }
+
+    return false;
   }
 
   function addParsedJobsToList(parsedJobs: ParsedJob[]) {
