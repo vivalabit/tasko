@@ -189,6 +189,10 @@ type ParserSearchForm = {
   folder: string;
 };
 
+type JobFilterKey = "location" | "remote" | "salary" | "experience" | "type" | "match";
+
+type JobFilters = Record<JobFilterKey, string>;
+
 type ParserSearchConfig = {
   id: string;
   name: string;
@@ -392,7 +396,6 @@ const jobs: Job[] = [
   },
 ];
 
-const filters = ["Location", "Remote", "Salary", "Experience", "Job Type", "AI Match"];
 const tabs = ["Overview", "Company", "AI Match", "Reviews", "Similar Jobs"];
 type View = "Dashboard" | "Jobs" | "Applications" | "Profile" | "Settings" | "Logs";
 type ParserSearchStatus = "idle" | "loading" | "ready" | "error";
@@ -462,6 +465,40 @@ const defaultParserSearchForm: ParserSearchForm = {
   searchName: "",
   folder: "",
 };
+
+const defaultJobFilters: JobFilters = {
+  location: "Any",
+  remote: "Any",
+  salary: "Any",
+  experience: "Any",
+  type: "Any",
+  match: "Any",
+};
+
+const remoteFilterOptions = [
+  { value: "remote", label: "Remote only" },
+  { value: "hybrid", label: "Hybrid" },
+  { value: "onsite", label: "On-site" },
+];
+
+const salaryFilterOptions = [
+  { value: "listed", label: "Salary listed" },
+  { value: "100000", label: "$100k+" },
+  { value: "120000", label: "$120k+" },
+  { value: "140000", label: "$140k+" },
+];
+
+const experienceFilterOptions = [
+  { value: "entry", label: "Entry / Junior" },
+  { value: "mid", label: "Mid-level" },
+  { value: "senior", label: "Senior+" },
+];
+
+const matchFilterOptions = [
+  { value: "70", label: "70%+" },
+  { value: "80", label: "80%+" },
+  { value: "90", label: "90%+" },
+];
 
 const defaultUiSettings: UiSettings = {
   showLogs: false,
@@ -1848,6 +1885,107 @@ function mergeJobs(importedJobs: Job[], currentJobs: Job[]) {
   return [...importedJobs, ...currentJobs.filter((job) => !importedIds.has(job.id))];
 }
 
+function hasActiveJobFilters(filters: JobFilters) {
+  return Object.values(filters).some((value) => value !== "Any");
+}
+
+function parseSalaryAmount(value: string) {
+  if (!value || value === "N/A") return 0;
+
+  const hasThousandsSuffix = /k/i.test(value);
+  const amounts = value.match(/\d+(?:[,.]\d+)?/g)?.map((amount) => {
+    const normalizedAmount = Number.parseFloat(amount.replace(/,/g, ""));
+    if (Number.isNaN(normalizedAmount)) return 0;
+    return hasThousandsSuffix ? normalizedAmount * 1000 : normalizedAmount;
+  });
+
+  return amounts?.length ? Math.max(...amounts) : 0;
+}
+
+function getJobSalaryAmount(job: Job) {
+  return parseSalaryAmount(job.salaryAverage) || parseSalaryAmount(job.salaryMax) || parseSalaryAmount(job.salary);
+}
+
+function getJobExperienceYears(job: Job) {
+  const normalizedExperience = job.experience.toLowerCase();
+  const explicitYears = normalizedExperience.match(/\d+/)?.[0];
+
+  if (explicitYears) return Number.parseInt(explicitYears, 10);
+  if (normalizedExperience.includes("director") || normalizedExperience.includes("lead") || normalizedExperience.includes("principal")) return 7;
+  if (normalizedExperience.includes("senior")) return 5;
+  if (normalizedExperience.includes("mid")) return 3;
+  if (normalizedExperience.includes("associate")) return 1;
+  if (normalizedExperience.includes("entry") || normalizedExperience.includes("junior") || normalizedExperience.includes("intern")) return 0;
+
+  return null;
+}
+
+function matchesExperienceFilter(job: Job, filter: string) {
+  if (filter === "Any") return true;
+
+  const years = getJobExperienceYears(job);
+  const normalizedExperience = job.experience.toLowerCase();
+
+  if (filter === "entry") {
+    return (
+      (years !== null && years <= 2) ||
+      normalizedExperience.includes("entry") ||
+      normalizedExperience.includes("junior") ||
+      normalizedExperience.includes("associate") ||
+      normalizedExperience.includes("intern")
+    );
+  }
+
+  if (filter === "mid") {
+    return (years !== null && years >= 2 && years < 5) || normalizedExperience.includes("mid");
+  }
+
+  if (filter === "senior") {
+    return (
+      (years !== null && years >= 5) ||
+      normalizedExperience.includes("senior") ||
+      normalizedExperience.includes("director") ||
+      normalizedExperience.includes("lead") ||
+      normalizedExperience.includes("principal")
+    );
+  }
+
+  return true;
+}
+
+function matchesRemoteFilter(job: Job, filter: string) {
+  if (filter === "Any") return true;
+
+  const searchableText = [job.location, job.type, job.overview, job.department].join(" ").toLowerCase();
+
+  if (filter === "remote") return searchableText.includes("remote");
+  if (filter === "hybrid") return searchableText.includes("hybrid");
+  if (filter === "onsite") {
+    return (
+      searchableText.includes("on-site") ||
+      searchableText.includes("onsite") ||
+      searchableText.includes("office") ||
+      (!searchableText.includes("remote") && !searchableText.includes("hybrid"))
+    );
+  }
+
+  return true;
+}
+
+function matchesJobFilters(job: Job, filters: JobFilters) {
+  const salaryAmount = getJobSalaryAmount(job);
+
+  return (
+    (filters.location === "Any" || job.location.toLowerCase().includes(filters.location.toLowerCase())) &&
+    matchesRemoteFilter(job, filters.remote) &&
+    (filters.salary === "Any" ||
+      (filters.salary === "listed" ? salaryAmount > 0 : salaryAmount >= Number.parseInt(filters.salary, 10))) &&
+    matchesExperienceFilter(job, filters.experience) &&
+    (filters.type === "Any" || job.type === filters.type) &&
+    (filters.match === "Any" || job.match >= Number.parseInt(filters.match, 10))
+  );
+}
+
 function mergeSkillLists(currentSkills: string[], importedSkills: string[]) {
   return Array.from(
     new Map(
@@ -1874,7 +2012,7 @@ export default function HomePage() {
   const [areApplicationsLoaded, setAreApplicationsLoaded] = useState(false);
   const [applicationEvents, setApplicationEvents] = useState<ApplicationEvent[]>([]);
   const [areApplicationEventsLoaded, setAreApplicationEventsLoaded] = useState(false);
-  const [activeFilters, setActiveFilters] = useState<string[]>([]);
+  const [jobFilters, setJobFilters] = useState<JobFilters>(defaultJobFilters);
   const [sortBy, setSortBy] = useState("Best Match");
   const [alertsEnabled, setAlertsEnabled] = useState(false);
   const [isParserDialogOpen, setIsParserDialogOpen] = useState(false);
@@ -1941,9 +2079,40 @@ export default function HomePage() {
 
   const archivedJobsCount = useMemo(() => availableJobs.filter((job) => job.archived).length, [availableJobs]);
 
+  const locationFilterOptions = useMemo(
+    () =>
+      Array.from(new Set(availableJobs.map((job) => job.location.trim()).filter(Boolean)))
+        .sort((a, b) => a.localeCompare(b))
+        .map((location) => ({ value: location, label: location })),
+    [availableJobs],
+  );
+
+  const typeFilterOptions = useMemo(
+    () =>
+      Array.from(new Set(availableJobs.map((job) => job.type.trim()).filter(Boolean)))
+        .sort((a, b) => a.localeCompare(b))
+        .map((type) => ({ value: type, label: type })),
+    [availableJobs],
+  );
+
+  const jobFilterControls: Array<{
+    key: JobFilterKey;
+    label: string;
+    options: Array<{ value: string; label: string }>;
+  }> = [
+    { key: "location", label: "Location", options: locationFilterOptions },
+    { key: "remote", label: "Remote", options: remoteFilterOptions },
+    { key: "salary", label: "Salary", options: salaryFilterOptions },
+    { key: "experience", label: "Experience", options: experienceFilterOptions },
+    { key: "type", label: "Job Type", options: typeFilterOptions },
+    { key: "match", label: "AI Match", options: matchFilterOptions },
+  ];
+
   const filteredJobs = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
-    const jobsForCurrentMode = availableJobs.filter((job) => Boolean(job.archived) === showArchivedJobs);
+    const jobsForCurrentMode = availableJobs
+      .filter((job) => Boolean(job.archived) === showArchivedJobs)
+      .filter((job) => matchesJobFilters(job, jobFilters));
     const results = normalizedQuery
       ? jobsForCurrentMode.filter((job) =>
           [job.title, job.company, job.location, job.type, job.salary].some((value) =>
@@ -1961,7 +2130,7 @@ export default function HomePage() {
       }
       return b.match - a.match;
     });
-  }, [availableJobs, query, showArchivedJobs, sortBy]);
+  }, [availableJobs, jobFilters, query, showArchivedJobs, sortBy]);
 
   const selectedJob = filteredJobs.find((job) => job.id === selectedJobId) ?? filteredJobs[0] ?? null;
   const isSelectedSaved = selectedJob ? savedJobs.includes(selectedJob.id) : false;
@@ -2521,8 +2690,10 @@ export default function HomePage() {
     }).catch(() => undefined);
   }
 
-  function toggleFilter(filter: string) {
-    setActiveFilters((current) => (current.includes(filter) ? current.filter((item) => item !== filter) : [...current, filter]));
+  function updateJobFilter(filter: JobFilterKey, value: string) {
+    setJobFilters((current) => ({ ...current, [filter]: value }));
+    setSelectedJobId("");
+    setActiveTab("Overview");
   }
 
   function updateParserSearchForm<Field extends keyof typeof parserSearchForm>(
@@ -3913,28 +4084,43 @@ export default function HomePage() {
 
         <div className="mt-4 flex shrink-0 flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between 2xl:mt-5 2xl:gap-3">
           <div className="flex flex-wrap gap-2">
-            {filters.map((filter) => (
-              <button
-                key={filter}
-                type="button"
-                onClick={() => toggleFilter(filter)}
+            {jobFilterControls.map((filter) => (
+              <label
+                key={filter.key}
                 className={cn(
-                  "inline-flex h-9 items-center gap-2 rounded-md border border-transparent bg-white/[0.055] px-3 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.09] 2xl:h-10 2xl:px-4 2xl:text-sm",
-                  activeFilters.includes(filter) && "border-accent/70 bg-accent/15 text-white",
+                  "relative inline-flex h-9 min-w-[118px] items-center rounded-md border border-transparent bg-white/[0.055] px-3 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.09] 2xl:h-10 2xl:min-w-[136px] 2xl:px-4 2xl:text-sm",
+                  jobFilters[filter.key] !== "Any" && "border-accent/70 bg-accent/15 text-white",
                 )}
               >
-                {filter}
-                <ChevronDown className="h-3.5 w-3.5 text-muted 2xl:h-4 2xl:w-4" />
-              </button>
+                <select
+                  aria-label={filter.label}
+                  value={jobFilters[filter.key]}
+                  onChange={(event) => updateJobFilter(filter.key, event.target.value)}
+                  className="h-full min-w-0 flex-1 appearance-none truncate bg-transparent pr-6 font-semibold outline-none"
+                >
+                  <option value="Any">{filter.label}</option>
+                  {filter.options.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {filter.label}: {option.label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="pointer-events-none absolute right-3 h-3.5 w-3.5 text-muted 2xl:right-4 2xl:h-4 2xl:w-4" />
+              </label>
             ))}
             <button
               type="button"
               onClick={() => {
                 setQuery("");
-                setActiveFilters([]);
+                setJobFilters(defaultJobFilters);
                 setSortBy("Best Match");
+                setSelectedJobId("");
+                setActiveTab("Overview");
               }}
-              className="inline-flex h-9 items-center rounded-md border border-border bg-white/[0.09] px-4 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.13] 2xl:h-10 2xl:px-5 2xl:text-sm"
+              className={cn(
+                "inline-flex h-9 items-center rounded-md border border-border bg-white/[0.09] px-4 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.13] 2xl:h-10 2xl:px-5 2xl:text-sm",
+                (query || hasActiveJobFilters(jobFilters) || sortBy !== "Best Match") && "border-accent/60 text-white",
+              )}
             >
               Reset
             </button>
