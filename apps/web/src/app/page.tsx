@@ -505,6 +505,15 @@ const matchFilterOptions = [
 
 const jobSortOptions: JobSortBy[] = ["AI Match", "Time", "Salary"];
 
+const jobFilterWidths: Record<JobFilterKey, string> = {
+  location: "w-[112px] 2xl:w-[136px]",
+  remote: "w-[96px] 2xl:w-[136px]",
+  salary: "w-[96px] 2xl:w-[136px]",
+  experience: "w-[126px] 2xl:w-[136px]",
+  type: "w-[118px] 2xl:w-[136px]",
+  match: "w-[118px] 2xl:w-[136px]",
+};
+
 const defaultUiSettings: UiSettings = {
   showLogs: false,
 };
@@ -1944,6 +1953,25 @@ function formatJobPosted(value: string) {
   }
 
   return value.replace(/^(\d+)h ago$/i, "$1 hours ago").replace(/^(\d+)d ago$/i, "$1 days ago");
+}
+
+function formatJobPostedCompact(value: string) {
+  const parsedDate = Date.parse(value);
+  if (!Number.isNaN(parsedDate)) {
+    const date = new Intl.DateTimeFormat("de-CH", {
+      day: "2-digit",
+      month: "2-digit",
+    }).format(new Date(parsedDate));
+    const time = new Intl.DateTimeFormat("de-CH", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date(parsedDate));
+
+    return `${date} • ${time}`;
+  }
+
+  return formatJobPosted(value);
 }
 
 function getJobExperienceYears(job: Job) {
@@ -4079,7 +4107,7 @@ export default function HomePage() {
           <LogsView logs={appLogs} onClear={clearAppLogs} />
         ) : (
         <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
-        <header className="grid shrink-0 gap-3 xl:grid-cols-[112px_minmax(260px,520px)_1fr] 2xl:grid-cols-[140px_minmax(280px,560px)_1fr] xl:items-center">
+        <header className="grid shrink-0 gap-2.5 xl:grid-cols-[84px_minmax(240px,440px)_1fr] 2xl:grid-cols-[140px_minmax(280px,560px)_1fr] xl:items-center">
           <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">Jobs</h1>
 
           <label className="flex h-10 min-w-0 items-center gap-2.5 rounded-md border border-border bg-white/[0.075] px-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] focus-within:border-accent/70 2xl:h-12 2xl:px-4">
@@ -4092,9 +4120,9 @@ export default function HomePage() {
             />
           </label>
 
-          <div className="flex flex-wrap gap-2 xl:justify-end">
+          <div className="flex flex-wrap gap-1.5 xl:justify-end 2xl:gap-2">
             <Button
-              className="h-10 rounded-md border border-[#9f7aea]/60 bg-[#7c3aed] px-4 text-[13px] text-white shadow-[0_12px_28px_rgba(124,58,237,0.28)] hover:bg-[#8b5cf6] 2xl:h-12 2xl:px-5 2xl:text-sm"
+              className="h-9 rounded-md border border-[#9f7aea]/60 bg-[#7c3aed] px-3 text-xs text-white shadow-[0_12px_28px_rgba(124,58,237,0.28)] hover:bg-[#8b5cf6] 2xl:h-12 2xl:px-5 2xl:text-sm"
               onClick={() => {
                 setParserSearchStatus("idle");
                 setParserSearchMessage("");
@@ -4107,7 +4135,7 @@ export default function HomePage() {
             <Button
               variant="ghost"
               className={cn(
-                "h-10 rounded-md border border-border bg-white/[0.03] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
+                "h-9 rounded-md border border-border bg-white/[0.03] px-3 text-xs text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
                 showSavedJobs && "border-accent/70 text-white",
               )}
               onClick={() => {
@@ -4123,7 +4151,7 @@ export default function HomePage() {
             <Button
               variant="ghost"
               className={cn(
-                "h-10 rounded-md border border-border bg-white/[0.03] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
+                "h-9 rounded-md border border-border bg-white/[0.03] px-3 text-xs text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
                 showArchivedJobs && "border-accent/70 text-white",
               )}
               onClick={() => {
@@ -4139,7 +4167,7 @@ export default function HomePage() {
             <Button
               variant="ghost"
               className={cn(
-                "h-10 rounded-md border border-border bg-white/[0.03] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
+                "h-9 rounded-md border border-border bg-white/[0.03] px-3 text-xs text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
                 alertsEnabled && "border-accent/70 text-white",
               )}
               onClick={() => setAlertsEnabled((enabled) => !enabled)}
@@ -4150,13 +4178,14 @@ export default function HomePage() {
           </div>
         </header>
 
-        <div className="mt-4 flex shrink-0 flex-col gap-2.5 lg:flex-row lg:items-center lg:justify-between 2xl:mt-5 2xl:gap-3">
-          <div className="flex flex-wrap gap-2">
+        <div className="mt-3 flex shrink-0 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between 2xl:mt-5 2xl:gap-3">
+          <div className="flex flex-wrap gap-1.5 2xl:gap-2">
             {jobFilterControls.map((filter) => (
               <label
                 key={filter.key}
                 className={cn(
-                  "relative inline-flex h-9 min-w-[118px] items-center rounded-md border border-transparent bg-white/[0.055] px-3 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.09] 2xl:h-10 2xl:min-w-[136px] 2xl:px-4 2xl:text-sm",
+                  "relative inline-flex h-8 items-center rounded-md border border-transparent bg-white/[0.055] px-2.5 text-xs font-semibold text-[#d8dee8] transition hover:bg-white/[0.09] 2xl:h-10 2xl:px-4 2xl:text-sm",
+                  jobFilterWidths[filter.key],
                   jobFilters[filter.key] !== "Any" && "border-accent/70 bg-accent/15 text-white",
                 )}
               >
@@ -4173,7 +4202,7 @@ export default function HomePage() {
                     </option>
                   ))}
                 </select>
-                <ChevronDown className="pointer-events-none absolute right-3 h-3.5 w-3.5 text-muted 2xl:right-4 2xl:h-4 2xl:w-4" />
+                <ChevronDown className="pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-muted 2xl:right-4 2xl:h-4 2xl:w-4" />
               </label>
             ))}
             <button
@@ -4186,7 +4215,7 @@ export default function HomePage() {
                 setActiveTab("Overview");
               }}
               className={cn(
-                "inline-flex h-9 items-center rounded-md border border-border bg-white/[0.09] px-4 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.13] 2xl:h-10 2xl:px-5 2xl:text-sm",
+                "inline-flex h-8 items-center rounded-md border border-border bg-white/[0.09] px-3 text-xs font-semibold text-[#d8dee8] transition hover:bg-white/[0.13] 2xl:h-10 2xl:px-5 2xl:text-sm",
                 (query || hasActiveJobFilters(jobFilters) || sortBy !== "AI Match") && "border-accent/60 text-white",
               )}
             >
@@ -4194,7 +4223,7 @@ export default function HomePage() {
             </button>
           </div>
 
-          <label className="relative inline-flex h-9 w-fit min-w-[164px] items-center gap-2 whitespace-nowrap rounded-md bg-white/[0.045] px-3 text-[13px] font-semibold text-[#d8dee8] transition hover:bg-white/[0.08] 2xl:h-10 2xl:min-w-[184px] 2xl:px-4 2xl:text-sm">
+          <label className="relative inline-flex h-8 w-fit min-w-[146px] items-center gap-1.5 whitespace-nowrap rounded-md bg-white/[0.045] px-2.5 text-xs font-semibold text-[#d8dee8] transition hover:bg-white/[0.08] 2xl:h-10 2xl:min-w-[184px] 2xl:gap-2 2xl:px-4 2xl:text-sm">
             <SlidersHorizontal className="h-3.5 w-3.5 text-muted 2xl:h-4 2xl:w-4" />
             <select
               aria-label="Sort jobs"
@@ -4208,41 +4237,75 @@ export default function HomePage() {
                 </option>
               ))}
             </select>
-            <ChevronDown className="pointer-events-none absolute right-3 h-3.5 w-3.5 text-muted 2xl:right-4 2xl:h-4 2xl:w-4" />
+            <ChevronDown className="pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-muted 2xl:right-4 2xl:h-4 2xl:w-4" />
           </label>
         </div>
 
-        <div className="mt-3 grid min-h-0 flex-1 gap-3 xl:grid-cols-[350px_minmax(0,1fr)] 2xl:mt-4 2xl:grid-cols-[420px_minmax(0,1fr)] 2xl:gap-4">
+        <div className="mt-2.5 grid min-h-0 flex-1 gap-3 xl:grid-cols-[330px_minmax(0,1fr)] 2xl:mt-4 2xl:grid-cols-[420px_minmax(0,1fr)] 2xl:gap-4">
           <aside className="flex min-h-0 flex-col overflow-hidden rounded-md bg-white/[0.02]">
             <p className="shrink-0 px-1 pb-3 pt-3 text-sm font-semibold text-muted 2xl:pb-4 2xl:pt-5 2xl:text-base">
               {filteredJobs.length} {showArchivedJobs ? "archived jobs" : showSavedJobs ? "saved jobs" : "jobs"} found
             </p>
             <div className="job-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 2xl:space-y-3">
               {filteredJobs.map((job) => (
-                <button
+                <article
                   key={job.id}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => {
                     setSelectedJobId(job.id);
                     setActiveTab("Overview");
                   }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    setSelectedJobId(job.id);
+                    setActiveTab("Overview");
+                  }}
                   className={cn(
-                    "grid w-full grid-cols-[46px_minmax(0,1fr)_78px_22px] items-center gap-3 rounded-md border p-3 text-left transition 2xl:grid-cols-[58px_minmax(0,1fr)_96px_26px] 2xl:p-4",
+                    "w-full cursor-pointer rounded-[8px] border p-3 text-left transition 2xl:p-5",
                     selectedJob?.id === job.id
                       ? "border-accent bg-white/[0.055] shadow-[0_0_0_1px_rgba(255,90,0,0.12)]"
-                      : "border-transparent bg-white/[0.035] hover:border-white/[0.13] hover:bg-white/[0.055]",
+                      : "border-border/80 bg-white/[0.035] hover:border-white/[0.16] hover:bg-white/[0.055]",
                   )}
                 >
-                  <CompanyLogo logo={job.logo} />
-                  <div className="min-w-0">
-                    <h2 className="truncate text-sm font-bold text-white 2xl:text-base">{job.title}</h2>
-                    <p className="mt-0.5 text-xs font-semibold text-[#cdd4df] 2xl:mt-1 2xl:text-sm">{job.company}</p>
-                    <p className="mt-0.5 text-xs text-muted 2xl:mt-1 2xl:text-sm">
-                      {job.location} <span className="text-white/30">•</span> {job.type}
-                    </p>
-                    <p className="mt-1.5 text-xs text-muted 2xl:mt-2 2xl:text-sm">
-                      {job.salary} <span className="mx-2 text-white/15">|</span> {formatJobPosted(job.posted)}
-                    </p>
+                  <div className="grid grid-cols-[42px_minmax(0,1fr)_50px] gap-2.5 2xl:grid-cols-[64px_minmax(0,1fr)_66px] 2xl:gap-4">
+                    <CompanyLogo logo={job.logo} compact />
+                    <div className="min-w-0 pt-0.5">
+                      <h2 className="line-clamp-2 text-[13px] font-bold leading-tight text-white 2xl:text-lg">{job.title}</h2>
+                      <p className="mt-0.5 truncate text-xs font-bold text-[#aeb5c2] 2xl:mt-1 2xl:text-base">{job.company}</p>
+                    </div>
+                    <div className="grid justify-items-end gap-2 2xl:gap-3">
+                      <JobMatchRing match={job.match} />
+                      <button
+                        type="button"
+                        aria-label={savedJobs.includes(job.id) ? "Unsave job" : "Save job"}
+                        title={savedJobs.includes(job.id) ? "Unsave job" : "Save job"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          toggleSaved(job.id);
+                        }}
+                        className={cn(
+                          "grid h-8 w-8 place-items-center rounded-md border border-border bg-white/[0.025] text-muted transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white 2xl:h-11 2xl:w-11",
+                          savedJobs.includes(job.id) && "border-accent/60 text-accent",
+                        )}
+                      >
+                        <Bookmark className={cn("h-4 w-4 2xl:h-5 2xl:w-5", savedJobs.includes(job.id) && "fill-accent text-accent")} />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 border-t border-border/80 pt-2.5 2xl:mt-5 2xl:pt-4">
+                    <div className="grid gap-1.5 text-xs font-semibold text-muted sm:grid-cols-[minmax(0,1fr)_auto] 2xl:gap-2 2xl:text-sm">
+                      <p className="flex min-w-0 flex-nowrap items-center gap-x-1.5">
+                        <MapPin className="h-3.5 w-3.5 shrink-0 2xl:h-4 2xl:w-4" />
+                        <span className="truncate">{job.location}</span>
+                        <span className="text-white/25">•</span>
+                        <span className="shrink-0 capitalize">{job.type}</span>
+                      </p>
+                      <p className="whitespace-nowrap text-left sm:text-right">{formatJobPostedCompact(job.posted)}</p>
+                    </div>
+                    {job.salary !== "Not specified" && <p className="mt-1.5 hidden truncate text-xs font-semibold text-muted/90 2xl:block 2xl:text-[13px]">{job.salary}</p>}
                     {job.archived && (
                       <p className="mt-1.5 inline-flex w-fit items-center gap-1 rounded border border-border px-1.5 py-0.5 text-[11px] font-bold text-muted">
                         <Archive className="h-3 w-3" />
@@ -4250,15 +4313,7 @@ export default function HomePage() {
                       </p>
                     )}
                   </div>
-                  <p className="justify-self-end whitespace-nowrap text-xs font-bold text-success 2xl:text-sm">{job.match}% match</p>
-                  <Bookmark
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      toggleSaved(job.id);
-                    }}
-                    className={cn("h-[18px] w-[18px] justify-self-end text-muted 2xl:h-5 2xl:w-5", savedJobs.includes(job.id) && "fill-accent text-accent")}
-                  />
-                </button>
+                </article>
               ))}
             </div>
           </aside>
@@ -8981,8 +9036,25 @@ function InfoStat({ label, value }: { label: string; value: string }) {
   );
 }
 
+function JobMatchRing({ match }: { match: number }) {
+  const normalizedMatch = Math.max(0, Math.min(100, match));
+
+  return (
+    <div
+      className="grid h-10 w-10 shrink-0 place-items-center rounded-full 2xl:h-14 2xl:w-14"
+      style={{ background: `conic-gradient(#52c7a2 ${normalizedMatch}%, rgba(255,255,255,0.08) 0)` }}
+      aria-label={`${match}% AI match`}
+      title={`${match}% match`}
+    >
+      <div className="grid h-8 w-8 place-items-center rounded-full bg-[#171a21] text-xs font-black text-white 2xl:h-[44px] 2xl:w-[44px] 2xl:text-base">
+        {match}%
+      </div>
+    </div>
+  );
+}
+
 function CompanyLogo({ logo, large = false, compact = false }: { logo: Job["logo"] | "airbnb"; large?: boolean; compact?: boolean }) {
-  const sizeClass = compact ? "h-10 w-10 2xl:h-11 2xl:w-11" : large ? "h-16 w-16 2xl:h-[88px] 2xl:w-[88px]" : "h-11 w-11 2xl:h-14 2xl:w-14";
+  const sizeClass = compact ? "h-9 w-9 2xl:h-11 2xl:w-11" : large ? "h-16 w-16 2xl:h-[88px] 2xl:w-[88px]" : "h-11 w-11 2xl:h-14 2xl:w-14";
 
   if (logo === "linkedin") {
     return (
@@ -9016,7 +9088,7 @@ function CompanyLogo({ logo, large = false, compact = false }: { logo: Job["logo
 
   return (
     <div className={cn("grid shrink-0 place-items-center rounded-md bg-black font-black text-white", large ? "text-xl 2xl:text-2xl" : compact ? "text-sm 2xl:text-base" : "text-base 2xl:text-xl", sizeClass)}>
-      stripe
+      {compact ? "S" : "stripe"}
     </div>
   );
 }
