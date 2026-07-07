@@ -442,6 +442,7 @@ const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const snapshotPollDelayMs = 4000;
 const snapshotPollMaxAttempts = 30;
 const importedJobsStorageKey = "tasko.importedJobs.v1";
+const savedJobIdsStorageKey = "tasko.savedJobIds.v1";
 const archivedJobIdsStorageKey = "tasko.archivedJobIds.v1";
 const deletedJobIdsStorageKey = "tasko.deletedJobIds.v1";
 const applicationsStorageKey = "tasko.applications.v1";
@@ -2043,8 +2044,10 @@ export default function HomePage() {
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState(tabs[0]);
   const [savedJobs, setSavedJobs] = useState<string[]>([]);
+  const [areSavedJobsLoaded, setAreSavedJobsLoaded] = useState(false);
   const [archivedJobIds, setArchivedJobIds] = useState<string[]>([]);
   const [deletedJobIds, setDeletedJobIds] = useState<string[]>([]);
+  const [showSavedJobs, setShowSavedJobs] = useState(false);
   const [showArchivedJobs, setShowArchivedJobs] = useState(false);
   const [applications, setApplications] = useState<TrackedApplication[]>([]);
   const [selectedApplicationId, setSelectedApplicationId] = useState("");
@@ -2117,6 +2120,10 @@ export default function HomePage() {
   );
 
   const archivedJobsCount = useMemo(() => availableJobs.filter((job) => job.archived).length, [availableJobs]);
+  const savedJobsCount = useMemo(
+    () => availableJobs.filter((job) => !job.archived && savedJobs.includes(job.id)).length,
+    [availableJobs, savedJobs],
+  );
 
   const locationFilterOptions = useMemo(
     () =>
@@ -2151,6 +2158,7 @@ export default function HomePage() {
     const normalizedQuery = query.trim().toLowerCase();
     const jobsForCurrentMode = availableJobs
       .filter((job) => Boolean(job.archived) === showArchivedJobs)
+      .filter((job) => !showSavedJobs || savedJobs.includes(job.id))
       .filter((job) => matchesJobFilters(job, jobFilters));
     const results = normalizedQuery
       ? jobsForCurrentMode.filter((job) =>
@@ -2167,7 +2175,7 @@ export default function HomePage() {
       }
       return b.match - a.match;
     });
-  }, [availableJobs, jobFilters, query, showArchivedJobs, sortBy]);
+  }, [availableJobs, jobFilters, query, savedJobs, showArchivedJobs, showSavedJobs, sortBy]);
 
   const selectedJob = filteredJobs.find((job) => job.id === selectedJobId) ?? filteredJobs[0] ?? null;
   const isSelectedSaved = selectedJob ? savedJobs.includes(selectedJob.id) : false;
@@ -2228,6 +2236,23 @@ export default function HomePage() {
       isMounted = false;
     };
   }, []);
+
+  useEffect(() => {
+    try {
+      const rawSavedJobIds = window.localStorage.getItem(savedJobIdsStorageKey);
+      setSavedJobs(normalizeStoredJobIds(rawSavedJobIds ? JSON.parse(rawSavedJobIds) : []));
+    } catch {
+      window.localStorage.removeItem(savedJobIdsStorageKey);
+    } finally {
+      setAreSavedJobsLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!areSavedJobsLoaded) return;
+
+    window.localStorage.setItem(savedJobIdsStorageKey, JSON.stringify(savedJobs));
+  }, [areSavedJobsLoaded, savedJobs]);
 
   useEffect(() => {
     try {
@@ -4081,14 +4106,19 @@ export default function HomePage() {
             </Button>
             <Button
               variant="ghost"
-              className="h-10 rounded-md border border-border bg-white/[0.03] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm"
+              className={cn(
+                "h-10 rounded-md border border-border bg-white/[0.03] px-4 text-[13px] text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
+                showSavedJobs && "border-accent/70 text-white",
+              )}
               onClick={() => {
+                setShowSavedJobs((current) => !current);
                 setShowArchivedJobs(false);
+                setSelectedJobId("");
                 setActiveTab("Overview");
               }}
             >
-              <Heart className={cn("h-[18px] w-[18px] 2xl:h-5 2xl:w-5", savedJobs.length > 0 && "fill-accent text-accent")} />
-              Saved Jobs
+              <Heart className={cn("h-[18px] w-[18px] 2xl:h-5 2xl:w-5", (showSavedJobs || savedJobsCount > 0) && "fill-accent text-accent")} />
+              Saved Jobs {savedJobsCount > 0 ? `(${savedJobsCount})` : ""}
             </Button>
             <Button
               variant="ghost"
@@ -4098,6 +4128,7 @@ export default function HomePage() {
               )}
               onClick={() => {
                 setShowArchivedJobs((current) => !current);
+                setShowSavedJobs(false);
                 setSelectedJobId("");
                 setActiveTab("Overview");
               }}
@@ -4184,7 +4215,7 @@ export default function HomePage() {
         <div className="mt-3 grid min-h-0 flex-1 gap-3 xl:grid-cols-[350px_minmax(0,1fr)] 2xl:mt-4 2xl:grid-cols-[420px_minmax(0,1fr)] 2xl:gap-4">
           <aside className="flex min-h-0 flex-col overflow-hidden rounded-md bg-white/[0.02]">
             <p className="shrink-0 px-1 pb-3 pt-3 text-sm font-semibold text-muted 2xl:pb-4 2xl:pt-5 2xl:text-base">
-              {filteredJobs.length} {showArchivedJobs ? "archived jobs" : "jobs"} found
+              {filteredJobs.length} {showArchivedJobs ? "archived jobs" : showSavedJobs ? "saved jobs" : "jobs"} found
             </p>
             <div className="job-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 2xl:space-y-3">
               {filteredJobs.map((job) => (
@@ -4360,11 +4391,13 @@ export default function HomePage() {
                 <div>
                   <Archive className="mx-auto h-9 w-9 text-muted" />
                   <h2 className="mt-4 text-xl font-bold text-white">
-                    {showArchivedJobs ? "No archived jobs" : "No jobs found"}
+                    {showArchivedJobs ? "No archived jobs" : showSavedJobs ? "No saved jobs" : "No jobs found"}
                   </h2>
                   <p className="mt-2 max-w-md text-sm font-medium text-muted">
                     {showArchivedJobs
                       ? "Archived vacancies will appear here after you archive them."
+                      : showSavedJobs
+                        ? "Saved vacancies will appear here after you click the bookmark or Save button."
                       : "Try changing the search, resetting filters, or searching for new vacancies."}
                   </p>
                 </div>
