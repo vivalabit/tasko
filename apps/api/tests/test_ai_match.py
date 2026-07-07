@@ -1,0 +1,146 @@
+import json
+from collections.abc import Generator
+
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.core.database import Base, get_db
+from app.core.settings import Settings, get_settings
+from app.main import app
+from app.models.profile import ProfilePayload, ProfileRecord
+from app.services.ai_match import calculate_ai_matches, parse_number
+
+
+def test_parse_number_reads_spaced_salary_values() -> None:
+    assert parse_number("CHF 100 000") == 100000
+    assert parse_number("$120k - $160k") == 160000
+
+
+def test_local_ai_match_scores_relevant_job_higher() -> None:
+    profile = ProfilePayload(
+        current_role="Machine Learning Engineer",
+        desired_role="Audio ML Engineer",
+        location="Zurich",
+        skills="Python\nPyTorch\nMachine Learning\nAudio Processing\nComputer Vision",
+        job_preferences=json.dumps(
+            {
+                "desired_roles": ["Machine Learning Engineer"],
+                "locations": ["Zurich"],
+                "work_formats": ["Hybrid", "Remote"],
+                "employment_types": ["Full-Time"],
+                "salary_min": "100000",
+                "salary_currency": "CHF",
+            }
+        ),
+        resume_file_name="resume.pdf",
+        resume_data_url="data:application/pdf;base64,JVBERi0x",
+    )
+    relevant_job = {
+        "id": "linkedin-audio-ml",
+        "title": "Audio Machine Learning Engineer",
+        "company": "Google",
+        "location": "Zurich",
+        "type": "Full-Time",
+        "salary": "Not specified",
+        "posted": "LinkedIn",
+        "experience": "Mid-Senior level",
+        "department": "Research",
+        "match": 50,
+        "logo": "linkedin",
+        "overview": "Build PyTorch models for audio face tracking and computer vision.",
+        "responsibilities": ["Train machine learning models"],
+        "requirements": ["Python", "PyTorch", "Machine Learning"],
+        "skills": ["Python", "PyTorch", "Machine Learning"],
+    }
+    unrelated_job = {
+        **relevant_job,
+        "id": "linkedin-accounting",
+        "title": "Accounting Manager",
+        "overview": "Own accounting close and financial reporting.",
+        "requirements": ["CPA", "IFRS"],
+        "skills": ["Accounting", "IFRS"],
+    }
+
+    matched = calculate_ai_matches(
+        profile,
+        [relevant_job, unrelated_job],
+        command="openclaw",
+        agent_id="main",
+        thinking="low",
+        timeout_seconds=1,
+        openclaw_enabled=False,
+        openclaw_max_jobs=0,
+    )
+
+    assert matched[0]["match"] > matched[1]["match"]
+    assert matched[0]["aiMatch"]["source"] == "local"
+    assert matched[0]["aiMatch"]["reasons"]
+
+
+def test_ai_match_endpoint_updates_and_persists_job_scores() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        db = testing_session_local()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_ai_match_enabled=False)
+    client = TestClient(app)
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                ProfileRecord(
+                    id="default",
+                    data=ProfilePayload(
+                        current_role="Machine Learning Engineer",
+                        desired_role="ML Software Engineer",
+                        location="Zurich",
+                        skills="Python\nMachine Learning\nPyTorch",
+                        job_preferences=json.dumps({"locations": ["Zurich"], "work_formats": ["Hybrid"]}),
+                    ).model_dump(),
+                )
+            )
+            db.commit()
+
+        job = {
+            "id": "linkedin-ml-engineer",
+            "company": "Google",
+            "title": "XR Audio Face Tracking ML Software Engineer",
+            "location": "Zurich",
+            "type": "Full-Time",
+            "salary": "Not specified",
+            "posted": "LinkedIn",
+            "experience": "Mid-Senior level",
+            "department": "LinkedIn import",
+            "match": 50,
+            "logo": "linkedin",
+            "overview": "Work on machine learning systems using Python and PyTorch.",
+            "responsibilities": ["Build ML systems"],
+            "requirements": ["Python", "Machine Learning"],
+            "skills": ["Python", "Machine Learning"],
+        }
+
+        response = client.post("/jobs/ai-match", json={"jobs": [{"id": job["id"], "data": job}]})
+        read_response = client.get("/jobs")
+
+        assert response.status_code == 200
+        payload = response.json()[0]["data"]
+        assert payload["match"] != 50
+        assert payload["aiMatch"]["source"] == "local"
+        assert payload["aiMatch"]["cacheKey"]
+        assert read_response.json()[0]["data"]["aiMatch"]["score"] == payload["match"]
+    finally:
+        app.dependency_overrides.clear()

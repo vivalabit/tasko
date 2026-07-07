@@ -52,6 +52,20 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+type AiMatchMetadata = {
+  version: string;
+  cacheKey: string;
+  source: "local" | "openclaw";
+  score: number;
+  confidence: "low" | "medium" | "high";
+  breakdown: Record<string, number>;
+  reasons: string[];
+  gaps: string[];
+  heuristicScore?: number;
+  updatedAt?: string;
+  openclawError?: string;
+};
+
 type Job = {
   id: string;
   company: string;
@@ -79,6 +93,7 @@ type Job = {
   sourceUrl?: string;
   archived?: boolean;
   archivedAt?: string;
+  aiMatch?: AiMatchMetadata;
 };
 
 type ApplicationStatus = "applied" | "interview" | "assessment" | "offer" | "rejected";
@@ -441,6 +456,7 @@ const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const snapshotPollDelayMs = 4000;
 const snapshotPollMaxAttempts = 30;
 const importedJobsStorageKey = "tasko.importedJobs.v1";
+const aiMatchRunStorageKey = "tasko.aiMatchRun.v1";
 const savedJobIdsStorageKey = "tasko.savedJobIds.v1";
 const archivedJobIdsStorageKey = "tasko.archivedJobIds.v1";
 const deletedJobIdsStorageKey = "tasko.deletedJobIds.v1";
@@ -1559,7 +1575,7 @@ function mapParsedJobToJob(job: ParsedJob, index: number): Job {
     posted: job.posted_at?.trim() || "LinkedIn",
     experience,
     department: "LinkedIn import",
-    match: 72,
+    match: 50,
     logo: "linkedin",
     overview,
     responsibilities: ["Review the LinkedIn vacancy details", "Compare requirements with your profile", "Decide whether to save or apply"],
@@ -1593,6 +1609,45 @@ function createClientId(prefix: string) {
   }
 
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function createAiMatchProfileSignature(profile: CandidateProfile) {
+  return JSON.stringify({
+    current_role: profile.current_role,
+    desired_role: profile.desired_role,
+    location: profile.location,
+    work_format: profile.work_format,
+    headline: profile.headline,
+    experience: profile.experience,
+    skills: profile.skills,
+    education: profile.education,
+    job_preferences: profile.job_preferences,
+    dealbreakers: profile.dealbreakers,
+    additional_notes: profile.additional_notes,
+    documents: profile.documents,
+    resume_file_name: profile.resume_file_name,
+    resume_updated_at: profile.resume_updated_at,
+  });
+}
+
+function createAiMatchJobSignature(jobsToMatch: Job[]) {
+  return jobsToMatch
+    .map((job) =>
+      [
+        job.id,
+        job.title,
+        job.company,
+        job.location,
+        job.type,
+        job.salary,
+        job.experience,
+        job.overview,
+        job.requirements.join(","),
+        job.skills.join(","),
+      ].join("::"),
+    )
+    .sort()
+    .join("|");
 }
 
 function normalizeParserSearchConfigs(configs: ParserSearchConfig[]) {
@@ -2138,6 +2193,11 @@ export default function HomePage() {
   const [areUiSettingsLoaded, setAreUiSettingsLoaded] = useState(false);
   const [appLogs, setAppLogs] = useState<AppLogEntry[]>([]);
   const [areAppLogsLoaded, setAreAppLogsLoaded] = useState(false);
+  const aiMatchProfileSignature = useMemo(() => createAiMatchProfileSignature(profile), [profile]);
+  const importedJobSignature = useMemo(
+    () => createAiMatchJobSignature(jobList.filter(isImportedJob)),
+    [jobList],
+  );
 
   const availableJobs = useMemo(
     () =>
@@ -2577,6 +2637,16 @@ export default function HomePage() {
       abortController.abort();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isProfileLoaded || !importedJobSignature) return;
+
+    const runSignature = `${aiMatchProfileSignature}:${importedJobSignature}`;
+    if (window.localStorage.getItem(aiMatchRunStorageKey) === runSignature) return;
+
+    window.localStorage.setItem(aiMatchRunStorageKey, runSignature);
+    void refreshAiMatches(jobList.filter(isImportedJob));
+  }, [aiMatchProfileSignature, importedJobSignature, isProfileLoaded, jobList]);
 
   function changeView(view: View) {
     setActiveView(view);
@@ -3902,6 +3972,34 @@ export default function HomePage() {
     }
   }
 
+  async function refreshAiMatches(jobsToMatch: Job[]) {
+    if (jobsToMatch.length === 0) return;
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/jobs/ai-match`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobs: jobsToMatch.map((job) => ({ id: job.id, data: job })),
+        }),
+      });
+
+      if (!response.ok) return;
+
+      const payload = (await response.json()) as Array<{ id: string; data: unknown }>;
+      const matchedJobs = normalizeStoredJobs(payload.map((job) => job.data));
+      if (matchedJobs.length === 0) return;
+
+      setJobList((currentJobs) => {
+        const nextJobs = mergeJobs(matchedJobs, currentJobs);
+        window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(nextJobs.filter(isImportedJob)));
+        return nextJobs;
+      });
+    } catch {
+      // AI match is progressive enhancement; imported jobs remain usable without it.
+    }
+  }
+
   function addParsedJobsToList(parsedJobs: ParsedJob[]) {
     const importedJobs = parsedJobs.map((job, index) => mapParsedJobToJob(job, index));
 
@@ -3914,6 +4012,7 @@ export default function HomePage() {
       });
       setSelectedJobId(importedJobs[0].id);
       setActiveTab("Overview");
+      void refreshAiMatches(importedJobs);
     }
 
     return importedJobs.length;
@@ -8950,22 +9049,45 @@ function JobMainPanel({ job, tab }: { job: Job; tab: string }) {
 }
 
 function MatchPanel({ job }: { job: Job }) {
+  const reasons = job.aiMatch?.reasons.length ? job.aiMatch.reasons : ["Strong profile overlap", "Relevant experience", "Skills alignment"];
+  const gaps = job.aiMatch?.gaps ?? [];
+  const sourceLabel = job.aiMatch?.source === "openclaw" ? "Openclaw" : job.aiMatch?.source === "local" ? "Local pre-score" : "Static score";
+
   return (
     <article className="panel p-4 2xl:p-5">
-      <h3 className="text-base font-bold 2xl:text-lg">AI Match Score</h3>
+      <div className="flex items-start justify-between gap-3">
+        <h3 className="text-base font-bold 2xl:text-lg">AI Match Score</h3>
+        <div className="rounded-md border border-border bg-white/[0.035] px-2 py-1 text-[10px] font-bold uppercase text-muted 2xl:text-xs">
+          {sourceLabel}
+          {job.aiMatch?.confidence ? ` · ${job.aiMatch.confidence}` : ""}
+        </div>
+      </div>
       <p className="mt-3 text-[34px] font-bold leading-none text-success 2xl:mt-4 2xl:text-[40px]">{job.match}%</p>
       <div className="mt-2.5 h-2 rounded-full bg-white/[0.09] 2xl:mt-3">
         <div className="h-full rounded-full bg-success" style={{ width: `${job.match}%` }} />
       </div>
       <h4 className="mt-5 text-[13px] font-bold 2xl:mt-7 2xl:text-sm">Why this match?</h4>
       <ul className="mt-2.5 space-y-1.5 text-[13px] text-muted 2xl:mt-3 2xl:space-y-2 2xl:text-sm">
-        {["Strong portfolio match", "Relevant experience", "Skills alignment", "Company culture fit"].map((item) => (
+        {reasons.map((item) => (
           <li key={item} className="flex items-center gap-2">
             <Check className="h-4 w-4 text-success" />
             {item}
           </li>
         ))}
       </ul>
+      {gaps.length > 0 ? (
+        <>
+          <h4 className="mt-5 text-[13px] font-bold 2xl:mt-7 2xl:text-sm">Gaps</h4>
+          <ul className="mt-2.5 space-y-1.5 text-[13px] text-muted 2xl:mt-3 2xl:space-y-2 2xl:text-sm">
+            {gaps.map((item) => (
+              <li key={item} className="flex items-center gap-2">
+                <CircleDot className="h-4 w-4 text-[#ffb020]" />
+                {item}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
       <a className="mt-4 inline-flex items-center gap-2 text-[13px] font-bold text-accent 2xl:mt-5 2xl:text-sm" href="#">
         Review full analysis <span aria-hidden="true">-&gt;</span>
       </a>

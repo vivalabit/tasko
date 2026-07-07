@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     openclaw_agent_id: str = "main"
     openclaw_resume_import_thinking: str = "high"
     openclaw_resume_import_timeout_seconds: int = 120
+    openclaw_ai_match_enabled: bool = True
+    openclaw_ai_match_thinking: str = "low"
+    openclaw_ai_match_timeout_seconds: int = 90
+    openclaw_ai_match_max_jobs: int = 20
     brightdata_api_key: str | None = None
     brightdata_api_url: str = "https://api.brightdata.com/datasets/v3"
     brightdata_linkedin_jobs_dataset_id: str = "gd_lpfll7v5hcqtkxl6l"
