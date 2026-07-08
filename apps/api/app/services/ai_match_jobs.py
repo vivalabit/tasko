@@ -82,26 +82,36 @@ class AiMatchJobManager:
         self._update(run_id, status="running")
 
         try:
-            for job in jobs:
-                matched_job = calculate_ai_matches(
+            batch_size = max(1, settings.openclaw_ai_match_max_jobs)
+            for start in range(0, len(jobs), batch_size):
+                batch = jobs[start : start + batch_size]
+                matched_jobs = calculate_ai_matches(
                     profile,
-                    [job],
+                    batch,
                     command=settings.openclaw_command,
                     agent_id=settings.openclaw_agent_id,
                     thinking=settings.openclaw_ai_match_thinking,
                     timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
                     openclaw_enabled=settings.openclaw_ai_match_enabled,
-                    openclaw_max_jobs=1,
+                    openclaw_max_jobs=batch_size,
                     force=force,
                     candidate_snapshot=candidate_snapshot,
                 )
-                if not matched_job:
-                    self._increment(run_id)
-                    continue
 
-                openclaw_job = matched_job[0]
-                hydrated_job = self._persist_job(session_factory, openclaw_job, profile_hash)
-                self._append_update(run_id, hydrated_job)
+                matched_by_id = {
+                    str(job.get("id") or ""): job
+                    for job in matched_jobs
+                    if str(job.get("id") or "")
+                }
+                for job in batch:
+                    job_id = str(job.get("id") or "")
+                    openclaw_job = matched_by_id.get(job_id)
+                    if not openclaw_job:
+                        self._increment(run_id)
+                        continue
+
+                    hydrated_job = self._persist_job(session_factory, openclaw_job, profile_hash)
+                    self._append_update(run_id, hydrated_job)
 
             self._update(run_id, status="completed")
         except Exception as exc:

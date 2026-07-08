@@ -649,3 +649,118 @@ def test_ai_match_run_endpoint_updates_status_and_persists_job_scores(monkeypatc
         assert read_response.json()[0]["data"]["aiMatch"]["score"] == payload["match"]
     finally:
         app.dependency_overrides.clear()
+
+
+def test_ai_match_run_endpoint_batches_openclaw_scoring(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_build_snapshot_with_openclaw(*, fallback_snapshot: dict, **_: object) -> dict:
+        return {**fallback_snapshot, "roles": ["openclaw normalized role"]}
+
+    batch_sizes: list[int] = []
+
+    def fake_score_with_openclaw(*, jobs: list[dict], **_: object) -> list[dict]:
+        batch_sizes.append(len(jobs))
+        return [
+            {
+                "id": job["id"],
+                "score": 82,
+                "confidence": "high",
+                "breakdown": {
+                    "role_fit": 17,
+                    "skills_fit": 24,
+                    "experience_fit": 13,
+                    "preferences_fit": 13,
+                    "constraints_fit": 10,
+                    "industry_fit": 3,
+                    "evidence_fit": 2,
+                },
+                "reasons": ["OpenClaw matched this role"],
+                "gaps": ["No major gaps detected from available data"],
+            }
+            for job in jobs
+        ]
+
+    monkeypatch.setattr(
+        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        fake_build_snapshot_with_openclaw,
+    )
+    monkeypatch.setattr(ai_match_service, "score_with_openclaw", fake_score_with_openclaw)
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        db = testing_session_local()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        openclaw_ai_match_enabled=True,
+        openclaw_ai_match_max_jobs=2,
+    )
+    client = TestClient(app)
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                ProfileRecord(
+                    id="default",
+                    data=ProfilePayload(
+                        current_role="Machine Learning Engineer",
+                        desired_role="ML Software Engineer",
+                        location="Zurich",
+                        skills="Python\nMachine Learning\nPyTorch",
+                    ).model_dump(),
+                )
+            )
+            db.commit()
+
+        def build_job(index: int) -> dict[str, object]:
+            return {
+                "id": f"linkedin-async-batch-ml-engineer-{index}",
+                "company": "Google",
+                "title": f"Machine Learning Engineer {index}",
+                "location": "Zurich",
+                "type": "Full-Time",
+                "salary": "Not specified",
+                "posted": "LinkedIn",
+                "experience": "Mid-Senior level",
+                "department": "LinkedIn import",
+                "match": 50,
+                "logo": "linkedin",
+                "overview": "Work on machine learning systems using Python and PyTorch.",
+                "responsibilities": ["Build ML systems"],
+                "requirements": ["Python", "Machine Learning"],
+                "skills": ["Python", "Machine Learning"],
+            }
+
+        jobs = [build_job(index) for index in range(5)]
+        run_response = client.post(
+            "/jobs/ai-match/run",
+            json={"jobs": [{"id": job["id"], "data": job} for job in jobs]},
+        )
+
+        assert run_response.status_code == 202
+
+        status_payload = {}
+        for _ in range(20):
+            status_response = client.get("/jobs/ai-match/status")
+            assert status_response.status_code == 200
+            status_payload = status_response.json()
+            if status_payload["status"] == "completed":
+                break
+            time.sleep(0.05)
+
+        assert status_payload["status"] == "completed"
+        assert status_payload["processed"] == status_payload["total"] == 5
+        assert len(status_payload["updatedJobs"]) == 5
+        assert batch_sizes == [2, 2, 1]
+    finally:
+        app.dependency_overrides.clear()
