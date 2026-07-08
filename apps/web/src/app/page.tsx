@@ -1890,6 +1890,16 @@ function isImportedJob(job: Job) {
   return job.id.startsWith("linkedin-");
 }
 
+function sanitizeLegacyLocalAiMatch(job: Job): Job {
+  if (job.aiMatch?.source !== "local") return job;
+
+  const { aiMatch: _legacyAiMatch, ...jobWithoutLegacyAiMatch } = job;
+  return {
+    ...jobWithoutLegacyAiMatch,
+    match: 50,
+  };
+}
+
 function normalizeStoredJobs(value: unknown) {
   if (!Array.isArray(value)) return [];
 
@@ -1916,11 +1926,11 @@ function normalizeStoredJobs(value: unknown) {
     if (!isValidJob) return [];
 
     return [
-      {
+      sanitizeLegacyLocalAiMatch({
         ...(candidate as Job),
         archived: Boolean(candidate.archived),
         archivedAt: typeof candidate.archivedAt === "string" ? candidate.archivedAt : undefined,
-      },
+      }),
     ];
   });
 }
@@ -2714,6 +2724,7 @@ export default function HomePage() {
       const rawImportedJobs = window.localStorage.getItem(importedJobsStorageKey);
       const importedJobs = normalizeStoredJobs(rawImportedJobs ? JSON.parse(rawImportedJobs) : []);
       if (importedJobs.length > 0) {
+        window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(importedJobs));
         setJobList((currentJobs) => mergeJobs(importedJobs, currentJobs));
         setSelectedJobId((currentId) => currentId || importedJobs[0].id);
       }
