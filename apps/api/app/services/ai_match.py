@@ -481,6 +481,15 @@ def build_cache_key(profile_snapshot: dict[str, Any], job_snapshot: dict[str, An
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def build_profile_hash(profile: ProfilePayload) -> str:
+    payload = json.dumps(
+        {"version": MATCHER_VERSION, "candidate": build_candidate_snapshot(profile)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def is_cached_match_valid(value: Any, cache_key: str) -> bool:
     return (
         isinstance(value, dict)

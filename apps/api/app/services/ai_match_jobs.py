@@ -9,9 +9,10 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.settings import Settings
-from app.models.jobs import AiMatchJobStatus, StoredJobPayload, StoredJobRecord
+from app.models.jobs import AiMatchJobStatus, StoredJobPayload
 from app.models.profile import ProfilePayload
 from app.services.ai_match import calculate_ai_matches, select_openclaw_candidates
+from app.services.job_match_store import hydrate_job_data, persist_job_and_match
 
 SessionFactory = Callable[[], Session]
 
@@ -26,6 +27,7 @@ class AiMatchJobManager:
         *,
         profile: ProfilePayload,
         jobs: list[dict[str, Any]],
+        profile_hash: str,
         settings: Settings,
         session_factory: SessionFactory,
         force: bool = False,
@@ -49,6 +51,7 @@ class AiMatchJobManager:
                 "run_id": run_id,
                 "profile": profile,
                 "jobs": jobs,
+                "profile_hash": profile_hash,
                 "settings": settings,
                 "session_factory": session_factory,
                 "force": force,
@@ -68,6 +71,7 @@ class AiMatchJobManager:
         run_id: str,
         profile: ProfilePayload,
         jobs: list[dict[str, Any]],
+        profile_hash: str,
         settings: Settings,
         session_factory: SessionFactory,
         force: bool,
@@ -94,8 +98,8 @@ class AiMatchJobManager:
 
                 local_job = matched_job[0]
                 local_jobs.append(local_job)
-                self._persist_job(session_factory, local_job)
-                self._append_update(run_id, local_job)
+                hydrated_job = self._persist_job(session_factory, local_job, profile_hash)
+                self._append_update(run_id, hydrated_job)
 
             openclaw_candidates = (
                 select_openclaw_candidates(local_jobs, settings.openclaw_ai_match_max_jobs)
@@ -122,26 +126,28 @@ class AiMatchJobManager:
                     continue
 
                 openclaw_job = matched_job[0]
-                self._persist_job(session_factory, openclaw_job)
-                self._append_update(run_id, openclaw_job)
+                hydrated_job = self._persist_job(session_factory, openclaw_job, profile_hash)
+                self._append_update(run_id, hydrated_job)
 
             self._update(run_id, status="completed")
         except Exception as exc:
             self._update(run_id, status="failed", error=str(exc)[:240])
 
-    def _persist_job(self, session_factory: SessionFactory, job: dict[str, Any]) -> None:
+    def _persist_job(
+        self,
+        session_factory: SessionFactory,
+        job: dict[str, Any],
+        profile_hash: str,
+    ) -> dict[str, Any]:
         job_id = str(job.get("id") or "")
         if not job_id:
-            return
+            return job
 
         db = session_factory()
         try:
-            record = db.get(StoredJobRecord, job_id)
-            if record:
-                record.data = job
-            else:
-                db.add(StoredJobRecord(id=job_id, data=job))
+            persist_job_and_match(db, job=job, profile_hash=profile_hash)
             db.commit()
+            return hydrate_job_data(db, job_id=job_id, job_data=job, profile_hash=profile_hash)
         except SQLAlchemyError:
             db.rollback()
             raise

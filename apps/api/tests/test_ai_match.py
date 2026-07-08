@@ -11,6 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import Base, get_db
 from app.core.settings import Settings, get_settings
 from app.main import app
+from app.models.jobs import JobMatchRecord, StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.ai_match import calculate_ai_matches, infer_seniority, parse_number
 
@@ -205,6 +206,16 @@ def test_ai_match_endpoint_updates_and_persists_job_scores() -> None:
         assert payload["aiMatch"]["source"] == "local"
         assert payload["aiMatch"]["cacheKey"]
         assert read_response.json()[0]["data"]["aiMatch"]["score"] == payload["match"]
+
+        with testing_session_local() as db:
+            stored_job = db.get(StoredJobRecord, job["id"])
+            match_records = db.query(JobMatchRecord).filter(JobMatchRecord.job_id == job["id"]).all()
+            assert stored_job is not None
+            assert "aiMatch" not in stored_job.data
+            assert len(match_records) == 1
+            assert match_records[0].score == payload["match"]
+            assert match_records[0].source == "local"
+            assert match_records[0].breakdown
     finally:
         app.dependency_overrides.clear()
 

@@ -10,8 +10,14 @@ from app.core.database import get_db
 from app.core.settings import Settings, get_settings
 from app.models.jobs import AiMatchJobStatus, StoredJobPayload, StoredJobRecord, StoredJobsRequest
 from app.models.profile import ProfilePayload, ProfileRecord
-from app.services.ai_match import JOB_ADDED_AT_FIELDS, calculate_ai_matches
+from app.services.ai_match import JOB_ADDED_AT_FIELDS, build_profile_hash, calculate_ai_matches
 from app.services.ai_match_jobs import ai_match_jobs
+from app.services.job_match_store import (
+    delete_job_matches,
+    hydrate_job_data,
+    persist_job_and_match,
+    strip_ai_match,
+)
 
 router = APIRouter()
 
@@ -19,8 +25,21 @@ router = APIRouter()
 @router.get("", response_model=list[StoredJobPayload])
 def list_jobs(db: Session = Depends(get_db)) -> list[StoredJobPayload]:
     try:
+        profile = get_current_profile(db)
+        profile_hash = build_profile_hash(profile)
         records = db.query(StoredJobRecord).order_by(StoredJobRecord.id.desc()).all()
-        return [StoredJobPayload(id=record.id, data=record.data) for record in records]
+        return [
+            StoredJobPayload(
+                id=record.id,
+                data=hydrate_job_data(
+                    db,
+                    job_id=record.id,
+                    job_data=record.data,
+                    profile_hash=profile_hash,
+                ),
+            )
+            for record in records
+        ]
     except SQLAlchemyError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -36,9 +55,9 @@ def upsert_jobs(request: StoredJobsRequest, db: Session = Depends(get_db)) -> li
             record = db.get(StoredJobRecord, job.id)
             job_data = prepare_job_data(job.data, record, now)
             if record:
-                record.data = job_data
+                record.data = strip_ai_match(job_data)
             else:
-                db.add(StoredJobRecord(id=job.id, data=job_data))
+                db.add(StoredJobRecord(id=job.id, data=strip_ai_match(job_data)))
 
         db.commit()
         return list_jobs(db)
@@ -63,12 +82,12 @@ def match_jobs(
             prepare_job_data(job.data, db.get(StoredJobRecord, job.id), now)
             for job in request.jobs
         ]
-        profile_record = db.get(ProfileRecord, "default")
-        profile = (
-            ProfilePayload.model_validate(profile_record.data)
-            if profile_record
-            else ProfilePayload()
-        )
+        profile = get_current_profile(db)
+        profile_hash = build_profile_hash(profile)
+        jobs_to_match = [
+            hydrate_job_data(db, job_id=str(job.get("id") or ""), job_data=job, profile_hash=profile_hash)
+            for job in jobs_to_match
+        ]
         matched_jobs = calculate_ai_matches(
             profile,
             jobs_to_match,
@@ -85,11 +104,7 @@ def match_jobs(
             job_id = str(job.get("id") or "")
             if not job_id:
                 continue
-            record = db.get(StoredJobRecord, job_id)
-            if record:
-                record.data = job
-            else:
-                db.add(StoredJobRecord(id=job_id, data=job))
+            persist_job_and_match(db, job=job, profile_hash=profile_hash)
 
         db.commit()
         return [StoredJobPayload(id=str(job.get("id")), data=job) for job in matched_jobs if job.get("id")]
@@ -114,16 +129,17 @@ def run_match_jobs(
             prepare_job_data(job.data, db.get(StoredJobRecord, job.id), now)
             for job in request.jobs
         ]
-        profile_record = db.get(ProfileRecord, "default")
-        profile = (
-            ProfilePayload.model_validate(profile_record.data)
-            if profile_record
-            else ProfilePayload()
-        )
+        profile = get_current_profile(db)
+        profile_hash = build_profile_hash(profile)
+        jobs_to_match = [
+            hydrate_job_data(db, job_id=str(job.get("id") or ""), job_data=job, profile_hash=profile_hash)
+            for job in jobs_to_match
+        ]
         session_factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False)
         started, current_status = ai_match_jobs.start(
             profile=profile,
             jobs=jobs_to_match,
+            profile_hash=profile_hash,
             settings=settings,
             session_factory=session_factory,
             force=force,
@@ -146,6 +162,15 @@ def run_match_jobs(
 @router.get("/ai-match/status", response_model=AiMatchJobStatus)
 def get_match_jobs_status() -> AiMatchJobStatus:
     return ai_match_jobs.status()
+
+
+def get_current_profile(db: Session) -> ProfilePayload:
+    profile_record = db.get(ProfileRecord, "default")
+    return (
+        ProfilePayload.model_validate(profile_record.data)
+        if profile_record
+        else ProfilePayload()
+    )
 
 
 def prepare_job_data(
@@ -189,6 +214,7 @@ def delete_job(job_id: str, db: Session = Depends(get_db)) -> None:
             return None
 
         db.delete(record)
+        delete_job_matches(db, job_id=job_id)
         db.commit()
         return None
     except SQLAlchemyError as exc:
