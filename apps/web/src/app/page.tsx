@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { RefObject } from "react";
 import {
   Archive,
   ArchiveRestore,
@@ -61,6 +62,8 @@ type AiMatchMetadata = {
   breakdown: Record<string, number>;
   reasons: string[];
   gaps: string[];
+  explanation?: string;
+  rawExplanation?: string;
   heuristicScore?: number;
   updatedAt?: string;
   openclawError?: string;
@@ -72,6 +75,14 @@ type AiMatchMetadata = {
 };
 
 type MatchFeedback = "good_match" | "bad_match" | "not_interested";
+
+type JobRecommendation = {
+  text: string;
+  gain: string;
+  why?: string;
+  impact?: string;
+  action?: string;
+};
 
 type Job = {
   id: string;
@@ -92,7 +103,7 @@ type Job = {
   salaryAverage: string;
   salaryMin: string;
   salaryMax: string;
-  recommendations: { text: string; gain: string }[];
+  recommendations: JobRecommendation[];
   companyInfo: string;
   reviews: string[];
   similarJobs: string[];
@@ -1719,6 +1730,133 @@ function formatLogTimestamp(value: string) {
   });
 }
 
+function formatAiMatchTimestamp(value?: string) {
+  if (!value) return "Not calculated yet";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Time unknown";
+
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+const aiMatchBreakdownLabels: Record<string, string> = {
+  role_fit: "Role",
+  skills_fit: "Skills",
+  experience_fit: "Experience",
+  preferences_fit: "Preferences",
+  constraints_fit: "Constraints",
+  evidence_fit: "Evidence",
+};
+
+function getAiMatchBreakdownItems(job: Job) {
+  const breakdown = job.aiMatch?.breakdown ?? {};
+  return Object.entries(aiMatchBreakdownLabels).map(([key, label]) => ({
+    key,
+    label,
+    value: Math.max(0, Math.min(100, Math.round(Number(breakdown[key] ?? 0)))),
+  }));
+}
+
+function getAiMatchSourceLabel(job: Job) {
+  if (job.aiMatch?.source === "openclaw") return "Openclaw";
+  if (job.aiMatch?.source === "local") return "Local pre-score";
+  return "Static score";
+}
+
+function formatConfidence(value?: AiMatchMetadata["confidence"]) {
+  if (!value) return "Not calculated";
+  return `${value[0].toUpperCase()}${value.slice(1)}`;
+}
+
+function buildAiMatchRawExplanation(job: Job) {
+  if (job.aiMatch?.rawExplanation) return job.aiMatch.rawExplanation;
+  if (job.aiMatch?.explanation) return job.aiMatch.explanation;
+  if (job.aiMatch?.openclawError) return `Openclaw fallback: ${job.aiMatch.openclawError}`;
+
+  const source = getAiMatchSourceLabel(job);
+  const reasons = job.aiMatch?.reasons.length ? job.aiMatch.reasons.join("; ") : "no AI-generated reasons are available";
+  const gaps = job.aiMatch?.gaps.length ? job.aiMatch.gaps.join("; ") : "no major gaps detected";
+
+  return `${source} calculated a ${job.match}% match for ${job.title} at ${job.company}. Reasons: ${reasons}. Gaps: ${gaps}.`;
+}
+
+function getProfileImprovementItems(job: Job) {
+  const gaps = job.aiMatch?.gaps.filter((item) => !item.toLowerCase().includes("no major gaps")) ?? [];
+  const skills = job.skills.slice(0, 4);
+  const items = [
+    skills.length ? `Add or strengthen these vacancy keywords in your profile/CV: ${skills.join(", ")}.` : "",
+    "Attach or refresh your resume so AI matching can use stronger evidence.",
+    "Add role-specific achievements with measurable outcomes for this vacancy.",
+    ...gaps.map((gap) => `Address gap: ${gap}.`),
+  ].filter(Boolean);
+
+  return Array.from(new Set(items)).slice(0, 5);
+}
+
+function buildRecommendationPlan(job: Job): JobRecommendation[] {
+  const sourceUrl = getJobApplyUrl(job);
+  const skills = job.skills.slice(0, 4).join(", ");
+  const firstGap = job.aiMatch?.gaps.find((gap) => !gap.toLowerCase().includes("no major gaps"));
+  const existingRecommendations = (Array.isArray(job.recommendations) ? job.recommendations : []).map((recommendation) => ({
+    ...recommendation,
+    why: recommendation.why ?? "Already suggested by the current match analysis.",
+    impact: recommendation.impact ?? recommendation.gain,
+    action: recommendation.action ?? "Review and apply this change before applying.",
+  }));
+
+  const plan: JobRecommendation[] = [
+    {
+      text: "Open the original posting",
+      gain: "source",
+      why: sourceUrl ? "Verify the source description, apply link, and any changes that were not captured during import." : "The original source is not attached, so review the saved vacancy details carefully.",
+      impact: "Reduces stale-data risk before tailoring or applying.",
+      action: sourceUrl ? "Open source posting" : "Review saved job description",
+    },
+    {
+      text: "Check requirements against profile evidence",
+      gain: "review",
+      why: "Requirements are the strongest source for skills, seniority, and constraint matching.",
+      impact: "Finds missing proof before CV tailoring.",
+      action: "Compare requirements, responsibilities, and listed skills.",
+    },
+    {
+      text: "Update CV for this vacancy",
+      gain: "+4-8%",
+      why: firstGap ?? "A tailored CV gives the matcher more explicit role and evidence signals.",
+      impact: "Can raise role, experience, and evidence scores.",
+      action: "Move the most relevant achievements and keywords into the top half of the CV.",
+    },
+    {
+      text: "Add missing skills and keywords",
+      gain: "+2-6%",
+      why: skills ? `The vacancy emphasizes: ${skills}.` : "The matcher has limited explicit skill evidence for this vacancy.",
+      impact: "Can raise skills fit and confidence when the skills are genuinely supported.",
+      action: "Add only skills you can defend with project or work evidence.",
+    },
+    {
+      text: "Generate a targeted cover letter",
+      gain: "application",
+      why: "A short role-specific note can connect profile evidence to the employer's stated needs.",
+      impact: "Improves application quality even when match score is already high.",
+      action: "Draft a cover letter from the top reasons and the main gaps.",
+    },
+    {
+      text: job.match >= 80 ? "Save and apply" : "Save for follow-up",
+      gain: job.match >= 80 ? "workflow" : "pipeline",
+      why: job.match >= 80 ? "The current score is high enough to justify moving into the application workflow." : "The match needs review before investing application time.",
+      impact: "Keeps strong opportunities from getting lost.",
+      action: job.match >= 80 ? "Save the job, apply, then track the application." : "Save the job and improve profile evidence first.",
+    },
+  ];
+
+  return [...plan, ...existingRecommendations].slice(0, 9);
+}
+
 function isImportedJob(job: Job) {
   return job.id.startsWith("linkedin-");
 }
@@ -2149,6 +2287,9 @@ export default function HomePage() {
   const [selectedJobId, setSelectedJobId] = useState(jobs[0].id);
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState(tabs[0]);
+  const [pendingAiMatchFocus, setPendingAiMatchFocus] = useState<"analysis" | "recommendations" | null>(null);
+  const aiMatchAnalysisRef = useRef<HTMLElement | null>(null);
+  const aiMatchRecommendationsRef = useRef<HTMLElement | null>(null);
   const [savedJobs, setSavedJobs] = useState<string[]>([]);
   const [areSavedJobsLoaded, setAreSavedJobsLoaded] = useState(false);
   const [archivedJobIds, setArchivedJobIds] = useState<string[]>([]);
@@ -2296,6 +2437,24 @@ export default function HomePage() {
     ? applications.find((application) => application.job.id === selectedJob.id)
     : undefined;
   const selectedApplication = applications.find((application) => application.id === selectedApplicationId) ?? applications[0] ?? null;
+
+  function openAiMatchSection(section: "analysis" | "recommendations") {
+    setActiveTab("AI Match");
+    setPendingAiMatchFocus(section);
+  }
+
+  useEffect(() => {
+    if (activeTab !== "AI Match" || !pendingAiMatchFocus) return;
+
+    const frame = window.requestAnimationFrame(() => {
+      const target = pendingAiMatchFocus === "recommendations" ? aiMatchRecommendationsRef.current : aiMatchAnalysisRef.current;
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+      target?.focus({ preventScroll: true });
+      setPendingAiMatchFocus(null);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab, pendingAiMatchFocus, selectedJob?.id]);
 
   useEffect(() => {
     const syncViewFromHash = () => {
@@ -4641,7 +4800,12 @@ export default function HomePage() {
 
             <div className="mt-4 grid gap-3 min-[1800px]:grid-cols-[minmax(0,1.12fr)_minmax(320px,0.9fr)] 2xl:mt-5 2xl:gap-4">
               <div className="grid gap-3 2xl:gap-4">
-                <JobMainPanel job={selectedJob} tab={activeTab} />
+                <JobMainPanel
+                  job={selectedJob}
+                  tab={activeTab}
+                  analysisRef={aiMatchAnalysisRef}
+                  recommendationsRef={aiMatchRecommendationsRef}
+                />
                 <SalaryInsights job={selectedJob} />
               </div>
 
@@ -4650,8 +4814,9 @@ export default function HomePage() {
                   job={selectedJob}
                   isSavingFeedback={matchFeedbackSavingJobId === selectedJob.id}
                   onFeedback={saveMatchFeedback}
+                  onReviewFullAnalysis={() => openAiMatchSection("analysis")}
                 />
-                <RecommendationsPanel job={selectedJob} />
+                <RecommendationsPanel job={selectedJob} onViewAllRecommendations={() => openAiMatchSection("recommendations")} />
                 <JobDetails job={selectedJob} />
               </div>
             </div>
@@ -9051,7 +9216,17 @@ function AppSidebar({
   );
 }
 
-function JobMainPanel({ job, tab }: { job: Job; tab: string }) {
+function JobMainPanel({
+  job,
+  tab,
+  analysisRef,
+  recommendationsRef,
+}: {
+  job: Job;
+  tab: string;
+  analysisRef?: RefObject<HTMLElement | null>;
+  recommendationsRef?: RefObject<HTMLElement | null>;
+}) {
   if (tab === "Company") {
     return (
       <article className="panel p-3 2xl:p-4">
@@ -9067,22 +9242,116 @@ function JobMainPanel({ job, tab }: { job: Job; tab: string }) {
   }
 
   if (tab === "AI Match") {
+    const breakdownItems = getAiMatchBreakdownItems(job);
+    const reasons = job.aiMatch?.reasons.length ? job.aiMatch.reasons : ["Run AI matching to generate role-specific reasons."];
+    const gaps = job.aiMatch?.gaps.length ? job.aiMatch.gaps : ["No gaps have been calculated yet."];
+    const sourceLabel = getAiMatchSourceLabel(job);
+    const rawExplanation = buildAiMatchRawExplanation(job);
+    const profileImprovements = getProfileImprovementItems(job);
+    const recommendationPlan = buildRecommendationPlan(job);
+
     return (
-      <article className="panel p-3 2xl:p-4">
-        <h3 className="text-base font-bold 2xl:text-lg">AI Match Analysis</h3>
-        <p className="mt-3 text-[13px] leading-5 text-muted 2xl:mt-4 2xl:text-sm 2xl:leading-6">
-          Your profile is a strong fit for this role because the portfolio signals, seniority, and product design keywords align with the job description.
-        </p>
-        <div className="mt-4 space-y-2.5 2xl:mt-5 2xl:space-y-3">
-          {["Portfolio relevance", "Experience level", "Skill alignment", "Culture fit"].map((item, index) => (
-            <div key={item} className="flex items-center gap-3">
+      <article ref={analysisRef} tabIndex={-1} className="panel scroll-mt-4 p-3 outline-none 2xl:p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h3 className="text-base font-bold 2xl:text-lg">AI Match Analysis</h3>
+            <p className="mt-1 text-xs font-semibold text-muted 2xl:text-sm">
+              {sourceLabel}
+              {job.aiMatch?.confidence ? ` · ${job.aiMatch.confidence}` : ""}
+              {" · "}
+              {formatAiMatchTimestamp(job.aiMatch?.updatedAt)}
+            </p>
+          </div>
+          <p className="text-2xl font-bold leading-none text-success 2xl:text-3xl">{job.match}%</p>
+        </div>
+
+        <div className="mt-4 grid gap-2 sm:grid-cols-3 2xl:mt-5 2xl:gap-3">
+          <InfoStat label="Overall score" value={`${job.match}%`} />
+          <InfoStat label="Source" value={sourceLabel} />
+          <InfoStat label="Confidence" value={formatConfidence(job.aiMatch?.confidence)} />
+        </div>
+
+        <div className="mt-5 space-y-2.5 2xl:mt-6 2xl:space-y-3">
+          {breakdownItems.map((item) => (
+            <div key={item.key} className="grid grid-cols-[minmax(92px,0.36fr)_minmax(0,1fr)_38px] items-center gap-3">
+              <span className="text-[13px] font-semibold text-muted 2xl:text-sm">{item.label}</span>
               <div className="h-2 flex-1 rounded-full bg-white/[0.08]">
-                <div className="h-full rounded-full bg-success" style={{ width: `${job.match - index * 5}%` }} />
+                <div className="h-full rounded-full bg-success" style={{ width: `${item.value}%` }} />
               </div>
-              <span className="w-32 text-[13px] text-muted 2xl:w-36 2xl:text-sm">{item}</span>
+              <span className="text-right text-[12px] font-bold text-[#d8dee8] 2xl:text-sm">{item.value}</span>
             </div>
           ))}
         </div>
+
+        <div className="mt-5 grid gap-4 md:grid-cols-2 2xl:mt-6">
+          <div>
+            <h4 className="text-[13px] font-bold 2xl:text-sm">Reasons</h4>
+            <ul className="mt-2.5 space-y-1.5 text-[13px] leading-5 text-muted 2xl:space-y-2 2xl:text-sm">
+              {reasons.map((item) => (
+                <li key={item} className="flex gap-2">
+                  <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <h4 className="text-[13px] font-bold 2xl:text-sm">Gaps</h4>
+            <ul className="mt-2.5 space-y-1.5 text-[13px] leading-5 text-muted 2xl:space-y-2 2xl:text-sm">
+              {gaps.map((item) => (
+                <li key={item} className="flex gap-2">
+                  <CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-[#ffb020]" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-4 border-t border-border pt-5 md:grid-cols-2 2xl:mt-6 2xl:pt-6">
+          <section>
+            <h4 className="text-[13px] font-bold 2xl:text-sm">Raw Openclaw/local explanation</h4>
+            <p className="mt-2.5 rounded-md border border-border bg-white/[0.025] p-3 text-[13px] leading-5 text-muted 2xl:text-sm 2xl:leading-6">
+              {rawExplanation}
+            </p>
+          </section>
+          <section>
+            <h4 className="text-[13px] font-bold 2xl:text-sm">Improve profile to raise match</h4>
+            <ul className="mt-2.5 space-y-1.5 text-[13px] leading-5 text-muted 2xl:space-y-2 2xl:text-sm">
+              {profileImprovements.map((item) => (
+                <li key={item} className="flex gap-2">
+                  <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+                  {item}
+                </li>
+              ))}
+            </ul>
+          </section>
+        </div>
+
+        <section ref={recommendationsRef} tabIndex={-1} className="mt-5 scroll-mt-4 border-t border-border pt-5 outline-none 2xl:mt-6 2xl:pt-6">
+          <div className="flex flex-wrap items-end justify-between gap-2">
+            <div>
+              <h4 className="text-[15px] font-bold 2xl:text-base">Recommendations</h4>
+              <p className="mt-1 text-[12px] font-semibold text-muted 2xl:text-[13px]">Action plan for this vacancy</p>
+            </div>
+            <p className="text-[12px] font-bold text-success 2xl:text-[13px]">{recommendationPlan.length} actions</p>
+          </div>
+          <div className="mt-3 divide-y divide-border">
+            {recommendationPlan.map((recommendation) => (
+              <div key={`${recommendation.text}-${recommendation.gain}`} className="grid gap-2 py-3 text-[13px] leading-5 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_auto] md:items-start 2xl:text-sm">
+                <div>
+                  <p className="font-bold text-[#d8dee8]">{recommendation.text}</p>
+                  <p className="mt-1 text-muted">{recommendation.action}</p>
+                </div>
+                <p className="text-muted">{recommendation.why}</p>
+                <div className="md:text-right">
+                  <p className="font-bold text-success">{recommendation.gain}</p>
+                  <p className="mt-1 max-w-[220px] text-[12px] font-semibold text-muted md:ml-auto">{recommendation.impact}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
       </article>
     );
   }
@@ -9158,14 +9427,16 @@ function MatchPanel({
   job,
   isSavingFeedback,
   onFeedback,
+  onReviewFullAnalysis,
 }: {
   job: Job;
   isSavingFeedback: boolean;
   onFeedback: (job: Job, feedback: MatchFeedback) => void;
+  onReviewFullAnalysis: () => void;
 }) {
   const reasons = job.aiMatch?.reasons.length ? job.aiMatch.reasons : ["Strong profile overlap", "Relevant experience", "Skills alignment"];
   const gaps = job.aiMatch?.gaps ?? [];
-  const sourceLabel = job.aiMatch?.source === "openclaw" ? "Openclaw" : job.aiMatch?.source === "local" ? "Local pre-score" : "Static score";
+  const sourceLabel = getAiMatchSourceLabel(job);
   const feedbackOptions: Array<{ feedback: MatchFeedback; label: string }> = [
     { feedback: "good_match", label: "Good match" },
     { feedback: "bad_match", label: "Bad match" },
@@ -9227,28 +9498,38 @@ function MatchPanel({
           </ul>
         </>
       ) : null}
-      <a className="mt-4 inline-flex items-center gap-2 text-[13px] font-bold text-accent 2xl:mt-5 2xl:text-sm" href="#">
+      <button
+        type="button"
+        className="mt-4 inline-flex items-center gap-2 text-[13px] font-bold text-accent transition hover:text-accent/85 2xl:mt-5 2xl:text-sm"
+        onClick={onReviewFullAnalysis}
+      >
         Review full analysis <span aria-hidden="true">-&gt;</span>
-      </a>
+      </button>
     </article>
   );
 }
 
-function RecommendationsPanel({ job }: { job: Job }) {
+function RecommendationsPanel({ job, onViewAllRecommendations }: { job: Job; onViewAllRecommendations: () => void }) {
+  const recommendationPlan = buildRecommendationPlan(job).slice(0, 3);
+
   return (
     <article className="panel p-4 2xl:p-5">
       <h3 className="text-base font-bold 2xl:text-lg">AI Recommendations</h3>
       <div className="mt-3 divide-y divide-border">
-        {job.recommendations.map((recommendation) => (
+        {recommendationPlan.map((recommendation) => (
           <div key={recommendation.text} className="flex items-center justify-between gap-4 py-2 text-[13px] 2xl:py-2.5 2xl:text-sm">
             <p className="text-muted">{recommendation.text}</p>
             <p className="shrink-0 font-bold text-success">{recommendation.gain}</p>
           </div>
         ))}
       </div>
-      <a className="mt-3 inline-flex items-center gap-2 text-[13px] font-bold text-accent 2xl:text-sm" href="#">
+      <button
+        type="button"
+        className="mt-3 inline-flex items-center gap-2 text-[13px] font-bold text-accent transition hover:text-accent/85 2xl:text-sm"
+        onClick={onViewAllRecommendations}
+      >
         View all recommendations <span aria-hidden="true">-&gt;</span>
-      </a>
+      </button>
     </article>
   );
 }
