@@ -1774,6 +1774,17 @@ function getAiMatchSourceLabel(job: Job) {
   return "Static score";
 }
 
+function getAiMatchSourceStatus(job: Job) {
+  if (!job.aiMatch?.openclawError) return "";
+  return "Openclaw fallback/error";
+}
+
+function getAiMatchSourceDisplay(job: Job) {
+  const sourceLabel = getAiMatchSourceLabel(job);
+  const sourceStatus = getAiMatchSourceStatus(job);
+  return sourceStatus ? `${sourceLabel} · ${sourceStatus}` : sourceLabel;
+}
+
 function formatConfidence(value?: AiMatchMetadata["confidence"]) {
   if (!value) return "Not calculated";
   return `${value[0].toUpperCase()}${value.slice(1)}`;
@@ -4648,6 +4659,19 @@ export default function HomePage() {
                         )}
                       >
                         <Bookmark className={cn("h-4 w-4 2xl:h-5 2xl:w-5", savedJobs.includes(job.id) && "fill-accent text-accent")} />
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="Rerun AI match"
+                        title="Rerun AI match"
+                        disabled={forceMatchingJobId === job.id}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void rerunAiMatch(job);
+                        }}
+                        className="grid h-8 w-8 place-items-center rounded-md border border-border bg-white/[0.025] text-muted transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white disabled:cursor-not-allowed disabled:opacity-55 2xl:h-11 2xl:w-11"
+                      >
+                        <RotateCcw className={cn("h-4 w-4 2xl:h-5 2xl:w-5", forceMatchingJobId === job.id && "animate-spin")} />
                       </button>
                     </div>
                   </div>
@@ -9251,7 +9275,7 @@ function JobMainPanel({
     const breakdownItems = getAiMatchBreakdownItems(job);
     const reasons = job.aiMatch?.reasons.length ? job.aiMatch.reasons : ["Run AI matching to generate role-specific reasons."];
     const gaps = job.aiMatch?.gaps.length ? job.aiMatch.gaps : ["No gaps have been calculated yet."];
-    const sourceLabel = getAiMatchSourceLabel(job);
+    const sourceDisplay = getAiMatchSourceDisplay(job);
     const rawExplanation = buildAiMatchRawExplanation(job);
     const profileImprovements = getProfileImprovementItems(job);
     const recommendationPlan = buildRecommendationPlan(job);
@@ -9261,8 +9285,8 @@ function JobMainPanel({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="text-base font-bold 2xl:text-lg">AI Match Analysis</h3>
-            <p className="mt-1 text-xs font-semibold text-muted 2xl:text-sm">
-              {sourceLabel}
+            <p className="mt-1 text-xs font-semibold text-muted 2xl:text-sm" title={job.aiMatch?.openclawError}>
+              {sourceDisplay}
               {job.aiMatch?.confidence ? ` · ${job.aiMatch.confidence}` : ""}
               {" · "}
               {formatAiMatchTimestamp(job.aiMatch?.updatedAt)}
@@ -9273,7 +9297,7 @@ function JobMainPanel({
 
         <div className="mt-4 grid gap-2 sm:grid-cols-3 2xl:mt-5 2xl:gap-3">
           <InfoStat label="Overall score" value={`${job.match}%`} />
-          <InfoStat label="Source" value={sourceLabel} />
+          <InfoStat label="Source" value={sourceDisplay} title={job.aiMatch?.openclawError} />
           <InfoStat label="Confidence" value={formatConfidence(job.aiMatch?.confidence)} />
         </div>
 
@@ -9444,7 +9468,7 @@ function MatchPanel({
 }) {
   const reasons = job.aiMatch?.reasons.length ? job.aiMatch.reasons : ["Strong profile overlap", "Relevant experience", "Skills alignment"];
   const gaps = job.aiMatch?.gaps ?? [];
-  const sourceLabel = getAiMatchSourceLabel(job);
+  const sourceDisplay = getAiMatchSourceDisplay(job);
   const feedbackOptions: Array<{ feedback: MatchFeedback; label: string }> = [
     { feedback: "good_match", label: "Good match" },
     { feedback: "bad_match", label: "Bad match" },
@@ -9455,8 +9479,8 @@ function MatchPanel({
     <article className="panel p-4 2xl:p-5">
       <div className="flex items-start justify-between gap-3">
         <h3 className="text-base font-bold 2xl:text-lg">AI Match Score</h3>
-        <div className="rounded-md border border-border bg-white/[0.035] px-2 py-1 text-[10px] font-bold uppercase text-muted 2xl:text-xs">
-          {sourceLabel}
+        <div className="rounded-md border border-border bg-white/[0.035] px-2 py-1 text-[10px] font-bold uppercase text-muted 2xl:text-xs" title={job.aiMatch?.openclawError}>
+          {sourceDisplay}
           {job.aiMatch?.confidence ? ` · ${job.aiMatch.confidence}` : ""}
         </div>
       </div>
@@ -9587,9 +9611,9 @@ function JobDetails({ job }: { job: Job }) {
   );
 }
 
-function InfoStat({ label, value }: { label: string; value: string }) {
+function InfoStat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
-    <div className="rounded-md border border-border bg-white/[0.025] p-2.5 2xl:p-3">
+    <div className="rounded-md border border-border bg-white/[0.025] p-2.5 2xl:p-3" title={title}>
       <p className="text-xs font-semibold uppercase text-muted">{label}</p>
       <p className="mt-1.5 text-[13px] font-bold text-white 2xl:mt-2 2xl:text-sm">{value}</p>
     </div>

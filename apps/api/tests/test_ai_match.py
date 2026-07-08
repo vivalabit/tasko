@@ -16,6 +16,7 @@ from app.models.jobs import JobMatchFeedbackRecord, JobMatchRecord, StoredJobRec
 from app.models.profile import CandidateMatchSnapshotRecord, ProfilePayload, ProfileRecord
 from app.services import ai_match as ai_match_service
 from app.services.ai_match import OpenClawAiMatchError, calculate_ai_matches, infer_seniority, parse_number
+from app.services.candidate_snapshot import CandidateSnapshotError, build_profile_input_hash
 
 
 def install_openclaw_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -172,6 +173,199 @@ def test_seniority_normalization_handles_common_variants() -> None:
     assert infer_seniority("Mid-Senior level software engineer") == "senior"
     assert infer_seniority("Principal AI Architect") == "lead"
     assert infer_seniority("Entry level graduate developer") == "junior"
+
+
+def test_ai_match_endpoint_requires_openclaw_candidate_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_build_snapshot_with_openclaw(**_: object) -> dict:
+        raise CandidateSnapshotError("snapshot failed")
+
+    def fail_score_with_openclaw(**_: object) -> list[dict]:
+        raise AssertionError("job scoring should not run without an OpenClaw candidate snapshot")
+
+    monkeypatch.setattr(
+        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        fail_build_snapshot_with_openclaw,
+    )
+    monkeypatch.setattr(ai_match_service, "score_with_openclaw", fail_score_with_openclaw)
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        db = testing_session_local()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_ai_match_enabled=True)
+    client = TestClient(app)
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                ProfileRecord(
+                    id="default",
+                    data=ProfilePayload(
+                        current_role="Machine Learning Engineer",
+                        desired_role="ML Software Engineer",
+                        location="Zurich",
+                        skills="Python\nMachine Learning\nPyTorch",
+                    ).model_dump(),
+                )
+            )
+            db.commit()
+
+        job = {
+            "id": "linkedin-strict-snapshot",
+            "company": "Google",
+            "title": "Machine Learning Engineer",
+            "location": "Zurich",
+            "type": "Full-Time",
+            "salary": "Not specified",
+            "posted": "LinkedIn",
+            "experience": "Mid-Senior level",
+            "department": "LinkedIn import",
+            "match": 50,
+            "logo": "linkedin",
+            "overview": "Work on machine learning systems using Python and PyTorch.",
+            "responsibilities": ["Build ML systems"],
+            "requirements": ["Python", "Machine Learning"],
+            "skills": ["Python", "Machine Learning"],
+        }
+
+        response = client.post("/jobs/ai-match", json={"jobs": [{"id": job["id"], "data": job}]})
+
+        assert response.status_code == 502
+        assert response.json()["detail"] == "snapshot failed"
+        with testing_session_local() as db:
+            assert db.query(CandidateMatchSnapshotRecord).count() == 0
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ai_match_endpoint_ignores_cached_local_candidate_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_calls = 0
+    fallback_roles_seen: list[list[str]] = []
+
+    def fake_build_snapshot_with_openclaw(*, fallback_snapshot: dict, **_: object) -> dict:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        fallback_roles_seen.append(fallback_snapshot.get("roles", []))
+        return {**fallback_snapshot, "roles": ["openclaw normalized role"]}
+
+    monkeypatch.setattr(
+        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        fake_build_snapshot_with_openclaw,
+    )
+
+    def fake_score_with_openclaw(*, jobs: list[dict], **_: object) -> list[dict]:
+        return [
+            {
+                "id": job["id"],
+                "score": 87,
+                "confidence": "high",
+                "breakdown": {
+                    "role_fit": 18,
+                    "skills_fit": 25,
+                    "experience_fit": 14,
+                    "preferences_fit": 14,
+                    "constraints_fit": 10,
+                    "industry_fit": 4,
+                    "evidence_fit": 2,
+                },
+                "reasons": ["OpenClaw matched this role"],
+                "gaps": ["No major gaps detected from available data"],
+            }
+            for job in jobs
+        ]
+
+    monkeypatch.setattr(ai_match_service, "score_with_openclaw", fake_score_with_openclaw)
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        db = testing_session_local()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_ai_match_enabled=True)
+    client = TestClient(app)
+
+    try:
+        profile = ProfilePayload(
+            current_role="Machine Learning Engineer",
+            desired_role="ML Software Engineer",
+            location="Zurich",
+            skills="Python\nMachine Learning\nPyTorch",
+        )
+        with testing_session_local() as db:
+            db.add(ProfileRecord(id="default", data=profile.model_dump()))
+            db.add(
+                CandidateMatchSnapshotRecord(
+                    id="cached-local-snapshot",
+                    profile_input_hash=build_profile_input_hash(profile),
+                    profile_hash="cached-local-profile-hash",
+                    matcher_version="ai-match-v1",
+                    source="local",
+                    data={"roles": ["cached local role"], "skills": []},
+                    openclaw_error="previous fallback",
+                    created_at=datetime.now(UTC),
+                )
+            )
+            db.commit()
+
+        job = {
+            "id": "linkedin-ignore-local-snapshot",
+            "company": "Google",
+            "title": "Machine Learning Engineer",
+            "location": "Zurich",
+            "type": "Full-Time",
+            "salary": "Not specified",
+            "posted": "LinkedIn",
+            "experience": "Mid-Senior level",
+            "department": "LinkedIn import",
+            "match": 50,
+            "logo": "linkedin",
+            "overview": "Work on machine learning systems using Python and PyTorch.",
+            "responsibilities": ["Build ML systems"],
+            "requirements": ["Python", "Machine Learning"],
+            "skills": ["Python", "Machine Learning"],
+        }
+
+        response = client.post("/jobs/ai-match", json={"jobs": [{"id": job["id"], "data": job}]})
+
+        assert response.status_code == 200
+        assert snapshot_calls == 1
+        assert fallback_roles_seen == [[]]
+        with testing_session_local() as db:
+            snapshot_sources = [
+                record.source
+                for record in db.query(CandidateMatchSnapshotRecord).all()
+            ]
+            assert snapshot_sources.count("local") == 1
+            assert snapshot_sources.count("openclaw") == 1
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_ai_match_endpoint_updates_and_persists_job_scores(monkeypatch: pytest.MonkeyPatch) -> None:

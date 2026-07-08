@@ -18,7 +18,7 @@ from app.models.jobs import (
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.ai_match import JOB_ADDED_AT_FIELDS, OpenClawAiMatchError, calculate_ai_matches
 from app.services.ai_match_jobs import ai_match_jobs
-from app.services.candidate_snapshot import get_candidate_match_snapshot
+from app.services.candidate_snapshot import CandidateSnapshotError, get_candidate_match_snapshot
 from app.services.job_match_store import (
     calibrate_job_with_feedback,
     delete_job_matches,
@@ -97,6 +97,7 @@ def match_jobs(
             profile=profile,
             settings=settings,
             allow_openclaw=True,
+            strict_openclaw=True,
         )
         jobs_to_match = [
             hydrate_job_data(
@@ -147,6 +148,12 @@ def match_jobs(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
+    except CandidateSnapshotError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
 
 
 @router.post("/ai-match/run", response_model=AiMatchJobStatus, status_code=status.HTTP_202_ACCEPTED)
@@ -168,6 +175,7 @@ def run_match_jobs(
             profile=profile,
             settings=settings,
             allow_openclaw=True,
+            strict_openclaw=True,
         )
         jobs_to_match = [
             hydrate_job_data(
@@ -178,6 +186,7 @@ def run_match_jobs(
             )
             for job in jobs_to_match
         ]
+        db.commit()
         session_factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False)
         started, current_status = ai_match_jobs.start(
             profile=profile,
@@ -192,6 +201,12 @@ def run_match_jobs(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Jobs database is unavailable",
+        ) from exc
+    except CandidateSnapshotError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
         ) from exc
 
     if not started:

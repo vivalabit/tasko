@@ -75,32 +75,37 @@ def get_candidate_match_snapshot(
     profile: ProfilePayload,
     settings: Settings | None = None,
     allow_openclaw: bool = False,
+    strict_openclaw: bool = False,
 ) -> CandidateMatchSnapshot:
     profile_input_hash = build_profile_input_hash(profile)
     existing_record = latest_snapshot_record(db, profile_input_hash=profile_input_hash)
-    if existing_record:
+    if existing_record and (not strict_openclaw or existing_record.source == "openclaw"):
         return record_to_snapshot(existing_record)
 
-    local_snapshot = build_candidate_snapshot(profile)
+    fallback_snapshot = empty_candidate_snapshot() if strict_openclaw else build_candidate_snapshot(profile)
     if allow_openclaw and settings and settings.openclaw_ai_match_enabled:
         try:
             snapshot_data = build_snapshot_with_openclaw(
                 profile=profile,
-                fallback_snapshot=local_snapshot,
+                fallback_snapshot=fallback_snapshot,
                 settings=settings,
             )
             source = "openclaw"
             openclaw_error = None
         except CandidateSnapshotError as exc:
-            snapshot_data = local_snapshot
+            if strict_openclaw:
+                raise
+            snapshot_data = fallback_snapshot
             source = "local"
             openclaw_error = str(exc)[:240]
+    elif strict_openclaw:
+        raise CandidateSnapshotError("OpenClaw candidate snapshot is required but disabled")
     else:
-        snapshot_data = local_snapshot
+        snapshot_data = fallback_snapshot
         source = "local"
         openclaw_error = None
 
-    snapshot_data = normalize_candidate_snapshot(snapshot_data, local_snapshot)
+    snapshot_data = normalize_candidate_snapshot(snapshot_data, fallback_snapshot)
     profile_hash = build_candidate_snapshot_hash(snapshot_data)
     snapshot = CandidateMatchSnapshot(
         profile_input_hash=profile_input_hash,
@@ -114,6 +119,42 @@ def get_candidate_match_snapshot(
         db.add(snapshot_to_record(snapshot))
 
     return snapshot
+
+
+def empty_candidate_snapshot() -> dict[str, Any]:
+    return {
+        "roles": [],
+        "current_role": "",
+        "desired_role": "",
+        "headline": "",
+        "skills": [],
+        "domains": [],
+        "experience": [],
+        "education": [],
+        "locations": [],
+        "work_formats": [],
+        "employment_types": [],
+        "industries": [],
+        "seniority": [],
+        "salary_min": 0,
+        "salary_currency": "",
+        "work_authorization": "",
+        "languages": [],
+        "company_sizes": [],
+        "priorities": [],
+        "preference_notes": "",
+        "no_preference": [],
+        "dealbreakers": [],
+        "additional_notes": "",
+        "evidence": {
+            "resume": False,
+            "resume_file_name": "",
+            "linkedin": False,
+            "github": False,
+            "portfolio": False,
+            "documents": 0,
+        },
+    }
 
 
 def latest_snapshot_record(
