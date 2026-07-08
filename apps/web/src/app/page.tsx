@@ -1783,6 +1783,7 @@ function getAiMatchBreakdownItems(job: Job) {
 function getAiMatchSourceLabel(job: Job) {
   if (job.aiMatch?.source === "openclaw") return "Openclaw";
   if (job.aiMatch?.source === "local") return "Legacy local score";
+  if (isImportedJob(job)) return "Not scored";
   return "Static score";
 }
 
@@ -1888,6 +1889,22 @@ function buildRecommendationPlan(job: Job): JobRecommendation[] {
 
 function isImportedJob(job: Job) {
   return job.id.startsWith("linkedin-");
+}
+
+function hasOpenclawMatch(job: Job) {
+  return job.aiMatch?.source === "openclaw";
+}
+
+function hasDisplayableMatch(job: Job) {
+  return !isImportedJob(job) || hasOpenclawMatch(job);
+}
+
+function formatMatchValue(job: Job) {
+  return hasDisplayableMatch(job) ? `${job.match}%` : "Not scored";
+}
+
+function getDisplayMatch(job: Job) {
+  return hasDisplayableMatch(job) ? job.match : 0;
 }
 
 function sanitizeLegacyLocalAiMatch(job: Job): Job {
@@ -2305,7 +2322,7 @@ function matchesJobFilters(job: Job, filters: JobFilters) {
       (filters.salary === "listed" ? salaryAmount > 0 : salaryAmount >= Number.parseInt(filters.salary, 10))) &&
     matchesExperienceFilter(job, filters.experience) &&
     (filters.type === "Any" || job.type === filters.type) &&
-    (filters.match === "Any" || job.match >= Number.parseInt(filters.match, 10))
+    (filters.match === "Any" || getDisplayMatch(job) >= Number.parseInt(filters.match, 10))
   );
 }
 
@@ -2467,7 +2484,7 @@ export default function HomePage() {
       if (sortBy === "Salary") {
         return getJobSalaryAmount(b) - getJobSalaryAmount(a);
       }
-      return b.match - a.match;
+      return getDisplayMatch(b) - getDisplayMatch(a);
     });
   }, [availableJobs, jobFilters, query, savedJobs, showArchivedJobs, showSavedJobs, sortBy]);
 
@@ -4715,7 +4732,7 @@ export default function HomePage() {
                       <p className="mt-0.5 truncate text-xs font-bold text-[#aeb5c2] 2xl:mt-1 2xl:text-base">{job.company}</p>
                     </div>
                     <div className="grid justify-items-end gap-2 2xl:gap-3">
-                      <JobMatchRing match={job.match} />
+                      <JobMatchRing job={job} />
                       <button
                         type="button"
                         aria-label={savedJobs.includes(job.id) ? "Unsave job" : "Save job"}
@@ -9363,11 +9380,11 @@ function JobMainPanel({
               {formatAiMatchTimestamp(job.aiMatch?.updatedAt)}
             </p>
           </div>
-          <p className="text-2xl font-bold leading-none text-success 2xl:text-3xl">{job.match}%</p>
+          <p className="text-2xl font-bold leading-none text-success 2xl:text-3xl">{formatMatchValue(job)}</p>
         </div>
 
         <div className="mt-4 grid gap-2 sm:grid-cols-3 2xl:mt-5 2xl:gap-3">
-          <InfoStat label="Overall score" value={`${job.match}%`} />
+          <InfoStat label="Overall score" value={formatMatchValue(job)} />
           <InfoStat label="Source" value={sourceDisplay} title={job.aiMatch?.openclawError} />
           <InfoStat label="Confidence" value={formatConfidence(job.aiMatch?.confidence)} />
         </div>
@@ -9537,7 +9554,11 @@ function MatchPanel({
   onFeedback: (job: Job, feedback: MatchFeedback) => void;
   onReviewFullAnalysis: () => void;
 }) {
-  const reasons = job.aiMatch?.reasons.length ? job.aiMatch.reasons : ["Strong profile overlap", "Relevant experience", "Skills alignment"];
+  const reasons = job.aiMatch?.reasons.length
+    ? job.aiMatch.reasons
+    : hasDisplayableMatch(job)
+      ? ["Strong profile overlap", "Relevant experience", "Skills alignment"]
+      : ["Run AI matching to generate role-specific reasons."];
   const gaps = job.aiMatch?.gaps ?? [];
   const sourceDisplay = getAiMatchSourceDisplay(job);
   const feedbackOptions: Array<{ feedback: MatchFeedback; label: string }> = [
@@ -9555,9 +9576,9 @@ function MatchPanel({
           {job.aiMatch?.confidence ? ` · ${job.aiMatch.confidence}` : ""}
         </div>
       </div>
-      <p className="mt-3 text-[34px] font-bold leading-none text-success 2xl:mt-4 2xl:text-[40px]">{job.match}%</p>
+      <p className="mt-3 text-[34px] font-bold leading-none text-success 2xl:mt-4 2xl:text-[40px]">{formatMatchValue(job)}</p>
       <div className="mt-2.5 h-2 rounded-full bg-white/[0.09] 2xl:mt-3">
-        <div className="h-full rounded-full bg-success" style={{ width: `${job.match}%` }} />
+        <div className="h-full rounded-full bg-success" style={{ width: `${getDisplayMatch(job)}%` }} />
       </div>
       <div className="mt-4 grid gap-2 sm:grid-cols-3 2xl:mt-5">
         {feedbackOptions.map((option) => {
@@ -9691,16 +9712,17 @@ function InfoStat({ label, value, title }: { label: string; value: string; title
   );
 }
 
-function JobMatchRing({ match }: { match: number }) {
-  const normalizedMatch = Math.max(0, Math.min(100, match));
+function JobMatchRing({ job }: { job: Job }) {
+  const hasScore = hasDisplayableMatch(job);
+  const normalizedMatch = Math.max(0, Math.min(100, job.match));
   const ringColor = normalizedMatch >= 85 ? "#52c7a2" : normalizedMatch >= 70 ? "#f0b75a" : "#e56b6f";
   const radius = 19;
   const strokeWidth = 5;
   const circumference = 2 * Math.PI * radius;
-  const dashOffset = circumference * (1 - normalizedMatch / 100);
+  const dashOffset = hasScore ? circumference * (1 - normalizedMatch / 100) : circumference;
 
   return (
-    <div className="h-10 w-10 shrink-0 2xl:h-14 2xl:w-14" aria-label={`${match}% AI match`} title={`${match}% match`}>
+    <div className="h-10 w-10 shrink-0 2xl:h-14 2xl:w-14" aria-label={hasScore ? `${job.match}% AI match` : "AI match not scored"} title={hasScore ? `${job.match}% match` : "AI match not scored"}>
       <svg className="block h-full w-full" viewBox="0 0 48 48" aria-hidden="true">
         <circle cx="24" cy="24" r="14.5" fill="#171a21" />
         <circle cx="24" cy="24" r={radius} fill="none" stroke="rgba(255,255,255,0.10)" strokeWidth={strokeWidth} />
@@ -9724,9 +9746,9 @@ function JobMatchRing({ match }: { match: number }) {
           fontWeight="900"
           textAnchor="middle"
           dominantBaseline="central"
-          letterSpacing="-0.2"
+          letterSpacing="0"
         >
-          {normalizedMatch}%
+          {hasScore ? `${normalizedMatch}%` : "AI"}
         </text>
       </svg>
     </div>

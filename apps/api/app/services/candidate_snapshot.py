@@ -23,6 +23,7 @@ from app.services.ai_match import (
 from app.services.resume_import import (
     extract_json_object,
     extract_json_objects,
+    extract_openclaw_text_payloads,
     extract_resume_text,
     summarize_openclaw_error,
 )
@@ -232,7 +233,10 @@ def build_snapshot_with_openclaw(
             timeout=settings.openclaw_ai_match_timeout_seconds,
         )
     except FileNotFoundError as exc:
-        raise CandidateSnapshotError(f"OpenClaw command was not found: {settings.openclaw_command}") from exc
+        raise CandidateSnapshotError(
+            f"OpenClaw command was not found: {settings.openclaw_command}. Install OpenClaw or "
+            "set OPENCLAW_COMMAND to the executable path."
+        ) from exc
     except subprocess.TimeoutExpired as exc:
         raise CandidateSnapshotError("OpenClaw candidate snapshot timed out") from exc
     except subprocess.CalledProcessError as exc:
@@ -287,6 +291,14 @@ def extract_openclaw_candidate_snapshot_payload(value: str) -> dict[str, Any]:
 
         if looks_like_candidate_snapshot(payload):
             return payload
+
+        for text in extract_openclaw_text_payloads(payload):
+            final_payload = extract_json_object(text)
+            candidate = final_payload.get("candidate")
+            if isinstance(candidate, dict):
+                return candidate
+            if looks_like_candidate_snapshot(final_payload):
+                return final_payload
 
         result = payload.get("result")
         if not isinstance(result, dict):

@@ -479,6 +479,12 @@ def parse_skills_with_openclaw(
 
 
 def summarize_openclaw_error(error_output: str) -> str:
+    if "GatewayCredentialsRequiredError" in error_output or "gateway agent requires credentials" in error_output:
+        return (
+            "OpenClaw gateway credentials are not available in the API container. "
+            "Mount ~/.openclaw or configure model auth/API key for the container."
+        )
+
     if "No API key found" in error_output:
         return (
             "OpenClaw model auth is not configured for the selected agent. "
@@ -512,6 +518,11 @@ def extract_openclaw_payload(value: str, key: str) -> dict[str, object]:
         if isinstance(payload.get(key), list):
             return payload
 
+        for text in extract_openclaw_text_payloads(payload):
+            final_payload = extract_json_object(text)
+            if isinstance(final_payload.get(key), list):
+                return final_payload
+
         result = payload.get("result")
         if not isinstance(result, dict):
             continue
@@ -530,19 +541,32 @@ def extract_openclaw_payload(value: str, key: str) -> dict[str, object]:
                 if isinstance(final_payload.get(key), list):
                     return final_payload
 
-        payloads = result.get("payloads")
-        if isinstance(payloads, list):
-            for item in payloads:
-                if not isinstance(item, dict):
-                    continue
-                text = item.get("text")
-                if not isinstance(text, str):
-                    continue
-                final_payload = extract_json_object(text)
-                if isinstance(final_payload.get(key), list):
-                    return final_payload
-
     return {}
+
+
+def extract_openclaw_text_payloads(payload: dict[str, object]) -> list[str]:
+    texts: list[str] = []
+
+    def append_payload_texts(container: dict[str, object]) -> None:
+        payloads = container.get("payloads")
+        if not isinstance(payloads, list):
+            return
+        for item in payloads:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str):
+                texts.append(text)
+
+    append_payload_texts(payload)
+    result = payload.get("result")
+    if isinstance(result, dict):
+        append_payload_texts(result)
+        nested_result = result.get("result")
+        if isinstance(nested_result, dict):
+            append_payload_texts(nested_result)
+
+    return texts
 
 
 def build_openclaw_resume_prompt(resume_text: str) -> str:

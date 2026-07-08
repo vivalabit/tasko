@@ -15,8 +15,20 @@ from app.main import app
 from app.models.jobs import JobMatchFeedbackRecord, JobMatchRecord, StoredJobRecord
 from app.models.profile import CandidateMatchSnapshotRecord, ProfilePayload, ProfileRecord
 from app.services import ai_match as ai_match_service
-from app.services.ai_match import OpenClawAiMatchError, calculate_ai_matches, infer_seniority, parse_number
-from app.services.candidate_snapshot import CandidateSnapshotError, build_profile_input_hash
+from app.services.ai_match import (
+    OpenClawAiMatchError,
+    build_job_snapshot,
+    build_openclaw_ai_match_prompt,
+    calculate_ai_matches,
+    extract_openclaw_ai_match_payload,
+    infer_seniority,
+    parse_number,
+)
+from app.services.candidate_snapshot import (
+    CandidateSnapshotError,
+    build_profile_input_hash,
+    extract_openclaw_candidate_snapshot_payload,
+)
 
 
 def install_openclaw_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -166,6 +178,96 @@ def test_ai_match_requires_openclaw_enabled() -> None:
             openclaw_enabled=False,
             openclaw_max_jobs=0,
         )
+
+
+def test_openclaw_prompt_treats_score_as_expert_judgment() -> None:
+    profile_snapshot = {
+        "roles": ["Machine Learning Engineer"],
+        "skills": ["Python", "PyTorch"],
+    }
+    job_snapshot = build_job_snapshot(
+        {
+            "id": "linkedin-prompt-ml-engineer",
+            "title": "Machine Learning Engineer",
+            "company": "Google",
+            "location": "Zurich",
+            "type": "Full-Time",
+            "salary": "Not specified",
+            "posted": "LinkedIn",
+            "experience": "Mid-Senior level",
+            "department": "LinkedIn import",
+            "overview": "Work on machine learning systems using Python and PyTorch.",
+            "responsibilities": ["Build ML systems"],
+            "requirements": ["Python", "Machine Learning"],
+            "skills": ["Python", "Machine Learning"],
+        }
+    )
+
+    prompt = build_openclaw_ai_match_prompt(profile_snapshot, [job_snapshot])
+
+    assert "score as your expert judgment from 0 to 100" in prompt
+    assert "not an arithmetic sum of breakdown values" in prompt
+    assert "breakdownMaxScores" in prompt
+    assert '"weights"' not in prompt
+
+
+def test_openclaw_candidate_snapshot_reads_top_level_payloads_text() -> None:
+    payload = extract_openclaw_candidate_snapshot_payload(
+        json.dumps(
+            {
+                "payloads": [
+                    {
+                        "text": json.dumps(
+                            {
+                                "candidate": {
+                                    "roles": ["Backend Developer"],
+                                    "skills": ["Python", "FastAPI"],
+                                }
+                            }
+                        )
+                    }
+                ]
+            }
+        )
+    )
+
+    assert payload["roles"] == ["Backend Developer"]
+    assert payload["skills"] == ["Python", "FastAPI"]
+
+
+def test_openclaw_ai_match_reads_top_level_payloads_text() -> None:
+    payload = extract_openclaw_ai_match_payload(
+        json.dumps(
+            {
+                "payloads": [
+                    {
+                        "text": json.dumps(
+                            {
+                                "matches": [
+                                    {
+                                        "id": "linkedin-python-backend",
+                                        "score": 83,
+                                        "breakdown": {
+                                            "role_fit": 16,
+                                            "skills_fit": 25,
+                                            "experience_fit": 13,
+                                            "preferences_fit": 12,
+                                            "constraints_fit": 8,
+                                            "industry_fit": 4,
+                                            "evidence_fit": 3,
+                                        },
+                                    }
+                                ]
+                            }
+                        )
+                    }
+                ]
+            }
+        )
+    )
+
+    assert payload["matches"][0]["id"] == "linkedin-python-backend"
+    assert payload["matches"][0]["score"] == 83
 
 
 def test_seniority_normalization_handles_common_variants() -> None:
@@ -364,6 +466,96 @@ def test_ai_match_endpoint_ignores_cached_local_candidate_snapshot(
             ]
             assert snapshot_sources.count("local") == 1
             assert snapshot_sources.count("openclaw") == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ai_match_endpoint_rejects_incomplete_openclaw_breakdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_build_snapshot_with_openclaw(*, fallback_snapshot: dict, **_: object) -> dict:
+        return {**fallback_snapshot, "roles": ["openclaw normalized role"]}
+
+    def fake_score_with_openclaw(*, jobs: list[dict], **_: object) -> list[dict]:
+        return [
+            {
+                "id": jobs[0]["id"],
+                "score": 81,
+                "confidence": "high",
+                "breakdown": {
+                    "role_fit": 18,
+                    "skills_fit": 24,
+                },
+                "reasons": ["OpenClaw matched this role"],
+                "gaps": ["No major gaps detected from available data"],
+            }
+        ]
+
+    monkeypatch.setattr(
+        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        fake_build_snapshot_with_openclaw,
+    )
+    monkeypatch.setattr(ai_match_service, "score_with_openclaw", fake_score_with_openclaw)
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        db = testing_session_local()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_ai_match_enabled=True)
+    client = TestClient(app)
+
+    try:
+        with testing_session_local() as db:
+            db.add(
+                ProfileRecord(
+                    id="default",
+                    data=ProfilePayload(
+                        current_role="Machine Learning Engineer",
+                        desired_role="ML Software Engineer",
+                        location="Zurich",
+                        skills="Python\nMachine Learning\nPyTorch",
+                    ).model_dump(),
+                )
+            )
+            db.commit()
+
+        job = {
+            "id": "linkedin-incomplete-openclaw-breakdown",
+            "company": "Google",
+            "title": "Machine Learning Engineer",
+            "location": "Zurich",
+            "type": "Full-Time",
+            "salary": "Not specified",
+            "posted": "LinkedIn",
+            "experience": "Mid-Senior level",
+            "department": "LinkedIn import",
+            "match": 50,
+            "logo": "linkedin",
+            "overview": "Work on machine learning systems using Python and PyTorch.",
+            "responsibilities": ["Build ML systems"],
+            "requirements": ["Python", "Machine Learning"],
+            "skills": ["Python", "Machine Learning"],
+        }
+
+        response = client.post("/jobs/ai-match", json={"jobs": [{"id": job["id"], "data": job}]})
+
+        assert response.status_code == 502
+        assert "missing breakdown keys" in response.json()["detail"]
+        assert "experience_fit" in response.json()["detail"]
+        with testing_session_local() as db:
+            assert db.query(JobMatchRecord).count() == 0
     finally:
         app.dependency_overrides.clear()
 

@@ -10,7 +10,12 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.models.profile import ProfilePayload
-from app.services.resume_import import extract_json_object, extract_json_objects, summarize_openclaw_error
+from app.services.resume_import import (
+    extract_json_object,
+    extract_json_objects,
+    extract_openclaw_text_payloads,
+    summarize_openclaw_error,
+)
 
 MATCHER_VERSION = "ai-match-v1"
 MAX_REASON_COUNT = 3
@@ -278,7 +283,10 @@ def score_with_openclaw(
             timeout=timeout_seconds,
         )
     except FileNotFoundError as exc:
-        raise OpenClawAiMatchError(f"OpenClaw command was not found: {command}") from exc
+        raise OpenClawAiMatchError(
+            f"OpenClaw command was not found: {command}. Install OpenClaw or set "
+            "OPENCLAW_COMMAND to the executable path."
+        ) from exc
     except subprocess.TimeoutExpired as exc:
         raise OpenClawAiMatchError("OpenClaw AI match timed out") from exc
     except subprocess.CalledProcessError as exc:
@@ -314,7 +322,7 @@ def build_openclaw_ai_match_prompt(profile_snapshot: dict[str, Any], jobs: list[
         for job in jobs
     ]
     payload = json.dumps(
-        {"candidate": profile_snapshot, "jobs": compact_jobs, "weights": WEIGHTS},
+        {"candidate": profile_snapshot, "jobs": compact_jobs, "breakdownMaxScores": WEIGHTS},
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -323,8 +331,10 @@ def build_openclaw_ai_match_prompt(profile_snapshot: dict[str, Any], jobs: list[
         "You score job fit for a personal job search app.\n"
         "Return ONLY one valid JSON object, no markdown and no prose.\n"
         "Use only the provided snapshots. Do not invent missing evidence.\n"
-        "For every job, apply these weights: role_fit 20, skills_fit 30, experience_fit 15, "
-        "preferences_fit 15, constraints_fit 10, industry_fit 5, evidence_fit 5.\n"
+        "For every job, set score as your expert judgment from 0 to 100.\n"
+        "Score is the final AI assessment, not an arithmetic sum of breakdown values.\n"
+        "Breakdown is a structured explanation with category scores capped by breakdownMaxScores; "
+        "it must be internally consistent, but it is not the formula for score.\n"
         "Apply caps: hard dealbreaker max 30, salary below candidate minimum max 50, "
         "work authorization mismatch max 35, major seniority mismatch max 45.\n"
         "JSON shape:\n"
@@ -340,6 +350,11 @@ def extract_openclaw_ai_match_payload(value: str) -> dict[str, object]:
     for payload in extract_json_objects(value):
         if isinstance(payload.get("matches"), list):
             return payload
+
+        for text in extract_openclaw_text_payloads(payload):
+            final_payload = extract_json_object(text)
+            if isinstance(final_payload.get("matches"), list):
+                return final_payload
 
         result = payload.get("result")
         if not isinstance(result, dict):
@@ -361,31 +376,17 @@ def extract_openclaw_ai_match_payload(value: str) -> dict[str, object]:
                     if isinstance(final_payload.get("matches"), list):
                         return final_payload
 
-        payloads = result.get("payloads")
-        if isinstance(payloads, list):
-            for item in payloads:
-                if not isinstance(item, dict):
-                    continue
-                text = item.get("text")
-                if not isinstance(text, str):
-                    continue
-                final_payload = extract_json_object(text)
-                if isinstance(final_payload.get("matches"), list):
-                    return final_payload
-
     return {}
 
 
 def normalize_openclaw_result(result: dict[str, Any], current_job: dict[str, Any]) -> dict[str, Any]:
     fallback = current_job.get("aiMatch", {}) if isinstance(current_job.get("aiMatch"), dict) else {}
-    breakdown = result.get("breakdown") if isinstance(result.get("breakdown"), dict) else {}
-    normalized_breakdown = {
-        key: clamp_round(breakdown.get(key, fallback.get("breakdown", {}).get(key, 0)))
-        for key in WEIGHTS
-    }
+    validate_openclaw_result(result, current_job)
+    breakdown = result["breakdown"]
+    normalized_breakdown = {key: clamp_round(breakdown[key]) for key in WEIGHTS}
 
     return {
-        "score": clamp_round(result.get("score", current_job.get("match", 0))),
+        "score": clamp_round(result["score"]),
         "source": "openclaw",
         "confidence": normalize_confidence(result.get("confidence", fallback.get("confidence", "medium"))),
         "breakdown": normalized_breakdown,
@@ -393,6 +394,25 @@ def normalize_openclaw_result(result: dict[str, Any], current_job: dict[str, Any
         "gaps": normalize_string_list(result.get("gaps"), MAX_GAP_COUNT),
         "heuristicScore": clamp_round(fallback.get("heuristicScore", current_job.get("match", 0))),
     }
+
+
+def validate_openclaw_result(result: dict[str, Any], current_job: dict[str, Any]) -> None:
+    job_id = str(result.get("id") or current_job.get("id") or "unknown")
+    if "score" not in result:
+        raise OpenClawAiMatchError(f"OpenClaw returned an incomplete match for {job_id}: missing score")
+
+    breakdown = result.get("breakdown")
+    if not isinstance(breakdown, dict):
+        raise OpenClawAiMatchError(
+            f"OpenClaw returned an incomplete match for {job_id}: missing breakdown"
+        )
+
+    missing_breakdown_keys = [key for key in WEIGHTS if key not in breakdown]
+    if missing_breakdown_keys:
+        raise OpenClawAiMatchError(
+            f"OpenClaw returned an incomplete match for {job_id}: missing breakdown keys "
+            f"{', '.join(missing_breakdown_keys)}"
+        )
 
 
 def apply_match_result(

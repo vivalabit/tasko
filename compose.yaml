@@ -11,10 +11,12 @@ services:
       DATABASE_URL: postgresql+psycopg://tasko:tasko@postgres:5432/tasko
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
+      OPENCLAW_COMMAND: openclaw
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
       - .:/workspace
+      - ${HOME}/.openclaw:/root/.openclaw
     depends_on:
       postgres:
         condition: service_healthy
