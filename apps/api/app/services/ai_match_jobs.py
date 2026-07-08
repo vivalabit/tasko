@@ -28,6 +28,7 @@ class AiMatchJobManager:
         profile: ProfilePayload,
         jobs: list[dict[str, Any]],
         profile_hash: str,
+        candidate_snapshot: dict[str, Any],
         settings: Settings,
         session_factory: SessionFactory,
         force: bool = False,
@@ -52,6 +53,7 @@ class AiMatchJobManager:
                 "profile": profile,
                 "jobs": jobs,
                 "profile_hash": profile_hash,
+                "candidate_snapshot": candidate_snapshot,
                 "settings": settings,
                 "session_factory": session_factory,
                 "force": force,
@@ -72,6 +74,7 @@ class AiMatchJobManager:
         profile: ProfilePayload,
         jobs: list[dict[str, Any]],
         profile_hash: str,
+        candidate_snapshot: dict[str, Any],
         settings: Settings,
         session_factory: SessionFactory,
         force: bool,
@@ -91,6 +94,7 @@ class AiMatchJobManager:
                     openclaw_enabled=False,
                     openclaw_max_jobs=0,
                     force=force,
+                    candidate_snapshot=candidate_snapshot,
                 )
                 if not matched_job:
                     self._increment(run_id)
@@ -120,6 +124,7 @@ class AiMatchJobManager:
                     openclaw_enabled=True,
                     openclaw_max_jobs=1,
                     force=force,
+                    candidate_snapshot=candidate_snapshot,
                 )
                 if not matched_job:
                     self._increment(run_id)

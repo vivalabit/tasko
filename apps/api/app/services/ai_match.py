@@ -108,8 +108,9 @@ def calculate_ai_matches(
     openclaw_enabled: bool,
     openclaw_max_jobs: int,
     force: bool = False,
+    candidate_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    profile_snapshot = build_candidate_snapshot(profile)
+    profile_snapshot = candidate_snapshot or build_candidate_snapshot(profile)
     prepared_jobs: list[dict[str, Any]] = []
     now_datetime = datetime.now(UTC)
     now = now_datetime.isoformat()
@@ -482,8 +483,12 @@ def build_cache_key(profile_snapshot: dict[str, Any], job_snapshot: dict[str, An
 
 
 def build_profile_hash(profile: ProfilePayload) -> str:
+    return build_candidate_snapshot_hash(build_candidate_snapshot(profile))
+
+
+def build_candidate_snapshot_hash(snapshot: dict[str, Any]) -> str:
     payload = json.dumps(
-        {"version": MATCHER_VERSION, "candidate": build_candidate_snapshot(profile)},
+        {"version": MATCHER_VERSION, "candidate": snapshot},
         sort_keys=True,
         separators=(",", ":"),
     )

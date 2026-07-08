@@ -1,7 +1,8 @@
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
-from sqlalchemy import JSON, String
+from sqlalchemy import JSON, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -12,6 +13,23 @@ class ProfileRecord(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class CandidateMatchSnapshotRecord(Base):
+    __tablename__ = "candidate_match_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    profile_input_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    profile_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    matcher_version: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    openclaw_error: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
 
 
 class ProfilePayload(BaseModel):

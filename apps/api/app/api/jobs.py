@@ -10,8 +10,9 @@ from app.core.database import get_db
 from app.core.settings import Settings, get_settings
 from app.models.jobs import AiMatchJobStatus, StoredJobPayload, StoredJobRecord, StoredJobsRequest
 from app.models.profile import ProfilePayload, ProfileRecord
-from app.services.ai_match import JOB_ADDED_AT_FIELDS, build_profile_hash, calculate_ai_matches
+from app.services.ai_match import JOB_ADDED_AT_FIELDS, calculate_ai_matches
 from app.services.ai_match_jobs import ai_match_jobs
+from app.services.candidate_snapshot import get_candidate_match_snapshot
 from app.services.job_match_store import (
     delete_job_matches,
     hydrate_job_data,
@@ -26,7 +27,7 @@ router = APIRouter()
 def list_jobs(db: Session = Depends(get_db)) -> list[StoredJobPayload]:
     try:
         profile = get_current_profile(db)
-        profile_hash = build_profile_hash(profile)
+        candidate_snapshot = get_candidate_match_snapshot(db, profile=profile)
         records = db.query(StoredJobRecord).order_by(StoredJobRecord.id.desc()).all()
         return [
             StoredJobPayload(
@@ -35,7 +36,7 @@ def list_jobs(db: Session = Depends(get_db)) -> list[StoredJobPayload]:
                     db,
                     job_id=record.id,
                     job_data=record.data,
-                    profile_hash=profile_hash,
+                    profile_hash=candidate_snapshot.profile_hash,
                 ),
             )
             for record in records
@@ -83,9 +84,19 @@ def match_jobs(
             for job in request.jobs
         ]
         profile = get_current_profile(db)
-        profile_hash = build_profile_hash(profile)
+        candidate_snapshot = get_candidate_match_snapshot(
+            db,
+            profile=profile,
+            settings=settings,
+            allow_openclaw=True,
+        )
         jobs_to_match = [
-            hydrate_job_data(db, job_id=str(job.get("id") or ""), job_data=job, profile_hash=profile_hash)
+            hydrate_job_data(
+                db,
+                job_id=str(job.get("id") or ""),
+                job_data=job,
+                profile_hash=candidate_snapshot.profile_hash,
+            )
             for job in jobs_to_match
         ]
         matched_jobs = calculate_ai_matches(
@@ -98,13 +109,14 @@ def match_jobs(
             openclaw_enabled=settings.openclaw_ai_match_enabled,
             openclaw_max_jobs=settings.openclaw_ai_match_max_jobs,
             force=force,
+            candidate_snapshot=candidate_snapshot.data,
         )
 
         for job in matched_jobs:
             job_id = str(job.get("id") or "")
             if not job_id:
                 continue
-            persist_job_and_match(db, job=job, profile_hash=profile_hash)
+            persist_job_and_match(db, job=job, profile_hash=candidate_snapshot.profile_hash)
 
         db.commit()
         return [StoredJobPayload(id=str(job.get("id")), data=job) for job in matched_jobs if job.get("id")]
@@ -130,16 +142,27 @@ def run_match_jobs(
             for job in request.jobs
         ]
         profile = get_current_profile(db)
-        profile_hash = build_profile_hash(profile)
+        candidate_snapshot = get_candidate_match_snapshot(
+            db,
+            profile=profile,
+            settings=settings,
+            allow_openclaw=True,
+        )
         jobs_to_match = [
-            hydrate_job_data(db, job_id=str(job.get("id") or ""), job_data=job, profile_hash=profile_hash)
+            hydrate_job_data(
+                db,
+                job_id=str(job.get("id") or ""),
+                job_data=job,
+                profile_hash=candidate_snapshot.profile_hash,
+            )
             for job in jobs_to_match
         ]
         session_factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False)
         started, current_status = ai_match_jobs.start(
             profile=profile,
             jobs=jobs_to_match,
-            profile_hash=profile_hash,
+            profile_hash=candidate_snapshot.profile_hash,
+            candidate_snapshot=candidate_snapshot.data,
             settings=settings,
             session_factory=session_factory,
             force=force,
