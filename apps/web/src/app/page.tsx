@@ -1634,6 +1634,18 @@ function wait(ms: number) {
   });
 }
 
+async function readApiErrorMessage(response: Response, fallback: string) {
+  try {
+    const payload = (await response.json()) as { detail?: unknown; message?: unknown };
+    if (typeof payload.detail === "string" && payload.detail.trim()) return payload.detail;
+    if (typeof payload.message === "string" && payload.message.trim()) return payload.message;
+  } catch {
+    // Error responses are not guaranteed to be JSON.
+  }
+
+  return fallback;
+}
+
 function createClientId(prefix: string) {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return `${prefix}-${crypto.randomUUID()}`;
@@ -2325,6 +2337,7 @@ export default function HomePage() {
   const [parserSearchStatus, setParserSearchStatus] = useState<ParserSearchStatus>("idle");
   const [parserSearchMessage, setParserSearchMessage] = useState("");
   const [forceMatchingJobId, setForceMatchingJobId] = useState("");
+  const [aiMatchErrorMessage, setAiMatchErrorMessage] = useState("");
   const [matchFeedbackSavingJobId, setMatchFeedbackSavingJobId] = useState("");
   const [parserSearchForm, setParserSearchForm] = useState<ParserSearchForm>(defaultParserSearchForm);
   const [parserSearchConfigs, setParserSearchConfigs] = useState<ParserSearchConfig[]>([]);
@@ -4180,8 +4193,19 @@ export default function HomePage() {
     });
   }
 
+  function reportAiMatchError(message: string, details?: string) {
+    setAiMatchErrorMessage(message);
+    appendAppLog({
+      level: "error",
+      area: "AI Match",
+      message,
+      details,
+    });
+  }
+
   async function refreshAiMatches(jobsToMatch: Job[], runSignature?: string, force = false) {
     if (jobsToMatch.length === 0) return false;
+    setAiMatchErrorMessage("");
 
     try {
       const response = await fetch(`${apiBaseUrl}/jobs/ai-match/run${force ? "?force=true" : ""}`, {
@@ -4196,7 +4220,11 @@ export default function HomePage() {
         return pollAiMatchStatus();
       }
 
-      if (!response.ok) return false;
+      if (!response.ok) {
+        const message = await readApiErrorMessage(response, "AI match run could not start");
+        reportAiMatchError(message, `HTTP ${response.status}`);
+        return false;
+      }
 
       if (runSignature) {
         window.localStorage.setItem(aiMatchRunStorageKey, runSignature);
@@ -4206,8 +4234,9 @@ export default function HomePage() {
       applyAiMatchStatus(startedStatus);
 
       return pollAiMatchStatus();
-    } catch {
-      // AI match is progressive enhancement; imported jobs remain usable without it.
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "AI match request failed";
+      reportAiMatchError(message);
       return false;
     }
   }
@@ -4254,15 +4283,30 @@ export default function HomePage() {
       const response = await fetch(`${apiBaseUrl}/jobs/ai-match/status`, {
         cache: "no-store",
       });
-      if (!response.ok) return false;
+      if (!response.ok) {
+        const message = await readApiErrorMessage(response, "AI match status check failed");
+        reportAiMatchError(message, `HTTP ${response.status}`);
+        return false;
+      }
 
       const status = (await response.json()) as AiMatchJobStatus;
       applyAiMatchStatus(status);
 
-      if (status.status === "completed") return true;
-      if (status.status === "failed" || status.status === "idle") return false;
+      if (status.status === "completed") {
+        setAiMatchErrorMessage("");
+        return true;
+      }
+      if (status.status === "failed") {
+        reportAiMatchError(status.error || "AI match run failed");
+        return false;
+      }
+      if (status.status === "idle") {
+        reportAiMatchError("AI match run stopped before completing");
+        return false;
+      }
     }
 
+    reportAiMatchError("AI match status timed out before completing");
     return false;
   }
 
@@ -4608,6 +4652,22 @@ export default function HomePage() {
             <ChevronDown className="pointer-events-none absolute right-2.5 h-3.5 w-3.5 text-muted 2xl:right-4 2xl:h-4 2xl:w-4" />
           </label>
         </div>
+
+        {aiMatchErrorMessage ? (
+          <div className="mt-2.5 flex shrink-0 items-start gap-2 rounded-md border border-[#d94d4d]/45 bg-[#d94d4d]/13 px-3 py-2 text-xs font-semibold text-[#ff8a8a] 2xl:mt-3 2xl:px-4 2xl:py-2.5 2xl:text-sm">
+            <X className="mt-0.5 h-4 w-4 shrink-0" />
+            <p className="min-w-0 flex-1">{aiMatchErrorMessage}</p>
+            <button
+              type="button"
+              aria-label="Dismiss AI match error"
+              title="Dismiss AI match error"
+              onClick={() => setAiMatchErrorMessage("")}
+              className="grid h-5 w-5 shrink-0 place-items-center rounded text-[#ffb0b0] transition hover:bg-white/10 hover:text-white"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : null}
 
         <div className="mt-2.5 grid min-h-0 flex-1 gap-3 xl:grid-cols-[330px_minmax(0,1fr)] 2xl:mt-4 2xl:grid-cols-[420px_minmax(0,1fr)] 2xl:gap-4">
           <aside className="flex min-h-0 flex-col overflow-hidden rounded-md bg-white/[0.02]">
