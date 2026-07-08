@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.settings import Settings
 from app.models.jobs import AiMatchJobStatus, StoredJobPayload
 from app.models.profile import ProfilePayload
-from app.services.ai_match import calculate_ai_matches, select_openclaw_candidates
+from app.services.ai_match import calculate_ai_matches
 from app.services.job_match_store import calibrate_job_with_feedback, hydrate_job_data, persist_job_and_match
 
 SessionFactory = Callable[[], Session]
@@ -80,7 +80,6 @@ class AiMatchJobManager:
         force: bool,
     ) -> None:
         self._update(run_id, status="running")
-        local_jobs: list[dict[str, Any]] = []
 
         try:
             for job in jobs:
@@ -91,37 +90,7 @@ class AiMatchJobManager:
                     agent_id=settings.openclaw_agent_id,
                     thinking=settings.openclaw_ai_match_thinking,
                     timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
-                    openclaw_enabled=False,
-                    openclaw_max_jobs=0,
-                    force=force,
-                    candidate_snapshot=candidate_snapshot,
-                )
-                if not matched_job:
-                    self._increment(run_id)
-                    continue
-
-                local_job = matched_job[0]
-                local_jobs.append(local_job)
-                hydrated_job = self._persist_job(session_factory, local_job, profile_hash)
-                self._append_update(run_id, hydrated_job)
-
-            openclaw_candidates = (
-                select_openclaw_candidates(local_jobs, settings.openclaw_ai_match_max_jobs)
-                if settings.openclaw_ai_match_enabled
-                else []
-            )
-            if openclaw_candidates:
-                self._add_total(run_id, len(openclaw_candidates))
-
-            for job in openclaw_candidates:
-                matched_job = calculate_ai_matches(
-                    profile,
-                    [job],
-                    command=settings.openclaw_command,
-                    agent_id=settings.openclaw_agent_id,
-                    thinking=settings.openclaw_ai_match_thinking,
-                    timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
-                    openclaw_enabled=True,
+                    openclaw_enabled=settings.openclaw_ai_match_enabled,
                     openclaw_max_jobs=1,
                     force=force,
                     candidate_snapshot=candidate_snapshot,

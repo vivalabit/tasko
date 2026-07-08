@@ -16,7 +16,7 @@ from app.models.jobs import (
     StoredJobsRequest,
 )
 from app.models.profile import ProfilePayload, ProfileRecord
-from app.services.ai_match import JOB_ADDED_AT_FIELDS, calculate_ai_matches
+from app.services.ai_match import JOB_ADDED_AT_FIELDS, OpenClawAiMatchError, calculate_ai_matches
 from app.services.ai_match_jobs import ai_match_jobs
 from app.services.candidate_snapshot import get_candidate_match_snapshot
 from app.services.job_match_store import (
@@ -140,6 +140,12 @@ def match_jobs(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Jobs database is unavailable",
+        ) from exc
+    except OpenClawAiMatchError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
         ) from exc
 
 

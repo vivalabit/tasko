@@ -1744,27 +1744,33 @@ function formatAiMatchTimestamp(value?: string) {
   });
 }
 
-const aiMatchBreakdownLabels: Record<string, string> = {
-  role_fit: "Role",
-  skills_fit: "Skills",
-  experience_fit: "Experience",
-  preferences_fit: "Preferences",
-  constraints_fit: "Constraints",
-  evidence_fit: "Evidence",
-};
+const aiMatchBreakdownItems = [
+  { key: "role_fit", label: "Role", max: 20 },
+  { key: "skills_fit", label: "Skills", max: 30 },
+  { key: "experience_fit", label: "Experience", max: 15 },
+  { key: "preferences_fit", label: "Preferences", max: 15 },
+  { key: "constraints_fit", label: "Constraints", max: 10 },
+  { key: "industry_fit", label: "Industry", max: 5 },
+  { key: "evidence_fit", label: "Evidence", max: 5 },
+];
 
 function getAiMatchBreakdownItems(job: Job) {
   const breakdown = job.aiMatch?.breakdown ?? {};
-  return Object.entries(aiMatchBreakdownLabels).map(([key, label]) => ({
-    key,
-    label,
-    value: Math.max(0, Math.min(100, Math.round(Number(breakdown[key] ?? 0)))),
-  }));
+  return aiMatchBreakdownItems.map(({ key, label, max }) => {
+    const value = Math.max(0, Math.min(max, Math.round(Number(breakdown[key] ?? 0))));
+    return {
+      key,
+      label,
+      value,
+      max,
+      progress: Math.round((value / max) * 100),
+    };
+  });
 }
 
 function getAiMatchSourceLabel(job: Job) {
   if (job.aiMatch?.source === "openclaw") return "Openclaw";
-  if (job.aiMatch?.source === "local") return "Local pre-score";
+  if (job.aiMatch?.source === "local") return "Legacy local score";
   return "Static score";
 }
 
@@ -9273,12 +9279,14 @@ function JobMainPanel({
 
         <div className="mt-5 space-y-2.5 2xl:mt-6 2xl:space-y-3">
           {breakdownItems.map((item) => (
-            <div key={item.key} className="grid grid-cols-[minmax(92px,0.36fr)_minmax(0,1fr)_38px] items-center gap-3">
+            <div key={item.key} className="grid grid-cols-[minmax(92px,0.36fr)_minmax(0,1fr)_54px] items-center gap-3">
               <span className="text-[13px] font-semibold text-muted 2xl:text-sm">{item.label}</span>
               <div className="h-2 flex-1 rounded-full bg-white/[0.08]">
-                <div className="h-full rounded-full bg-success" style={{ width: `${item.value}%` }} />
+                <div className="h-full rounded-full bg-success" style={{ width: `${item.progress}%` }} />
               </div>
-              <span className="text-right text-[12px] font-bold text-[#d8dee8] 2xl:text-sm">{item.value}</span>
+              <span className="text-right text-[12px] font-bold text-[#d8dee8] 2xl:text-sm">
+                {item.value}/{item.max}
+              </span>
             </div>
           ))}
         </div>

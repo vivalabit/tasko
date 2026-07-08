@@ -3,6 +3,7 @@ import time
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -13,7 +14,41 @@ from app.core.settings import Settings, get_settings
 from app.main import app
 from app.models.jobs import JobMatchFeedbackRecord, JobMatchRecord, StoredJobRecord
 from app.models.profile import CandidateMatchSnapshotRecord, ProfilePayload, ProfileRecord
-from app.services.ai_match import calculate_ai_matches, infer_seniority, parse_number
+from app.services import ai_match as ai_match_service
+from app.services.ai_match import OpenClawAiMatchError, calculate_ai_matches, infer_seniority, parse_number
+
+
+def install_openclaw_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_build_snapshot_with_openclaw(*, fallback_snapshot: dict, **_: object) -> dict:
+        return fallback_snapshot
+
+    def fake_score_with_openclaw(*, jobs: list[dict], **_: object) -> list[dict]:
+        matches = []
+        for job in jobs:
+            title = str(job.get("title") or "")
+            is_relevant = "Accounting" not in title
+            matches.append(
+                {
+                    "id": job["id"],
+                    "score": 88 if is_relevant else 34,
+                    "confidence": "high" if is_relevant else "medium",
+                    "breakdown": {
+                        "role_fit": 18 if is_relevant else 3,
+                        "skills_fit": 26 if is_relevant else 2,
+                        "experience_fit": 14 if is_relevant else 5,
+                        "preferences_fit": 14 if is_relevant else 6,
+                        "constraints_fit": 10,
+                        "industry_fit": 4 if is_relevant else 1,
+                        "evidence_fit": 2,
+                    },
+                    "reasons": ["OpenClaw matched this role"] if is_relevant else ["OpenClaw found weak overlap"],
+                    "gaps": ["No major gaps detected from available data"] if is_relevant else ["Role is not aligned"],
+                }
+            )
+        return matches
+
+    monkeypatch.setattr("app.services.candidate_snapshot.build_snapshot_with_openclaw", fake_build_snapshot_with_openclaw)
+    monkeypatch.setattr(ai_match_service, "score_with_openclaw", fake_score_with_openclaw)
 
 
 def test_parse_number_reads_spaced_salary_values() -> None:
@@ -21,7 +56,8 @@ def test_parse_number_reads_spaced_salary_values() -> None:
     assert parse_number("$120k - $160k") == 160000
 
 
-def test_local_ai_match_scores_relevant_job_higher() -> None:
+def test_openclaw_ai_match_scores_relevant_job_higher(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_openclaw_fakes(monkeypatch)
     profile = ProfilePayload(
         current_role="Machine Learning Engineer",
         desired_role="Audio ML Engineer",
@@ -73,16 +109,16 @@ def test_local_ai_match_scores_relevant_job_higher() -> None:
         agent_id="main",
         thinking="low",
         timeout_seconds=1,
-        openclaw_enabled=False,
-        openclaw_max_jobs=0,
+        openclaw_enabled=True,
+        openclaw_max_jobs=20,
     )
 
     assert matched[0]["match"] > matched[1]["match"]
-    assert matched[0]["aiMatch"]["source"] == "local"
+    assert matched[0]["aiMatch"]["source"] == "openclaw"
     assert matched[0]["aiMatch"]["reasons"]
 
 
-def test_local_ai_match_understands_aliases_locations_and_currency_warning() -> None:
+def test_ai_match_requires_openclaw_enabled() -> None:
     profile = ProfilePayload(
         current_role="Senior LLM Engineer",
         desired_role="GenAI Platform Engineer",
@@ -118,22 +154,17 @@ def test_local_ai_match_understands_aliases_locations_and_currency_warning() -> 
         "skills": ["GenAI", "React", "Node.js", "MLOps"],
     }
 
-    matched = calculate_ai_matches(
-        profile,
-        [job],
-        command="openclaw",
-        agent_id="main",
-        thinking="low",
-        timeout_seconds=1,
-        openclaw_enabled=False,
-        openclaw_max_jobs=0,
-    )
-
-    ai_match = matched[0]["aiMatch"]
-    assert ai_match["breakdown"]["skills_fit"] >= 20
-    assert ai_match["breakdown"]["preferences_fit"] == 15
-    assert ai_match["breakdown"]["experience_fit"] == 15
-    assert any("currency differs" in gap.lower() for gap in ai_match["gaps"])
+    with pytest.raises(OpenClawAiMatchError, match="required but disabled"):
+        calculate_ai_matches(
+            profile,
+            [job],
+            command="openclaw",
+            agent_id="main",
+            thinking="low",
+            timeout_seconds=1,
+            openclaw_enabled=False,
+            openclaw_max_jobs=0,
+        )
 
 
 def test_seniority_normalization_handles_common_variants() -> None:
@@ -143,7 +174,8 @@ def test_seniority_normalization_handles_common_variants() -> None:
     assert infer_seniority("Entry level graduate developer") == "junior"
 
 
-def test_ai_match_endpoint_updates_and_persists_job_scores() -> None:
+def test_ai_match_endpoint_updates_and_persists_job_scores(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_openclaw_fakes(monkeypatch)
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -160,7 +192,7 @@ def test_ai_match_endpoint_updates_and_persists_job_scores() -> None:
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_ai_match_enabled=False)
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_ai_match_enabled=True)
     client = TestClient(app)
 
     try:
@@ -203,7 +235,7 @@ def test_ai_match_endpoint_updates_and_persists_job_scores() -> None:
         assert response.status_code == 200
         payload = response.json()[0]["data"]
         assert payload["match"] != 50
-        assert payload["aiMatch"]["source"] == "local"
+        assert payload["aiMatch"]["source"] == "openclaw"
         assert payload["aiMatch"]["cacheKey"]
         assert read_response.json()[0]["data"]["aiMatch"]["score"] == payload["match"]
 
@@ -232,18 +264,19 @@ def test_ai_match_endpoint_updates_and_persists_job_scores() -> None:
             assert stored_job is not None
             assert "aiMatch" not in stored_job.data
             assert len(snapshot_records) == 1
-            assert snapshot_records[0].source == "local"
+            assert snapshot_records[0].source == "openclaw"
             assert len(match_records) == 2
             assert len(feedback_records) == 1
             assert {record.profile_hash for record in match_records} == {snapshot_records[0].profile_hash}
             assert rerun_payload["match"] in {record.score for record in match_records}
-            assert all(record.source == "local" for record in match_records)
+            assert all(record.source == "openclaw" for record in match_records)
             assert all(record.breakdown for record in match_records)
     finally:
         app.dependency_overrides.clear()
 
 
-def test_ai_match_endpoint_force_reruns_only_recent_jobs() -> None:
+def test_ai_match_endpoint_force_reruns_cached_openclaw_jobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_openclaw_fakes(monkeypatch)
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -260,7 +293,7 @@ def test_ai_match_endpoint_force_reruns_only_recent_jobs() -> None:
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_ai_match_enabled=False)
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_ai_match_enabled=True)
     client = TestClient(app)
 
     try:
@@ -334,13 +367,14 @@ def test_ai_match_endpoint_force_reruns_only_recent_jobs() -> None:
         )
         assert (
             forced_jobs[old_job["id"]]["aiMatch"]["updatedAt"]
-            == cached_jobs[old_job["id"]]["aiMatch"]["updatedAt"]
+            != cached_jobs[old_job["id"]]["aiMatch"]["updatedAt"]
         )
     finally:
         app.dependency_overrides.clear()
 
 
-def test_ai_match_run_endpoint_updates_status_and_persists_job_scores() -> None:
+def test_ai_match_run_endpoint_updates_status_and_persists_job_scores(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_openclaw_fakes(monkeypatch)
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -357,7 +391,7 @@ def test_ai_match_run_endpoint_updates_status_and_persists_job_scores() -> None:
             db.close()
 
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_ai_match_enabled=False)
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_ai_match_enabled=True)
     client = TestClient(app)
 
     try:
@@ -415,7 +449,7 @@ def test_ai_match_run_endpoint_updates_status_and_persists_job_scores() -> None:
         assert status_payload["processed"] == status_payload["total"] == 1
         payload = status_payload["updatedJobs"][0]["data"]
         assert payload["match"] != 50
-        assert payload["aiMatch"]["source"] == "local"
+        assert payload["aiMatch"]["source"] == "openclaw"
 
         read_response = client.get("/jobs")
         assert read_response.json()[0]["data"]["aiMatch"]["score"] == payload["match"]

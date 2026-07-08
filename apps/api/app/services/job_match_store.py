@@ -48,6 +48,7 @@ def latest_match_record(db: Session, *, job_id: str, profile_hash: str) -> JobMa
             JobMatchRecord.job_id == job_id,
             JobMatchRecord.profile_hash == profile_hash,
             JobMatchRecord.matcher_version == MATCHER_VERSION,
+            JobMatchRecord.source == "openclaw",
         )
         .order_by(JobMatchRecord.created_at.desc(), JobMatchRecord.id.desc())
         .first()
@@ -211,7 +212,7 @@ def normalize_ai_match(
     normalized = {
         "version": str(ai_match.get("version") or MATCHER_VERSION),
         "cacheKey": str(ai_match.get("cacheKey") or ""),
-        "source": str(ai_match.get("source") or "local"),
+        "source": str(ai_match.get("source") or "openclaw"),
         "score": score,
         "confidence": str(ai_match.get("confidence") or "low"),
         "breakdown": ai_match.get("breakdown") if isinstance(ai_match.get("breakdown"), dict) else {},
