@@ -64,7 +64,14 @@ type AiMatchMetadata = {
   heuristicScore?: number;
   updatedAt?: string;
   openclawError?: string;
+  feedback?: MatchFeedback;
+  calibration?: {
+    feedback: MatchFeedback;
+    adjustment: number;
+  };
 };
+
+type MatchFeedback = "good_match" | "bad_match" | "not_interested";
 
 type Job = {
   id: string;
@@ -2160,6 +2167,7 @@ export default function HomePage() {
   const [parserSearchStatus, setParserSearchStatus] = useState<ParserSearchStatus>("idle");
   const [parserSearchMessage, setParserSearchMessage] = useState("");
   const [forceMatchingJobId, setForceMatchingJobId] = useState("");
+  const [matchFeedbackSavingJobId, setMatchFeedbackSavingJobId] = useState("");
   const [parserSearchForm, setParserSearchForm] = useState<ParserSearchForm>(defaultParserSearchForm);
   const [parserSearchConfigs, setParserSearchConfigs] = useState<ParserSearchConfig[]>([]);
   const [selectedParserSearchConfigId, setSelectedParserSearchConfigId] = useState("");
@@ -4037,6 +4045,32 @@ export default function HomePage() {
     }
   }
 
+  async function saveMatchFeedback(job: Job, feedback: MatchFeedback) {
+    setMatchFeedbackSavingJobId(job.id);
+    try {
+      const response = await fetch(`${apiBaseUrl}/jobs/${encodeURIComponent(job.id)}/match-feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ feedback }),
+      });
+      if (!response.ok) return;
+
+      const payload = (await response.json()) as { id: string; data: unknown };
+      const updatedJobs = normalizeStoredJobs([payload.data]);
+      if (updatedJobs.length === 0) return;
+
+      setJobList((currentJobs) => {
+        const nextJobs = mergeJobs(updatedJobs, currentJobs);
+        window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(nextJobs.filter(isImportedJob)));
+        return nextJobs;
+      });
+    } catch {
+      // Feedback is useful for calibration but should not block the main workflow.
+    } finally {
+      setMatchFeedbackSavingJobId((currentId) => (currentId === job.id ? "" : currentId));
+    }
+  }
+
   async function pollAiMatchStatus() {
     for (let attempt = 0; attempt < aiMatchStatusPollMaxAttempts; attempt += 1) {
       await wait(aiMatchStatusPollDelayMs);
@@ -4612,7 +4646,11 @@ export default function HomePage() {
               </div>
 
               <div className="grid content-start gap-3 2xl:gap-4">
-                <MatchPanel job={selectedJob} />
+                <MatchPanel
+                  job={selectedJob}
+                  isSavingFeedback={matchFeedbackSavingJobId === selectedJob.id}
+                  onFeedback={saveMatchFeedback}
+                />
                 <RecommendationsPanel job={selectedJob} />
                 <JobDetails job={selectedJob} />
               </div>
@@ -9116,10 +9154,23 @@ function JobMainPanel({ job, tab }: { job: Job; tab: string }) {
   );
 }
 
-function MatchPanel({ job }: { job: Job }) {
+function MatchPanel({
+  job,
+  isSavingFeedback,
+  onFeedback,
+}: {
+  job: Job;
+  isSavingFeedback: boolean;
+  onFeedback: (job: Job, feedback: MatchFeedback) => void;
+}) {
   const reasons = job.aiMatch?.reasons.length ? job.aiMatch.reasons : ["Strong profile overlap", "Relevant experience", "Skills alignment"];
   const gaps = job.aiMatch?.gaps ?? [];
   const sourceLabel = job.aiMatch?.source === "openclaw" ? "Openclaw" : job.aiMatch?.source === "local" ? "Local pre-score" : "Static score";
+  const feedbackOptions: Array<{ feedback: MatchFeedback; label: string }> = [
+    { feedback: "good_match", label: "Good match" },
+    { feedback: "bad_match", label: "Bad match" },
+    { feedback: "not_interested", label: "Not interested" },
+  ];
 
   return (
     <article className="panel p-4 2xl:p-5">
@@ -9133,6 +9184,26 @@ function MatchPanel({ job }: { job: Job }) {
       <p className="mt-3 text-[34px] font-bold leading-none text-success 2xl:mt-4 2xl:text-[40px]">{job.match}%</p>
       <div className="mt-2.5 h-2 rounded-full bg-white/[0.09] 2xl:mt-3">
         <div className="h-full rounded-full bg-success" style={{ width: `${job.match}%` }} />
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-3 2xl:mt-5">
+        {feedbackOptions.map((option) => {
+          const isActive = job.aiMatch?.feedback === option.feedback;
+          return (
+            <Button
+              key={option.feedback}
+              type="button"
+              variant="ghost"
+              disabled={isSavingFeedback}
+              className={cn(
+                "h-9 rounded-md border border-border bg-transparent px-2 text-[11px] font-bold text-[#d8dee8] hover:bg-white/[0.055] disabled:cursor-not-allowed disabled:opacity-55 2xl:h-10 2xl:text-xs",
+                isActive && "border-accent/65 bg-accent/12 text-white",
+              )}
+              onClick={() => onFeedback(job, option.feedback)}
+            >
+              {option.label}
+            </Button>
+          );
+        })}
       </div>
       <h4 className="mt-5 text-[13px] font-bold 2xl:mt-7 2xl:text-sm">Why this match?</h4>
       <ul className="mt-2.5 space-y-1.5 text-[13px] text-muted 2xl:mt-3 2xl:space-y-2 2xl:text-sm">

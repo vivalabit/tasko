@@ -38,6 +38,21 @@ class JobMatchRecord(Base):
     )
 
 
+class JobMatchFeedbackRecord(Base):
+    __tablename__ = "job_match_feedback"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    job_id: Mapped[str] = mapped_column(String(160), index=True, nullable=False)
+    profile_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    matcher_version: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    feedback: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+
 class StoredJobPayload(BaseModel):
     id: str = Field(min_length=1, max_length=160)
     data: dict[str, Any]
@@ -45,6 +60,10 @@ class StoredJobPayload(BaseModel):
 
 class StoredJobsRequest(BaseModel):
     jobs: list[StoredJobPayload] = Field(default_factory=list)
+
+
+class JobMatchFeedbackRequest(BaseModel):
+    feedback: Literal["good_match", "bad_match", "not_interested"]
 
 
 class AiMatchJobStatus(BaseModel):

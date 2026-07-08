@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import Base, get_db
 from app.core.settings import Settings, get_settings
 from app.main import app
-from app.models.jobs import JobMatchRecord, StoredJobRecord
+from app.models.jobs import JobMatchFeedbackRecord, JobMatchRecord, StoredJobRecord
 from app.models.profile import CandidateMatchSnapshotRecord, ProfilePayload, ProfileRecord
 from app.services.ai_match import calculate_ai_matches, infer_seniority, parse_number
 
@@ -207,19 +207,38 @@ def test_ai_match_endpoint_updates_and_persists_job_scores() -> None:
         assert payload["aiMatch"]["cacheKey"]
         assert read_response.json()[0]["data"]["aiMatch"]["score"] == payload["match"]
 
+        feedback_response = client.post(
+            f"/jobs/{job['id']}/match-feedback",
+            json={"feedback": "bad_match"},
+        )
+        assert feedback_response.status_code == 200
+        feedback_payload = feedback_response.json()["data"]
+        assert feedback_payload["aiMatch"]["feedback"] == "bad_match"
+
+        rerun_response = client.post(
+            "/jobs/ai-match?force=true",
+            json={"jobs": [{"id": job["id"], "data": feedback_payload}]},
+        )
+        assert rerun_response.status_code == 200
+        rerun_payload = rerun_response.json()[0]["data"]
+        assert rerun_payload["match"] < feedback_payload["match"]
+        assert rerun_payload["aiMatch"]["calibration"]["feedback"] == "bad_match"
+
         with testing_session_local() as db:
             stored_job = db.get(StoredJobRecord, job["id"])
             match_records = db.query(JobMatchRecord).filter(JobMatchRecord.job_id == job["id"]).all()
+            feedback_records = db.query(JobMatchFeedbackRecord).filter(JobMatchFeedbackRecord.job_id == job["id"]).all()
             snapshot_records = db.query(CandidateMatchSnapshotRecord).all()
             assert stored_job is not None
             assert "aiMatch" not in stored_job.data
             assert len(snapshot_records) == 1
             assert snapshot_records[0].source == "local"
-            assert len(match_records) == 1
-            assert match_records[0].profile_hash == snapshot_records[0].profile_hash
-            assert match_records[0].score == payload["match"]
-            assert match_records[0].source == "local"
-            assert match_records[0].breakdown
+            assert len(match_records) == 2
+            assert len(feedback_records) == 1
+            assert {record.profile_hash for record in match_records} == {snapshot_records[0].profile_hash}
+            assert rerun_payload["match"] in {record.score for record in match_records}
+            assert all(record.source == "local" for record in match_records)
+            assert all(record.breakdown for record in match_records)
     finally:
         app.dependency_overrides.clear()
 
