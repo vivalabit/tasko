@@ -5950,7 +5950,7 @@ function CalendarView({
   });
   const upcomingEvents = sortApplicationEvents(
     filteredEvents.filter((event) => event.status === "scheduled" && new Date(event.startsAt).getTime() >= today.getTime()),
-  ).slice(0, 5);
+  ).slice(0, 3);
 
   function applicationForEvent(event: ApplicationEvent) {
     return applications.find((application) => application.id === event.applicationId);
@@ -7019,7 +7019,7 @@ function ApplicationsView({
             )}
           </section>
 
-          <aside className="grid min-h-0 content-start gap-3 2xl:gap-4">
+          <aside className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3 2xl:gap-4">
             <section className="panel p-3 2xl:p-5">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-sm font-bold text-white 2xl:text-lg">Upcoming</h2>
@@ -7069,7 +7069,7 @@ function ApplicationsView({
               </div>
             </section>
 
-            <section className="panel p-3 2xl:p-5">
+            <section className="panel h-full min-h-0 p-3 2xl:p-5">
               <h2 className="text-sm font-bold text-white 2xl:text-lg">AI Actions</h2>
               <div className="mt-3 grid gap-2 2xl:mt-4">
                 {["Prepare interview", "Write follow-up", "Tailor resume", "Summarize fit"].map((action) => (
