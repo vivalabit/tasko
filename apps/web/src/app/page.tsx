@@ -11114,23 +11114,21 @@ function InfoStat({ label, value, title }: { label: string; value: string; title
 function JobMatchRing({ job }: { job: Job }) {
   const hasScore = hasDisplayableMatch(job);
   const normalizedMatch = Math.max(0, Math.min(100, job.match));
-  const ringColor = normalizedMatch >= 85 ? "#52c7a2" : normalizedMatch >= 70 ? "#f0b75a" : "#e56b6f";
-  const radius = 19;
-  const strokeWidth = 5;
+  const radius = 18.5;
+  const strokeWidth = 3;
   const circumference = 2 * Math.PI * radius;
   const dashOffset = hasScore ? circumference * (1 - normalizedMatch / 100) : circumference;
 
   return (
-    <div className="h-10 w-10 shrink-0 2xl:h-14 2xl:w-14" aria-label={hasScore ? `${job.match}% AI match` : "AI match not scored"} title={hasScore ? `${job.match}% match` : "AI match not scored"}>
+    <div className="h-10 w-10 shrink-0 text-accent 2xl:h-14 2xl:w-14" aria-label={hasScore ? `${job.match}% AI match` : "AI match not scored"} title={hasScore ? `${job.match}% match` : "AI match not scored"}>
       <svg className="block h-full w-full" viewBox="0 0 48 48" aria-hidden="true">
-        <circle cx="24" cy="24" r="14.5" fill="#171a21" />
-        <circle cx="24" cy="24" r={radius} fill="none" stroke="rgba(255,255,255,0.10)" strokeWidth={strokeWidth} />
+        <circle cx="24" cy="24" r={radius} fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth={strokeWidth} />
         <circle
           cx="24"
           cy="24"
           r={radius}
           fill="none"
-          stroke={ringColor}
+          stroke="currentColor"
           strokeWidth={strokeWidth}
           strokeDasharray={circumference}
           strokeDashoffset={dashOffset}
@@ -11142,12 +11140,19 @@ function JobMatchRing({ job }: { job: Job }) {
           y="24"
           fill="white"
           fontSize="13"
-          fontWeight="900"
+          fontWeight="700"
           textAnchor="middle"
           dominantBaseline="central"
           letterSpacing="0"
         >
-          {hasScore ? `${normalizedMatch}%` : "AI"}
+          {hasScore ? (
+            <>
+              <tspan>{normalizedMatch}</tspan>
+              <tspan fill="#9da6b5" fontSize="8" fontWeight="700">%</tspan>
+            </>
+          ) : (
+            "AI"
+          )}
         </text>
       </svg>
     </div>
