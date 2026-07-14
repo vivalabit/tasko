@@ -129,6 +129,16 @@ type ApplicationEventType = "screening" | "interview" | "assessment" | "follow_u
 type ApplicationEventStatus = "scheduled" | "completed" | "canceled";
 type ApplicationEventOutcome = "positive" | "negative" | "neutral";
 
+type ApplicationDocument = {
+  id: string;
+  title: string;
+  fileName: string;
+  fileSize: string;
+  fileType: string;
+  uploadedAt: string;
+  dataUrl: string;
+};
+
 type TrackedApplication = {
   id: string;
   job: Job;
@@ -136,6 +146,7 @@ type TrackedApplication = {
   appliedAt: string;
   nextStep: string;
   notes: string;
+  documents: ApplicationDocument[];
 };
 
 type ManualApplicationDraft = {
@@ -2184,21 +2195,67 @@ function normalizeStoredJobIds(value: unknown) {
   return Array.from(new Set(value.filter((id): id is string => typeof id === "string" && id.trim().length > 0)));
 }
 
+function normalizeApplicationDocuments(value: unknown) {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((document): ApplicationDocument[] => {
+    if (!document || typeof document !== "object") return [];
+    const candidate = document as Partial<ApplicationDocument>;
+    const fileName = candidate.fileName?.trim() ?? "";
+    const dataUrl = candidate.dataUrl ?? "";
+
+    if (typeof candidate.id !== "string" || !fileName || typeof dataUrl !== "string" || !dataUrl) {
+      return [];
+    }
+
+    return [
+      {
+        id: candidate.id,
+        title: candidate.title?.trim() || fileName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || fileName,
+        fileName,
+        fileSize: candidate.fileSize?.trim() ?? "",
+        fileType: candidate.fileType?.trim() ?? "application/octet-stream",
+        uploadedAt: candidate.uploadedAt?.trim() ?? "",
+        dataUrl,
+      },
+    ];
+  });
+}
+
 function normalizeStoredApplications(value: unknown) {
   if (!Array.isArray(value)) return [];
 
-  return value.filter((application): application is TrackedApplication => {
-    if (!application || typeof application !== "object") return false;
+  return value.flatMap((application): TrackedApplication[] => {
+    if (!application || typeof application !== "object") return [];
     const candidate = application as Partial<TrackedApplication>;
-    return (
+    const normalizedJobs = normalizeStoredJobs([candidate.job]);
+    const isValidApplication =
       typeof candidate.id === "string" &&
       candidate.job !== undefined &&
-      normalizeStoredJobs([candidate.job]).length === 1 &&
+      normalizedJobs.length === 1 &&
       applicationStatuses.some((item) => item.status === candidate.status) &&
       typeof candidate.appliedAt === "string" &&
       typeof candidate.nextStep === "string" &&
-      typeof candidate.notes === "string"
-    );
+      typeof candidate.notes === "string";
+
+    if (!isValidApplication) return [];
+
+    const id = candidate.id as string;
+    const appliedAt = candidate.appliedAt as string;
+    const nextStep = candidate.nextStep as string;
+    const notes = candidate.notes as string;
+
+    return [
+      {
+        id,
+        job: normalizedJobs[0],
+        status: candidate.status as ApplicationStatus,
+        appliedAt,
+        nextStep,
+        notes,
+        documents: normalizeApplicationDocuments(candidate.documents),
+      },
+    ];
   });
 }
 
@@ -2262,6 +2319,7 @@ function createApplicationFromJob(job: Job): TrackedApplication {
     appliedAt,
     nextStep: "",
     notes: "",
+    documents: [],
   };
 }
 
@@ -2275,6 +2333,7 @@ function createApplicationFromManualDraft(draft: ManualApplicationDraft): Tracke
     appliedAt: new Date().toISOString(),
     nextStep: "",
     notes: "",
+    documents: [],
   };
 }
 
@@ -3208,6 +3267,19 @@ export default function HomePage() {
           ? {
               ...application,
               notes,
+            }
+          : application,
+      ),
+    );
+  }
+
+  function updateApplicationDocuments(applicationId: string, documents: ApplicationDocument[]) {
+    setApplications((currentApplications) =>
+      currentApplications.map((application) =>
+        application.id === applicationId
+          ? {
+              ...application,
+              documents,
             }
           : application,
       ),
@@ -4743,6 +4815,7 @@ export default function HomePage() {
             onAddManualApplication={addManualApplication}
             onChangeStatus={updateApplicationStatus}
             onChangeNotes={updateApplicationNotes}
+            onChangeDocuments={updateApplicationDocuments}
             onDeleteApplication={deleteApplication}
             onSaveEvent={saveApplicationEvent}
             onDeleteEvent={deleteApplicationEvent}
@@ -5668,6 +5741,7 @@ function ApplicationsView({
   onAddManualApplication,
   onChangeStatus,
   onChangeNotes,
+  onChangeDocuments,
   onDeleteApplication,
   onSaveEvent,
   onDeleteEvent,
@@ -5680,6 +5754,7 @@ function ApplicationsView({
   onAddManualApplication: (draft: ManualApplicationDraft) => void;
   onChangeStatus: (applicationId: string, status: ApplicationStatus) => void;
   onChangeNotes: (applicationId: string, notes: string) => void;
+  onChangeDocuments: (applicationId: string, documents: ApplicationDocument[]) => void;
   onDeleteApplication: (applicationId: string) => void;
   onSaveEvent: (event: ApplicationEvent) => void;
   onDeleteEvent: (eventId: string) => void;
@@ -5882,6 +5957,70 @@ function ApplicationsView({
 
     onDeleteApplication(visibleSelectedApplication.id);
     setIsApplicationMenuOpen(false);
+  }
+
+  function getApplicationDocumentBadge(document: ApplicationDocument) {
+    const extension = document.fileName.split(".").pop()?.trim().toUpperCase();
+    if (extension && extension.length <= 5) return extension;
+    if (document.fileType.includes("pdf")) return "PDF";
+    if (document.fileType.includes("word")) return "DOC";
+    if (document.fileType.includes("image")) return "IMG";
+    return "FILE";
+  }
+
+  function attachApplicationDocument(file: File | undefined) {
+    if (!file || !visibleSelectedApplication) return;
+
+    const allowedTypes = new Set([
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "image/png",
+      "image/jpeg",
+      "image/webp",
+    ]);
+    const allowedExtensions = [".pdf", ".doc", ".docx", ".png", ".jpg", ".jpeg", ".webp"];
+    const lowerFileName = file.name.toLowerCase();
+    const hasAllowedExtension = allowedExtensions.some((extension) => lowerFileName.endsWith(extension));
+
+    if (!allowedTypes.has(file.type) && !hasAllowedExtension) {
+      window.alert("Upload a PDF, DOC, DOCX, PNG, JPG, or WebP file.");
+      return;
+    }
+
+    if (file.size > 5_000_000) {
+      window.alert("Document file must be under 5MB.");
+      return;
+    }
+
+    const application = visibleSelectedApplication;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+
+      const title = file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || file.name;
+      const document: ApplicationDocument = {
+        id: createClientId("application-document"),
+        title,
+        fileName: file.name,
+        fileSize: formatFileSize(file.size),
+        fileType: file.type || "application/octet-stream",
+        uploadedAt: new Date().toISOString(),
+        dataUrl: reader.result,
+      };
+
+      onChangeDocuments(application.id, [...application.documents, document]);
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function deleteApplicationDocument(documentId: string) {
+    if (!visibleSelectedApplication) return;
+
+    onChangeDocuments(
+      visibleSelectedApplication.id,
+      visibleSelectedApplication.documents.filter((document) => document.id !== documentId),
+    );
   }
 
   return (
@@ -6213,17 +6352,61 @@ function ApplicationsView({
                 </section>
 
                 <section className="mt-2 shrink-0">
-                  <h3 className="text-[13px] font-bold text-white 2xl:text-sm">Documents used</h3>
-                  <div className="mt-1.5 divide-y divide-border overflow-hidden rounded-md border border-border">
-                    {["Resume.pdf", "Cover letter.pdf"].map((document) => (
-                      <div key={document} className="flex items-center gap-2.5 bg-white/[0.018] px-2.5 py-1.5 text-[12px] font-semibold text-[#d8dee8] 2xl:text-[13px]">
-                        <span className="grid h-5 w-5 place-items-center rounded-sm bg-[#ff3d3d] text-[7px] font-black leading-none text-white">PDF</span>
-                        <span className="min-w-0 flex-1 truncate">{document}</span>
-                        <Info className="h-3.5 w-3.5 text-muted" />
-                        <Download className="h-3.5 w-3.5 text-muted" />
-                        <MoreHorizontal className="h-3.5 w-3.5 text-muted" />
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-[13px] font-bold text-white 2xl:text-sm">Documents used</h3>
+                    <label className="inline-flex h-7 cursor-pointer items-center gap-2 rounded-md border border-border bg-transparent px-2.5 text-[11px] font-semibold text-[#e6ebf3] transition hover:bg-white/[0.06]">
+                      <Upload className="h-3.5 w-3.5" />
+                      Add document
+                      <input
+                        type="file"
+                        accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.webp,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg,image/webp"
+                        className="hidden"
+                        onChange={(event) => {
+                          attachApplicationDocument(event.target.files?.[0]);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                  </div>
+                  <div className="mt-1.5 overflow-hidden rounded-md border border-border">
+                    {visibleSelectedApplication.documents.length === 0 ? (
+                      <div className="bg-white/[0.018] px-2.5 py-3 text-[12px] font-semibold leading-5 text-muted 2xl:text-[13px]">
+                        No documents attached yet.
                       </div>
-                    ))}
+                    ) : (
+                      <div className="divide-y divide-border">
+                        {visibleSelectedApplication.documents.map((document) => (
+                          <div key={document.id} className="flex items-center gap-2.5 bg-white/[0.018] px-2.5 py-1.5 text-[12px] font-semibold text-[#d8dee8] 2xl:text-[13px]">
+                            <span className="grid h-5 min-w-8 place-items-center rounded-sm bg-[#ff3d3d] px-1 text-[7px] font-black leading-none text-white">
+                              {getApplicationDocumentBadge(document)}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate" title={document.fileName}>
+                              {document.title}
+                              {document.fileSize ? <span className="font-medium text-muted"> • {document.fileSize}</span> : null}
+                            </span>
+                            <Info className="h-3.5 w-3.5 shrink-0 text-muted" />
+                            <a
+                              href={document.dataUrl}
+                              download={document.fileName}
+                              aria-label={`Download ${document.fileName}`}
+                              title={`Download ${document.fileName}`}
+                              className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted transition hover:bg-white/[0.06] hover:text-white"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </a>
+                            <button
+                              type="button"
+                              aria-label={`Delete ${document.fileName}`}
+                              title={`Delete ${document.fileName}`}
+                              onClick={() => deleteApplicationDocument(document.id)}
+                              className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted transition hover:bg-[#d94d4d]/12 hover:text-[#ff8a8a]"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </section>
 
