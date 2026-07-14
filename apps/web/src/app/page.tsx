@@ -52,6 +52,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { AssistantView, type AssistantLaunch } from "@/components/assistant-view";
 import { cn } from "@/lib/utils";
 
 type AiMatchMetadata = {
@@ -463,7 +464,7 @@ const jobs: Job[] = [
 ];
 
 const tabs = ["Overview", "Company", "AI Match", "Reviews", "Similar Jobs"];
-type View = "Dashboard" | "Jobs" | "Applications" | "Calendar" | "Profile" | "Settings" | "Logs";
+type View = "Dashboard" | "Jobs" | "Applications" | "Calendar" | "Assistant" | "Profile" | "Settings" | "Logs";
 type ParserSearchStatus = "idle" | "loading" | "ready" | "error";
 
 const applicationStatuses: Array<{ status: ApplicationStatus; label: string }> = [
@@ -590,7 +591,7 @@ const navItems: Array<{ label: string; icon: typeof Home; href: string; view?: V
   { label: "Jobs", icon: BriefcaseBusiness, href: "#jobs", view: "Jobs" },
   { label: "Applications", icon: Mail, href: "#applications", view: "Applications" },
   { label: "Calendar", icon: CalendarDays, href: "#calendar", view: "Calendar" },
-  { label: "AI Assistant", icon: Sparkles, href: "#" },
+  { label: "AI Assistant", icon: Sparkles, href: "#assistant", view: "Assistant" },
 ];
 
 const defaultCandidateProfile: CandidateProfile = {
@@ -1614,6 +1615,10 @@ function getViewFromHash(): View {
 
   if (window.location.hash === "#calendar") {
     return "Calendar";
+  }
+
+  if (window.location.hash === "#assistant") {
+    return "Assistant";
   }
 
   return window.location.hash === "#jobs" ? "Jobs" : "Dashboard";
@@ -2661,6 +2666,7 @@ function mergeSkillLists(currentSkills: string[], importedSkills: string[]) {
 
 export default function HomePage() {
   const [activeView, setActiveView] = useState<View>("Dashboard");
+  const [assistantLaunch, setAssistantLaunch] = useState<AssistantLaunch | null>(null);
   const [jobList, setJobList] = useState<Job[]>(jobs);
   const [selectedJobId, setSelectedJobId] = useState(jobs[0].id);
   const [query, setQuery] = useState("");
@@ -3216,11 +3222,22 @@ export default function HomePage() {
       Jobs: "#jobs",
       Applications: "#applications",
       Calendar: "#calendar",
+      Assistant: "#assistant",
       Profile: "#profile",
       Settings: "#settings",
       Logs: "#logs",
     };
     window.history.replaceState(null, "", viewHash[view]);
+  }
+
+  function openAssistant(prompt = "", contextKind: AssistantLaunch["contextKind"] = "profile", contextId = "") {
+    setAssistantLaunch(prompt ? {
+      id: createClientId("assistant-launch"),
+      prompt,
+      contextKind,
+      contextId,
+    } : null);
+    changeView("Assistant");
   }
 
   function appendAppLog(entry: Omit<AppLogEntry, "id" | "timestamp">) {
@@ -4904,7 +4921,7 @@ export default function HomePage() {
         <AppSidebar activeView={activeView} onChangeView={changeView} profile={profile} showLogs={uiSettings.showLogs} />
 
         {activeView === "Dashboard" ? (
-          <DashboardView onOpenJobs={() => changeView("Jobs")} />
+          <DashboardView onOpenJobs={() => changeView("Jobs")} onOpenAssistant={() => openAssistant()} />
         ) : activeView === "Applications" ? (
           <ApplicationsView
             applications={applications}
@@ -4915,6 +4932,7 @@ export default function HomePage() {
             onSelectApplication={setSelectedApplicationId}
             onOpenJobs={() => changeView("Jobs")}
             onOpenCalendar={() => changeView("Calendar")}
+            onOpenAssistant={(prompt, applicationId) => openAssistant(prompt, "application", applicationId)}
             onAddManualApplication={addManualApplication}
             onChangeStatus={updateApplicationStatus}
             onChangeNotes={updateApplicationNotes}
@@ -4929,6 +4947,14 @@ export default function HomePage() {
             events={applicationEvents}
             onSaveEvent={saveApplicationEvent}
             onDeleteEvent={deleteApplicationEvent}
+          />
+        ) : activeView === "Assistant" ? (
+          <AssistantView
+            profile={profile}
+            jobs={availableJobs}
+            applications={applications}
+            launch={assistantLaunch}
+            onLaunchHandled={() => setAssistantLaunch(null)}
           />
         ) : activeView === "Profile" ? (
           <ProfileView
@@ -5133,7 +5159,7 @@ export default function HomePage() {
             <p className="shrink-0 px-1 pb-3 pt-3 text-sm font-semibold text-muted 2xl:pb-4 2xl:pt-5 2xl:text-base">
               {filteredJobs.length} {showArchivedJobs ? "archived jobs" : showSavedJobs ? "saved jobs" : "jobs"} found
             </p>
-            <div className="job-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 2xl:space-y-3">
+            <div className="job-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
               {filteredJobs.map((job) => (
                 <article
                   key={job.id}
@@ -5150,20 +5176,22 @@ export default function HomePage() {
                     setActiveTab("Overview");
                   }}
                   className={cn(
-                    "w-full cursor-pointer rounded-[8px] border p-3 text-left transition 2xl:p-5",
+                    "w-full cursor-pointer rounded-[8px] border p-3 text-left transition",
                     selectedJob?.id === job.id
                       ? "border-accent bg-white/[0.055] shadow-[0_0_0_1px_rgba(255,90,0,0.12)]"
                       : "border-border/80 bg-white/[0.035] hover:border-white/[0.16] hover:bg-white/[0.055]",
                   )}
                 >
-                  <div className="grid grid-cols-[42px_minmax(0,1fr)_50px] gap-2.5 2xl:grid-cols-[64px_minmax(0,1fr)_66px] 2xl:gap-4">
+                  <div className="grid grid-cols-[42px_minmax(0,1fr)_50px] gap-2.5 2xl:grid-cols-[48px_minmax(0,1fr)_72px] 2xl:gap-3">
                     <CompanyLogo logo={job.logo} compact />
                     <div className="min-w-0 pt-0.5">
-                      <h2 className="line-clamp-2 text-[13px] font-bold leading-tight text-white 2xl:text-lg">{job.title}</h2>
-                      <p className="mt-0.5 truncate text-xs font-bold text-[#aeb5c2] 2xl:mt-1 2xl:text-base">{job.company}</p>
+                      <h2 className="line-clamp-2 text-[13px] font-bold leading-tight text-white 2xl:text-base">{job.title}</h2>
+                      <p className="mt-0.5 truncate text-xs font-bold text-[#aeb5c2] 2xl:text-sm">{job.company}</p>
                     </div>
-                    <div className="grid justify-items-end gap-2 2xl:gap-3">
-                      <JobMatchRing job={job} />
+                    <div className="grid justify-items-end gap-2 2xl:grid-cols-2 2xl:justify-items-center 2xl:gap-1.5">
+                      <div className="2xl:col-span-2">
+                        <JobMatchRing job={job} />
+                      </div>
                       <button
                         type="button"
                         aria-label={savedJobs.includes(job.id) ? "Unsave job" : "Save job"}
@@ -5173,11 +5201,11 @@ export default function HomePage() {
                           toggleSaved(job.id);
                         }}
                         className={cn(
-                          "grid h-8 w-8 place-items-center rounded-md border border-border bg-white/[0.025] text-muted transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white 2xl:h-11 2xl:w-11",
+                          "grid h-8 w-8 place-items-center rounded-md border border-border bg-white/[0.025] text-muted transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white",
                           savedJobs.includes(job.id) && "border-accent/60 text-accent",
                         )}
                       >
-                        <Bookmark className={cn("h-4 w-4 2xl:h-5 2xl:w-5", savedJobs.includes(job.id) && "fill-accent text-accent")} />
+                        <Bookmark className={cn("h-4 w-4", savedJobs.includes(job.id) && "fill-accent text-accent")} />
                       </button>
                       <button
                         type="button"
@@ -5188,15 +5216,15 @@ export default function HomePage() {
                           event.stopPropagation();
                           void rerunAiMatch(job);
                         }}
-                        className="grid h-8 w-8 place-items-center rounded-md border border-border bg-white/[0.025] text-muted transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white disabled:cursor-not-allowed disabled:opacity-55 2xl:h-11 2xl:w-11"
+                        className="grid h-8 w-8 place-items-center rounded-md border border-border bg-white/[0.025] text-muted transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white disabled:cursor-not-allowed disabled:opacity-55"
                       >
-                        <RotateCcw className={cn("h-4 w-4 2xl:h-5 2xl:w-5", forceMatchingJobId === job.id && "animate-spin")} />
+                        <RotateCcw className={cn("h-4 w-4", forceMatchingJobId === job.id && "animate-spin")} />
                       </button>
                     </div>
                   </div>
 
-                  <div className="mt-3 border-t border-border/80 pt-2.5 2xl:mt-5 2xl:pt-4">
-                    <div className="grid gap-1.5 text-xs font-semibold text-muted sm:grid-cols-[minmax(0,1fr)_auto] 2xl:gap-2 2xl:text-sm">
+                  <div className="mt-3 border-t border-border/80 pt-2.5">
+                    <div className="grid gap-1.5 text-xs font-semibold text-muted sm:grid-cols-[minmax(0,1fr)_auto] 2xl:text-[13px]">
                       <p className="flex min-w-0 flex-nowrap items-center gap-x-1.5">
                         <MapPin className="h-3.5 w-3.5 shrink-0 2xl:h-4 2xl:w-4" />
                         <span className="truncate">{formatJobLocationCompact(job.location)}</span>
@@ -6226,6 +6254,7 @@ function ApplicationsView({
   onSelectApplication,
   onOpenJobs,
   onOpenCalendar,
+  onOpenAssistant,
   onAddManualApplication,
   onChangeStatus,
   onChangeNotes,
@@ -6242,6 +6271,7 @@ function ApplicationsView({
   onSelectApplication: (applicationId: string) => void;
   onOpenJobs: () => void;
   onOpenCalendar: () => void;
+  onOpenAssistant: (prompt: string, applicationId: string) => void;
   onAddManualApplication: (draft: ManualApplicationDraft) => void;
   onChangeStatus: (applicationId: string, status: ApplicationStatus) => void;
   onChangeNotes: (applicationId: string, notes: string) => void;
@@ -7072,12 +7102,23 @@ function ApplicationsView({
             <section className="panel h-full min-h-0 p-3 2xl:p-5">
               <h2 className="text-sm font-bold text-white 2xl:text-lg">AI Actions</h2>
               <div className="mt-3 grid gap-2 2xl:mt-4">
-                {["Prepare interview", "Write follow-up", "Tailor resume", "Summarize fit"].map((action) => (
-                  <Button key={action} variant="ghost" className="h-9 justify-start rounded-md border border-border bg-transparent text-xs text-[#e6ebf3] hover:bg-white/[0.06] 2xl:h-11 2xl:text-[13px]">
+                {[
+                  { label: "Prepare interview", prompt: "Prepare me for an interview for this role with likely questions and answer guidance." },
+                  { label: "Write follow-up", prompt: "Write a concise recruiter follow-up for this application." },
+                  { label: "Tailor resume", prompt: "Tailor my resume for this job and suggest the five highest-impact changes." },
+                  { label: "Summarize fit", prompt: "Summarize my fit for this role, including the strongest evidence, gaps, and next step." },
+                ].map((action) => (
+                  <Button
+                    key={action.label}
+                    variant="ghost"
+                    onClick={() => visibleSelectedApplication && onOpenAssistant(action.prompt, visibleSelectedApplication.id)}
+                    disabled={!visibleSelectedApplication}
+                    className="h-9 justify-start rounded-md border border-border bg-transparent text-xs text-[#e6ebf3] hover:bg-white/[0.06] disabled:opacity-45 2xl:h-11 2xl:text-[13px]"
+                  >
                     <span className="grid h-6 w-6 place-items-center rounded-md bg-accent/14 text-accent 2xl:h-7 2xl:w-7">
                       <Sparkles className="h-3.5 w-3.5 2xl:h-4 2xl:w-4" />
                     </span>
-                    {action}
+                    {action.label}
                     <ChevronRight className="ml-auto h-4 w-4 text-muted" />
                   </Button>
                 ))}
@@ -8024,7 +8065,7 @@ function LogsView({ logs, onClear }: { logs: AppLogEntry[]; onClear: () => void 
   );
 }
 
-function DashboardView({ onOpenJobs }: { onOpenJobs: () => void }) {
+function DashboardView({ onOpenJobs, onOpenAssistant }: { onOpenJobs: () => void; onOpenAssistant: () => void }) {
   return (
     <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
       <header className="mb-3 flex shrink-0 flex-col gap-3 md:flex-row md:items-start md:justify-between 2xl:mb-4 2xl:gap-4">
@@ -8184,7 +8225,7 @@ function DashboardView({ onOpenJobs }: { onOpenJobs: () => void }) {
           <section className="panel p-2.5 2xl:p-3">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-sm font-bold 2xl:text-base">AI Assistant</h2>
-              <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]">New Chat</Button>
+              <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]" onClick={onOpenAssistant}>New Chat</Button>
             </div>
             <div className="rounded-md border border-border p-2.5">
               <div className="grid gap-2 sm:grid-cols-[30px_1fr] 2xl:sm:grid-cols-[34px_1fr]">
@@ -8201,7 +8242,7 @@ function DashboardView({ onOpenJobs }: { onOpenJobs: () => void }) {
                 </div>
               </div>
             </div>
-            <Button className="mt-2 h-8 w-full rounded-md bg-gradient-to-r from-[#ff5a00] to-[#e63e00] text-xs">
+            <Button className="mt-2 h-8 w-full rounded-md bg-gradient-to-r from-[#ff5a00] to-[#e63e00] text-xs" onClick={onOpenAssistant}>
               Start a conversation <Sparkles className="ml-auto h-5 w-5" />
             </Button>
           </section>
@@ -11120,7 +11161,7 @@ function JobMatchRing({ job }: { job: Job }) {
   const dashOffset = hasScore ? circumference * (1 - normalizedMatch / 100) : circumference;
 
   return (
-    <div className="h-10 w-10 shrink-0 text-accent 2xl:h-14 2xl:w-14" aria-label={hasScore ? `${job.match}% AI match` : "AI match not scored"} title={hasScore ? `${job.match}% match` : "AI match not scored"}>
+    <div className="h-10 w-10 shrink-0 text-accent 2xl:h-12 2xl:w-12" aria-label={hasScore ? `${job.match}% AI match` : "AI match not scored"} title={hasScore ? `${job.match}% match` : "AI match not scored"}>
       <svg className="block h-full w-full" viewBox="0 0 48 48" aria-hidden="true">
         <circle cx="24" cy="24" r={radius} fill="none" stroke="rgba(255,255,255,0.12)" strokeWidth={strokeWidth} />
         <circle
