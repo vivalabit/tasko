@@ -156,6 +156,7 @@ type ManualApplicationDraft = {
   applyUrl: string;
   overview: string;
   status: ApplicationStatus;
+  documents: ApplicationDocument[];
 };
 
 type ApplicationEvent = {
@@ -663,6 +664,7 @@ const defaultManualApplicationDraft: ManualApplicationDraft = {
   applyUrl: "",
   overview: "",
   status: "applied",
+  documents: [],
 };
 
 const documentCategories = [
@@ -2041,6 +2043,7 @@ function buildAiMatchRawExplanation(job: Job) {
   if (job.aiMatch?.rawExplanation) return job.aiMatch.rawExplanation;
   if (job.aiMatch?.explanation) return job.aiMatch.explanation;
   if (job.aiMatch?.openclawError) return `Openclaw fallback: ${job.aiMatch.openclawError}`;
+  if (!hasDisplayableMatch(job)) return "AI match has not been calculated for this vacancy yet.";
 
   const source = getAiMatchSourceLabel(job);
   const reasons = job.aiMatch?.reasons.length ? job.aiMatch.reasons.join("; ") : "no AI-generated reasons are available";
@@ -2334,7 +2337,21 @@ function createApplicationFromManualDraft(draft: ManualApplicationDraft): Tracke
     appliedAt: new Date().toISOString(),
     nextStep: "",
     notes: "",
-    documents: [],
+    documents: draft.documents,
+  };
+}
+
+function createProfileResumeApplicationDocument(profile: CandidateProfile): ApplicationDocument | null {
+  if (!profile.resume_file_name || !profile.resume_data_url) return null;
+
+  return {
+    id: createClientId("profile-resume"),
+    title: profile.resume_file_name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || "Profile resume",
+    fileName: profile.resume_file_name,
+    fileSize: profile.resume_file_size,
+    fileType: "application/octet-stream",
+    uploadedAt: profile.resume_updated_at || new Date().toISOString(),
+    dataUrl: profile.resume_data_url,
   };
 }
 
@@ -2654,6 +2671,7 @@ export default function HomePage() {
   const [applications, setApplications] = useState<TrackedApplication[]>([]);
   const [selectedApplicationId, setSelectedApplicationId] = useState("");
   const [areApplicationsLoaded, setAreApplicationsLoaded] = useState(false);
+  const [matchingApplicationIds, setMatchingApplicationIds] = useState<string[]>([]);
   const [applicationEvents, setApplicationEvents] = useState<ApplicationEvent[]>([]);
   const [areApplicationEventsLoaded, setAreApplicationEventsLoaded] = useState(false);
   const [jobFilters, setJobFilters] = useState<JobFilters>(defaultJobFilters);
@@ -3058,7 +3076,7 @@ export default function HomePage() {
         if (!response.ok) return;
 
         const storedJobs = (await response.json()) as Array<{ id: string; data: unknown }>;
-        const importedJobs = normalizeStoredJobs(storedJobs.map((job) => job.data));
+        const importedJobs = normalizeStoredJobs(storedJobs.map((job) => job.data)).filter(isImportedJob);
         if (importedJobs.length === 0) return;
 
         setJobList((currentJobs) => mergeJobs(importedJobs, currentJobs));
@@ -3245,7 +3263,81 @@ export default function HomePage() {
 
     setApplications((currentApplications) => [application, ...currentApplications]);
     setSelectedApplicationId(application.id);
+    void analyzeApplicationWithAi(application);
     changeView("Applications");
+  }
+
+  function updateApplicationJob(applicationId: string, job: Job) {
+    setApplications((currentApplications) =>
+      currentApplications.map((application) =>
+        application.id === applicationId
+          ? {
+              ...application,
+              job,
+            }
+          : application,
+      ),
+    );
+  }
+
+  async function analyzeApplicationWithAi(application: TrackedApplication) {
+    setMatchingApplicationIds((currentIds) => Array.from(new Set([...currentIds, application.id])));
+    appendAppLog({
+      level: "info",
+      area: "AI Match",
+      message: `AI analysis started for ${application.job.title} at ${application.job.company}`,
+    });
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/jobs/ai-match?force=true`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          jobs: [{ id: application.job.id, data: application.job }],
+        }),
+      });
+
+      if (!response.ok) {
+        const message = await readApiErrorMessage(response, "AI analysis failed");
+        appendAppLog({
+          level: "error",
+          area: "AI Match",
+          message,
+          details: `${application.job.title} at ${application.job.company}`,
+        });
+        return;
+      }
+
+      const payload = (await response.json()) as Array<{ id: string; data: unknown }>;
+      const matchedJob = normalizeStoredJobs(payload.map((item) => item.data)).find((job) => job.id === application.job.id);
+
+      if (!matchedJob) {
+        appendAppLog({
+          level: "warning",
+          area: "AI Match",
+          message: "AI analysis completed without a matching job payload",
+          details: `${application.job.title} at ${application.job.company}`,
+        });
+        return;
+      }
+
+      updateApplicationJob(application.id, matchedJob);
+      appendAppLog({
+        level: "success",
+        area: "AI Match",
+        message: `AI analysis completed for ${application.job.title} at ${application.job.company}`,
+        details: `Score: ${formatMatchValue(matchedJob)}`,
+      });
+    } catch (error) {
+      appendAppLog({
+        level: "error",
+        area: "AI Match",
+        message: error instanceof Error ? error.message : "AI analysis failed",
+        details: `${application.job.title} at ${application.job.company}`,
+      });
+    } finally {
+      setMatchingApplicationIds((currentIds) => currentIds.filter((id) => id !== application.id));
+    }
   }
 
   function updateApplicationStatus(applicationId: string, status: ApplicationStatus) {
@@ -4810,6 +4902,8 @@ export default function HomePage() {
           <ApplicationsView
             applications={applications}
             events={applicationEvents}
+            matchingApplicationIds={matchingApplicationIds}
+            profile={profile}
             selectedApplication={selectedApplication}
             onSelectApplication={setSelectedApplicationId}
             onOpenJobs={() => changeView("Jobs")}
@@ -5736,6 +5830,8 @@ export default function HomePage() {
 function ApplicationsView({
   applications,
   events,
+  matchingApplicationIds,
+  profile,
   selectedApplication,
   onSelectApplication,
   onOpenJobs,
@@ -5749,6 +5845,8 @@ function ApplicationsView({
 }: {
   applications: TrackedApplication[];
   events: ApplicationEvent[];
+  matchingApplicationIds: string[];
+  profile: CandidateProfile;
   selectedApplication: TrackedApplication | null;
   onSelectApplication: (applicationId: string) => void;
   onOpenJobs: () => void;
@@ -5798,6 +5896,7 @@ function ApplicationsView({
 
     return matchesStatus && matchesQuery;
   });
+  const matchingApplicationIdSet = new Set(matchingApplicationIds);
   const visibleSelectedApplication =
     selectedApplication && filteredApplications.some((application) => application.id === selectedApplication.id)
       ? selectedApplication
@@ -5855,6 +5954,55 @@ function ApplicationsView({
     value: ManualApplicationDraft[Field],
   ) {
     setManualApplicationDraft((currentDraft) => ({ ...currentDraft, [field]: value }));
+  }
+
+  function useProfileResumeForManualApplication() {
+    const resumeDocument = createProfileResumeApplicationDocument(profile);
+    if (!resumeDocument) return;
+
+    updateManualApplicationDraft("documents", [resumeDocument]);
+  }
+
+  function attachManualApplicationResume(file: File | undefined) {
+    if (!file) return;
+
+    const allowedTypes = new Set([
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ]);
+    const allowedExtensions = [".pdf", ".doc", ".docx"];
+    const lowerFileName = file.name.toLowerCase();
+    const hasAllowedExtension = allowedExtensions.some((extension) => lowerFileName.endsWith(extension));
+
+    if (!allowedTypes.has(file.type) && !hasAllowedExtension) {
+      window.alert("Upload a PDF, DOC, or DOCX resume.");
+      return;
+    }
+
+    if (file.size > 5_000_000) {
+      window.alert("Resume file must be under 5MB.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result !== "string") return;
+
+      const title = file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || file.name;
+      updateManualApplicationDraft("documents", [
+        {
+          id: createClientId("application-resume"),
+          title,
+          fileName: file.name,
+          fileSize: formatFileSize(file.size),
+          fileType: file.type || "application/octet-stream",
+          uploadedAt: new Date().toISOString(),
+          dataUrl: reader.result,
+        },
+      ]);
+    };
+    reader.readAsDataURL(file);
   }
 
   function saveManualApplication() {
@@ -6162,7 +6310,7 @@ function ApplicationsView({
                     <p className="mt-1 text-[11px] text-muted 2xl:hidden">{formatApplicationDate(application.appliedAt)} • {formatMatchValue(application.job)}</p>
                   </div>
                   <span className={cn("shrink-0 rounded-md border px-2 py-1 text-[10px] font-bold 2xl:text-[11px]", applicationStatusStyles[application.status])}>
-                    {getApplicationStatusLabel(application.status)}
+                    {matchingApplicationIdSet.has(application.id) ? "Analyzing" : getApplicationStatusLabel(application.status)}
                   </span>
                   <button
                     type="button"
@@ -6566,6 +6714,7 @@ function ApplicationsView({
       {aiInfoApplication && (
         <ApplicationAiInfoDialog
           application={aiInfoApplication}
+          isAnalyzing={matchingApplicationIdSet.has(aiInfoApplication.id)}
           onClose={() => setAiInfoApplicationId("")}
         />
       )}
@@ -6643,6 +6792,67 @@ function ApplicationsView({
                   placeholder="https://company.com/careers/role"
                 />
               </label>
+
+              <section className="grid gap-2 rounded-md border border-border bg-white/[0.018] p-3 md:col-span-2">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="text-xs font-bold text-[#d8dee8]">Resume for this application</h3>
+                    <p className="mt-1 text-xs font-medium text-muted">Choose the profile resume or upload a different one.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-8 rounded-md border border-border bg-transparent px-3 text-[12px] text-[#e6ebf3] hover:bg-white/[0.06]"
+                      disabled={!profile.resume_file_name || !profile.resume_data_url}
+                      onClick={useProfileResumeForManualApplication}
+                    >
+                      <FileText className="h-3.5 w-3.5" />
+                      Use profile resume
+                    </Button>
+                    <label className="inline-flex h-8 cursor-pointer items-center gap-2 rounded-md border border-border bg-transparent px-3 text-[12px] font-semibold text-[#e6ebf3] transition hover:bg-white/[0.06]">
+                      <Upload className="h-3.5 w-3.5" />
+                      Upload another
+                      <input
+                        type="file"
+                        accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                        className="hidden"
+                        onChange={(event) => {
+                          attachManualApplicationResume(event.target.files?.[0]);
+                          event.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                {manualApplicationDraft.documents.length > 0 ? (
+                  <div className="mt-1 flex items-center gap-2.5 rounded-md border border-border bg-white/[0.025] px-2.5 py-2 text-[12px] font-semibold text-[#d8dee8]">
+                    <span className="grid h-5 min-w-8 place-items-center rounded-sm bg-[#ff3d3d] px-1 text-[7px] font-black leading-none text-white">
+                      {getApplicationDocumentBadge(manualApplicationDraft.documents[0])}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate" title={manualApplicationDraft.documents[0].fileName}>
+                      {manualApplicationDraft.documents[0].title}
+                      {manualApplicationDraft.documents[0].fileSize ? (
+                        <span className="font-medium text-muted"> • {manualApplicationDraft.documents[0].fileSize}</span>
+                      ) : null}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="Remove selected resume"
+                      title="Remove selected resume"
+                      onClick={() => updateManualApplicationDraft("documents", [])}
+                      className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted transition hover:bg-[#d94d4d]/12 hover:text-[#ff8a8a]"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <p className="mt-1 rounded-md border border-dashed border-border bg-white/[0.018] px-2.5 py-2 text-[12px] font-semibold text-muted">
+                    No resume selected for this application.
+                  </p>
+                )}
+              </section>
 
               <label className="grid gap-2 md:col-span-2">
                 <span className="text-xs font-bold text-[#d8dee8]">Vacancy description</span>
@@ -6917,9 +7127,11 @@ function ApplicationsView({
 
 function ApplicationAiInfoDialog({
   application,
+  isAnalyzing,
   onClose,
 }: {
   application: TrackedApplication;
+  isAnalyzing: boolean;
   onClose: () => void;
 }) {
   const job = application.job;
@@ -6927,7 +7139,7 @@ function ApplicationAiInfoDialog({
   const reasons = job.aiMatch?.reasons.length ? job.aiMatch.reasons : ["No AI match reasons have been calculated yet."];
   const gaps = job.aiMatch?.gaps.length ? job.aiMatch.gaps : ["No AI match gaps have been calculated yet."];
   const recommendations = buildRecommendationPlan(job).slice(0, 5);
-  const sourceDisplay = getAiMatchSourceDisplay(job);
+  const sourceDisplay = isAnalyzing ? "Analyzing..." : getAiMatchSourceDisplay(job);
   const rawExplanation = buildAiMatchRawExplanation(job);
   const signalStats = [
     { label: "Skills", value: job.skills.length.toString() },
@@ -6961,17 +7173,23 @@ function ApplicationAiInfoDialog({
 
         <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto pr-1">
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 2xl:gap-3">
-            <InfoStat label="AI match" value={formatMatchValue(job)} />
+            <InfoStat label="AI match" value={isAnalyzing ? "Analyzing..." : formatMatchValue(job)} />
             <InfoStat label="Source" value={sourceDisplay} title={job.aiMatch?.openclawError} />
             <InfoStat label="Confidence" value={formatConfidence(job.aiMatch?.confidence)} />
             <InfoStat label="Updated" value={formatAiMatchTimestamp(job.aiMatch?.updatedAt)} />
           </div>
 
+          {isAnalyzing ? (
+            <div className="mt-4 rounded-md border border-accent/35 bg-accent/10 px-3 py-2 text-[13px] font-semibold text-[#ffd1b0] 2xl:text-sm">
+              AI analysis is running. This panel will update automatically when the match result is saved.
+            </div>
+          ) : null}
+
           <section className="mt-4 rounded-md border border-border bg-white/[0.018] p-3 2xl:p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-sm font-bold text-white 2xl:text-base">Score breakdown</h3>
               <span className="rounded-md border border-success/30 bg-success/12 px-2 py-1 text-xs font-bold text-success">
-                {formatMatchValue(job)}
+                {isAnalyzing ? "Analyzing..." : formatMatchValue(job)}
               </span>
             </div>
             <div className="mt-3 space-y-2.5">
