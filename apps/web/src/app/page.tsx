@@ -2017,6 +2017,7 @@ function getAiMatchSourceLabel(job: Job) {
   if (job.aiMatch?.source === "openclaw") return "Openclaw";
   if (job.aiMatch?.source === "local") return "Legacy local score";
   if (isImportedJob(job)) return "Not scored";
+  if (isManualJob(job)) return "Not scored";
   return "Static score";
 }
 
@@ -5767,6 +5768,7 @@ function ApplicationsView({
   const [isApplicationMenuOpen, setIsApplicationMenuOpen] = useState(false);
   const [isNotesDialogOpen, setIsNotesDialogOpen] = useState(false);
   const [applicationNotesDraft, setApplicationNotesDraft] = useState("");
+  const [aiInfoApplicationId, setAiInfoApplicationId] = useState("");
   const [isManualApplicationDialogOpen, setIsManualApplicationDialogOpen] = useState(false);
   const [manualApplicationDraft, setManualApplicationDraft] = useState<ManualApplicationDraft>(defaultManualApplicationDraft);
   const statusCounts = applications.reduce(
@@ -5803,6 +5805,7 @@ function ApplicationsView({
   const visibleApplicationEvents = visibleSelectedApplication
     ? sortApplicationEvents(events.filter((event) => event.applicationId === visibleSelectedApplication.id))
     : [];
+  const aiInfoApplication = applications.find((application) => application.id === aiInfoApplicationId) ?? null;
   const nextApplicationEvent =
     visibleApplicationEvents.find(
       (event) => event.status === "scheduled" && new Date(event.startsAt).getTime() >= Date.now(),
@@ -5868,6 +5871,11 @@ function ApplicationsView({
     onAddManualApplication(manualApplicationDraft);
     setManualApplicationDraft(defaultManualApplicationDraft);
     setIsManualApplicationDialogOpen(false);
+  }
+
+  function openApplicationAiInfo(applicationId: string) {
+    setAiInfoApplicationId(applicationId);
+    setIsApplicationMenuOpen(false);
   }
 
   function openScheduleDialog() {
@@ -6130,12 +6138,18 @@ function ApplicationsView({
                   No applications match the current search or status filter.
                 </div>
               ) : filteredApplications.map((application) => (
-                <button
+                <div
                   key={application.id}
-                  type="button"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => onSelectApplication(application.id)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    onSelectApplication(application.id);
+                  }}
                   className={cn(
-                    "grid w-full grid-cols-[44px_minmax(0,1fr)_auto] items-center gap-2.5 rounded-md border p-2.5 text-left transition 2xl:grid-cols-[54px_minmax(0,1fr)_auto_auto] 2xl:gap-3 2xl:p-4",
+                    "grid w-full cursor-pointer grid-cols-[44px_minmax(0,1fr)_auto_auto] items-center gap-2.5 rounded-md border p-2.5 text-left transition 2xl:grid-cols-[54px_minmax(0,1fr)_auto_auto_auto] 2xl:gap-3 2xl:p-4",
                     visibleSelectedApplication?.id === application.id
                       ? "border-accent bg-white/[0.055] shadow-[0_0_0_1px_rgba(255,90,0,0.12)]"
                       : "border-border bg-white/[0.025] hover:bg-white/[0.055]",
@@ -6150,11 +6164,23 @@ function ApplicationsView({
                   <span className={cn("shrink-0 rounded-md border px-2 py-1 text-[10px] font-bold 2xl:text-[11px]", applicationStatusStyles[application.status])}>
                     {getApplicationStatusLabel(application.status)}
                   </span>
+                  <button
+                    type="button"
+                    aria-label={`Open AI info for ${application.job.title}`}
+                    title="AI info"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openApplicationAiInfo(application.id);
+                    }}
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-border text-muted transition hover:bg-white/[0.06] hover:text-white"
+                  >
+                    <Info className="h-4 w-4" />
+                  </button>
                   <div className="hidden text-right 2xl:block">
                     <p className="text-xs font-semibold text-muted">{formatApplicationDate(application.appliedAt)}</p>
                     <p className="mt-1 text-sm font-bold text-success">{formatMatchValue(application.job)}</p>
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           </aside>
@@ -6185,12 +6211,21 @@ function ApplicationsView({
                       )}
                     </div>
                   </div>
-                  <div className="relative">
+                  <div className="relative flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      aria-label="Open AI info"
+                      title="AI info"
+                      onClick={() => openApplicationAiInfo(visibleSelectedApplication.id)}
+                      className="grid h-8 w-8 place-items-center rounded-md border border-border text-muted transition hover:bg-white/[0.06] hover:text-white 2xl:h-9 2xl:w-9"
+                    >
+                      <Info className="h-4 w-4" />
+                    </button>
                     <button
                       type="button"
                       aria-label="Application actions"
                       onClick={() => setIsApplicationMenuOpen((isOpen) => !isOpen)}
-                      className="grid h-8 w-8 shrink-0 place-items-center rounded-md border border-border text-muted transition hover:bg-white/[0.06] hover:text-white 2xl:h-9 2xl:w-9"
+                      className="grid h-8 w-8 place-items-center rounded-md border border-border text-muted transition hover:bg-white/[0.06] hover:text-white 2xl:h-9 2xl:w-9"
                     >
                       <MoreHorizontal className="h-4 w-4" />
                     </button>
@@ -6204,6 +6239,13 @@ function ApplicationsView({
                           className="rounded-md px-2 py-1.5 text-left text-[11px] font-bold text-[#e6ebf3] hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:text-muted/45 disabled:hover:bg-transparent"
                         >
                           Open job posting
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openApplicationAiInfo(visibleSelectedApplication.id)}
+                          className="rounded-md px-2 py-1.5 text-left text-[11px] font-bold text-[#e6ebf3] hover:bg-white/[0.06]"
+                        >
+                          AI info
                         </button>
                         <div className="my-1 h-px bg-border" />
                         <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-normal text-muted">Change status</p>
@@ -6519,6 +6561,13 @@ function ApplicationsView({
             </section>
           </aside>
         </div>
+      )}
+
+      {aiInfoApplication && (
+        <ApplicationAiInfoDialog
+          application={aiInfoApplication}
+          onClose={() => setAiInfoApplicationId("")}
+        />
       )}
 
       {isManualApplicationDialogOpen && (
@@ -6863,6 +6912,175 @@ function ApplicationsView({
         </div>
       )}
     </section>
+  );
+}
+
+function ApplicationAiInfoDialog({
+  application,
+  onClose,
+}: {
+  application: TrackedApplication;
+  onClose: () => void;
+}) {
+  const job = application.job;
+  const breakdownItems = getAiMatchBreakdownItems(job);
+  const reasons = job.aiMatch?.reasons.length ? job.aiMatch.reasons : ["No AI match reasons have been calculated yet."];
+  const gaps = job.aiMatch?.gaps.length ? job.aiMatch.gaps : ["No AI match gaps have been calculated yet."];
+  const recommendations = buildRecommendationPlan(job).slice(0, 5);
+  const sourceDisplay = getAiMatchSourceDisplay(job);
+  const rawExplanation = buildAiMatchRawExplanation(job);
+  const signalStats = [
+    { label: "Skills", value: job.skills.length.toString() },
+    { label: "Requirements", value: job.requirements.length.toString() },
+    { label: "Responsibilities", value: job.responsibilities.length.toString() },
+    { label: "Documents", value: application.documents.length.toString() },
+  ];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+      <div className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[920px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] 2xl:p-5">
+        <div className="flex shrink-0 items-start justify-between gap-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <CompanyLogo logo={job.logo} compact />
+            <div className="min-w-0">
+              <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[24px]">AI application info</h2>
+              <p className="mt-1 truncate text-sm font-medium text-muted">
+                {job.title} at {job.company}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="Close AI info"
+            onClick={onClose}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto pr-1">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 2xl:gap-3">
+            <InfoStat label="AI match" value={formatMatchValue(job)} />
+            <InfoStat label="Source" value={sourceDisplay} title={job.aiMatch?.openclawError} />
+            <InfoStat label="Confidence" value={formatConfidence(job.aiMatch?.confidence)} />
+            <InfoStat label="Updated" value={formatAiMatchTimestamp(job.aiMatch?.updatedAt)} />
+          </div>
+
+          <section className="mt-4 rounded-md border border-border bg-white/[0.018] p-3 2xl:p-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-sm font-bold text-white 2xl:text-base">Score breakdown</h3>
+              <span className="rounded-md border border-success/30 bg-success/12 px-2 py-1 text-xs font-bold text-success">
+                {formatMatchValue(job)}
+              </span>
+            </div>
+            <div className="mt-3 space-y-2.5">
+              {breakdownItems.map((item) => (
+                <div key={item.key} className="grid grid-cols-[minmax(92px,0.34fr)_minmax(0,1fr)_54px] items-center gap-3">
+                  <span className="text-[12px] font-semibold text-muted 2xl:text-sm">{item.label}</span>
+                  <div className="h-2 rounded-full bg-white/[0.08]">
+                    <div className="h-full rounded-full bg-success" style={{ width: `${item.progress}%` }} />
+                  </div>
+                  <span className="text-right text-[12px] font-bold text-[#d8dee8] 2xl:text-sm">
+                    {item.value}/{item.max}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            <section className="rounded-md border border-border bg-white/[0.018] p-3 2xl:p-4">
+              <h3 className="text-sm font-bold text-white 2xl:text-base">Reasons</h3>
+              <ul className="mt-2.5 space-y-2 text-[13px] leading-5 text-muted 2xl:text-sm">
+                {reasons.map((item) => (
+                  <li key={item} className="flex gap-2">
+                    <Check className="mt-0.5 h-4 w-4 shrink-0 text-success" />
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </section>
+
+            <section className="rounded-md border border-border bg-white/[0.018] p-3 2xl:p-4">
+              <h3 className="text-sm font-bold text-white 2xl:text-base">Gaps</h3>
+              <ul className="mt-2.5 space-y-2 text-[13px] leading-5 text-muted 2xl:text-sm">
+                {gaps.map((item) => (
+                  <li key={item} className="flex gap-2">
+                    <CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-[#ffb020]" />
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          </div>
+
+          <section className="mt-4 rounded-md border border-border bg-white/[0.018] p-3 2xl:p-4">
+            <h3 className="text-sm font-bold text-white 2xl:text-base">Extracted vacancy signals</h3>
+            <div className="mt-3 grid gap-2 sm:grid-cols-4">
+              {signalStats.map((item) => (
+                <InfoStat key={item.label} label={item.label} value={item.value} />
+              ))}
+            </div>
+            <div className="mt-4 grid gap-4 lg:grid-cols-3">
+              <div>
+                <h4 className="text-[12px] font-bold text-[#d8dee8] 2xl:text-sm">Skills</h4>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {job.skills.map((skill) => (
+                    <span key={skill} className="rounded-md border border-border bg-white/[0.035] px-2 py-1 text-[11px] font-bold text-muted">
+                      {skill}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <h4 className="text-[12px] font-bold text-[#d8dee8] 2xl:text-sm">Requirements</h4>
+                <ul className="mt-2 space-y-1.5 text-[12px] leading-5 text-muted 2xl:text-[13px]">
+                  {job.requirements.slice(0, 5).map((item) => (
+                    <li key={item} className="flex gap-2">
+                      <CircleDot className="mt-1 h-3 w-3 shrink-0 text-accent" />
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <h4 className="text-[12px] font-bold text-[#d8dee8] 2xl:text-sm">Responsibilities</h4>
+                <ul className="mt-2 space-y-1.5 text-[12px] leading-5 text-muted 2xl:text-[13px]">
+                  {job.responsibilities.slice(0, 5).map((item) => (
+                    <li key={item} className="flex gap-2">
+                      <CircleDot className="mt-1 h-3 w-3 shrink-0 text-accent" />
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </section>
+
+          <section className="mt-4 rounded-md border border-border bg-white/[0.018] p-3 2xl:p-4">
+            <h3 className="text-sm font-bold text-white 2xl:text-base">AI recommendations</h3>
+            <div className="mt-2 divide-y divide-border">
+              {recommendations.map((recommendation) => (
+                <div key={`${recommendation.text}-${recommendation.gain}`} className="grid gap-1.5 py-2.5 text-[13px] leading-5 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1fr)_auto] sm:items-start 2xl:text-sm">
+                  <div>
+                    <p className="font-bold text-[#d8dee8]">{recommendation.text}</p>
+                    <p className="mt-0.5 text-muted">{recommendation.action}</p>
+                  </div>
+                  <p className="text-muted">{recommendation.why}</p>
+                  <p className="font-bold text-success sm:text-right">{recommendation.gain}</p>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          <section className="mt-4 rounded-md border border-border bg-white/[0.018] p-3 2xl:p-4">
+            <h3 className="text-sm font-bold text-white 2xl:text-base">Explanation</h3>
+            <p className="mt-2 text-[13px] leading-5 text-muted 2xl:text-sm 2xl:leading-6">{rawExplanation}</p>
+          </section>
+        </div>
+      </div>
+    </div>
   );
 }
 
