@@ -36,6 +36,10 @@ profile-page-full.png
 # Caches
 .turbo/
 .cache/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
 .eslintcache
 *.tsbuildinfo
 

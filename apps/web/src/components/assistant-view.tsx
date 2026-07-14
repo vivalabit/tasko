@@ -43,8 +43,10 @@ type AssistantJob = {
   title: string;
   company: string;
   location: string;
+  type?: string;
   match: number;
   overview: string;
+  responsibilities?: string[];
   requirements: string[];
   skills: string[];
   aiMatch?: {
@@ -68,6 +70,7 @@ type AssistantMessage = {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+  source?: "openclaw" | "local";
 };
 
 type AssistantThread = {
@@ -88,6 +91,7 @@ type AssistantViewProps = {
 };
 
 const assistantThreadsStorageKey = "tasko.assistantThreads.v1";
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const quickActions = [
   {
@@ -183,6 +187,27 @@ function getContextJob(
     return applications.find((application) => application.id === contextId)?.job ?? null;
   }
   return null;
+}
+
+function serializeAssistantJob(job: AssistantJob | null) {
+  if (!job) return null;
+
+  return {
+    id: job.id,
+    title: job.title,
+    company: job.company,
+    location: job.location,
+    type: job.type ?? "",
+    match: job.match,
+    overview: job.overview,
+    responsibilities: job.responsibilities ?? [],
+    requirements: job.requirements,
+    skills: job.skills,
+    aiMatch: job.aiMatch ? {
+      reasons: job.aiMatch.reasons,
+      gaps: job.aiMatch.gaps,
+    } : null,
+  };
 }
 
 function getAssistantResponse({
@@ -386,7 +411,7 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
     if (activeThreadId === threadId) setActiveThreadId("");
   }
 
-  function submitMessage(explicitPrompt?: string) {
+  async function submitMessage(explicitPrompt?: string) {
     const prompt = (explicitPrompt ?? draft).trim();
     if (!prompt || isGenerating) return;
 
@@ -398,13 +423,6 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
       content: prompt,
       createdAt: now,
     };
-    const response = getAssistantResponse({
-      prompt,
-      profile,
-      job: selectedJob,
-      application: selectedApplication,
-    });
-
     if (activeThread) {
       setThreads((currentThreads) => currentThreads.map((thread) =>
         thread.id === threadId
@@ -426,20 +444,68 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
     setDraft("");
     setIsGenerating(true);
 
-    window.setTimeout(() => {
+    try {
+      const apiResponse = await fetch(`${apiBaseUrl}/assistant/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          threadId,
+          message: prompt,
+          contextKind,
+          contextId,
+          job: serializeAssistantJob(selectedJob),
+          application: selectedApplication ? {
+            id: selectedApplication.id,
+            status: selectedApplication.status,
+            notes: selectedApplication.notes,
+            nextStep: selectedApplication.nextStep,
+            job: serializeAssistantJob(selectedApplication.job),
+          } : null,
+        }),
+      });
+      if (!apiResponse.ok) {
+        throw new Error(`Assistant request failed with status ${apiResponse.status}`);
+      }
+
+      const payload = (await apiResponse.json()) as { message?: unknown; source?: unknown };
+      if (typeof payload.message !== "string" || !payload.message.trim()) {
+        throw new Error("Assistant response was empty");
+      }
+
       const assistantMessage: AssistantMessage = {
         id: createId("assistant-response"),
         role: "assistant",
-        content: response,
+        content: payload.message.trim(),
         createdAt: new Date().toISOString(),
+        source: "openclaw",
       };
       setThreads((currentThreads) => currentThreads.map((thread) =>
         thread.id === threadId
           ? { ...thread, messages: [...thread.messages, assistantMessage], updatedAt: assistantMessage.createdAt }
           : thread,
       ));
+    } catch {
+      const fallbackResponse = getAssistantResponse({
+        prompt,
+        profile,
+        job: selectedJob,
+        application: selectedApplication,
+      });
+      const assistantMessage: AssistantMessage = {
+        id: createId("assistant-response"),
+        role: "assistant",
+        content: fallbackResponse,
+        createdAt: new Date().toISOString(),
+        source: "local",
+      };
+      setThreads((currentThreads) => currentThreads.map((thread) =>
+        thread.id === threadId
+          ? { ...thread, messages: [...thread.messages, assistantMessage], updatedAt: assistantMessage.createdAt }
+          : thread,
+      ));
+    } finally {
       setIsGenerating(false);
-    }, 450);
+    }
   }
 
   function regenerateMessage(messageId: string) {
@@ -575,7 +641,21 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
                   <article key={message.id} className={cn("flex gap-2.5 sm:gap-3", message.role === "user" && "justify-end")}>
                     {message.role === "assistant" && <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent/15 text-accent"><Bot className="h-4 w-4" /></span>}
                     <div className={cn("min-w-0 max-w-[88%]", message.role === "user" && "rounded-xl rounded-tr-sm bg-accent px-3.5 py-2.5 text-white shadow-[0_8px_24px_rgba(255,90,0,0.14)]")}>
-                      {message.role === "assistant" && <p className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.1em] text-accent">Tasko Assistant</p>}
+                      {message.role === "assistant" && (
+                        <p className="mb-1.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.1em] text-accent">
+                          Tasko Assistant
+                          {message.source && (
+                            <span className={cn(
+                              "rounded border px-1.5 py-0.5 text-[8px] tracking-[0.08em]",
+                              message.source === "openclaw"
+                                ? "border-success/35 bg-success/10 text-success"
+                                : "border-border bg-white/[0.035] text-muted",
+                            )}>
+                              {message.source === "openclaw" ? "OpenClaw" : "Local fallback"}
+                            </span>
+                          )}
+                        </p>
+                      )}
                       <p className={cn("whitespace-pre-wrap text-[13px] leading-5 2xl:text-sm 2xl:leading-6", message.role === "assistant" ? "text-[#e4e9f1]" : "text-white")}>{message.content}</p>
                       {message.role === "assistant" && (
                         <div className="mt-2.5 flex items-center gap-1.5 border-t border-border pt-2">

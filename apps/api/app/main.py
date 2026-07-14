@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.applications import router as applications_router
+from app.api.assistant import router as assistant_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
 from app.api.parsers import router as parsers_router
@@ -46,6 +47,7 @@ app.add_middleware(
 app.include_router(health_router, prefix="/health", tags=["health"])
 app.include_router(jobs_router, prefix="/jobs", tags=["jobs"])
 app.include_router(applications_router, prefix="/applications", tags=["applications"])
+app.include_router(assistant_router, prefix="/assistant", tags=["assistant"])
 app.include_router(parsers_router, prefix="/parsers", tags=["parsers"])
 app.include_router(profile_router, prefix="/profile", tags=["profile"])
 app.include_router(settings_router, prefix="/settings", tags=["settings"])
