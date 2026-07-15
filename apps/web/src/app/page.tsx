@@ -54,6 +54,7 @@ import {
 import { Button } from "@/components/ui/button";
 import {
   AssistantView,
+  type AssistantAppliedAction,
   type AssistantDocumentAttachment,
   type AssistantLaunch,
 } from "@/components/assistant-view";
@@ -3449,6 +3450,33 @@ export default function HomePage() {
     );
   }
 
+  function syncAssistantAppliedAction(result: AssistantAppliedAction) {
+    if (result.resourceKind === "application") {
+      const updatedApplication = normalizeStoredApplications([result.resource])[0];
+      if (!updatedApplication) return;
+      setApplications((currentApplications) => currentApplications.map((application) =>
+        application.id === updatedApplication.id ? updatedApplication : application,
+      ));
+      return;
+    }
+
+    if (result.resourceKind === "event") {
+      const createdEvent = normalizeStoredApplicationEvents([result.resource])[0];
+      if (!createdEvent) return;
+      setApplicationEvents((currentEvents) => sortApplicationEvents([
+        createdEvent,
+        ...currentEvents.filter((event) => event.id !== createdEvent.id),
+      ]));
+      return;
+    }
+
+    if (result.resourceKind === "profile") {
+      const updatedProfile = normalizeCandidateProfile(result.resource as Partial<CandidateProfile>);
+      setProfile(updatedProfile);
+      setProfileDraft(updatedProfile);
+    }
+  }
+
   function deleteApplication(applicationId: string) {
     setApplications((currentApplications) => {
       const nextApplications = currentApplications.filter((application) => application.id !== applicationId);
@@ -5003,6 +5031,7 @@ export default function HomePage() {
             launch={assistantLaunch}
             onLaunchHandled={() => setAssistantLaunch(null)}
             onDocumentAttached={attachGeneratedDocumentToApplication}
+            onActionApplied={syncAssistantAppliedAction}
           />
         ) : activeView === "Profile" ? (
           <ProfileView

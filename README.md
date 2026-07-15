@@ -23,8 +23,8 @@ pnpm openclaw:setup
 
 The setup is idempotent. It creates a separate workspace and agent state,
 selects `openai/gpt-5.4-mini`, disables reasoning, caps answers at 1,200
-tokens, and disables all skills and tools. Tasko conversations and memory are
-therefore kept separate from the personal assistant.
+tokens, and disables all external skills and tools. Tasko conversations and
+memory are therefore kept separate from the personal assistant.
 
 Assistant responses use resumable SSE through `POST /assistant/chat/stream`.
 Clients reconnect with the same `requestId` and last received `offset`; active
@@ -42,3 +42,9 @@ resumes. Documents, vacancy-specific variants, immutable content versions, and
 application attachments are stored in PostgreSQL through `/documents`.
 `GET /documents/{id}/download` produces a styled `.docx` for the current or a
 selected historical version.
+
+OpenClaw can propose a small allowlist of Tasko actions: application notes and
+next steps, interview events, documents, and individual profile fields. These
+proposals are stored with the assistant message and rendered as previews. No
+mutation runs during generation; FastAPI executes an idempotent action only
+after the user clicks Apply.

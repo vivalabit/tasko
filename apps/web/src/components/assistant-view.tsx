@@ -20,6 +20,7 @@ import {
   Save,
   Search,
   Send,
+  ShieldCheck,
   Sparkles,
   Square,
   Target,
@@ -90,6 +91,35 @@ type AssistantMessage = {
   createdAt: string;
   source?: "openclaw" | "local";
   status?: "generating" | "complete" | "stopped" | "error";
+  actions?: AssistantActionPreview[];
+};
+
+type AssistantActionFieldPreview = {
+  label: string;
+  before: string;
+  after: string;
+};
+
+type AssistantActionPreview = {
+  id: string;
+  type: "add_application_note" | "update_application_next_step" | "create_interview_event" | "save_document" | "update_profile_field";
+  title: string;
+  description: string;
+  contextKind: AssistantContextKind;
+  contextId: string;
+  fields: AssistantActionFieldPreview[];
+  payload: Record<string, unknown>;
+  status: "preview" | "applying" | "applied" | "error";
+  resultMessage: string;
+};
+
+export type AssistantAppliedAction = {
+  actionId: string;
+  type: AssistantActionPreview["type"];
+  status: "applied";
+  message: string;
+  resourceKind: "application" | "event" | "document" | "profile";
+  resource: Record<string, unknown>;
 };
 
 type AssistantThread = {
@@ -151,10 +181,12 @@ type AssistantViewProps = {
     applicationId: string,
     document: AssistantDocumentAttachment,
   ) => void;
+  onActionApplied: (result: AssistantAppliedAction) => void;
 };
 
 const legacyAssistantThreadsStorageKey = "tasko.assistantThreads.v1";
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const assistantActionMarkerPattern = /\s*<!--TASKO_ACTIONS:([A-Za-z0-9_\-=]+)-->\s*$/;
 
 const quickActions = [
   {
@@ -237,6 +269,81 @@ function wait(milliseconds: number) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
+function normalizeAssistantActions(value: unknown): AssistantActionPreview[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): AssistantActionPreview[] => {
+    if (!item || typeof item !== "object") return [];
+    const candidate = item as Partial<AssistantActionPreview>;
+    if (
+      typeof candidate.id !== "string" ||
+      ![
+        "add_application_note",
+        "update_application_next_step",
+        "create_interview_event",
+        "save_document",
+        "update_profile_field",
+      ].includes(candidate.type ?? "") ||
+      typeof candidate.title !== "string" ||
+      typeof candidate.description !== "string" ||
+      !["profile", "job", "application"].includes(candidate.contextKind ?? "") ||
+      typeof candidate.contextId !== "string" ||
+      !Array.isArray(candidate.fields) ||
+      !candidate.payload ||
+      typeof candidate.payload !== "object"
+    ) {
+      return [];
+    }
+    const fields = candidate.fields.flatMap((field): AssistantActionFieldPreview[] => (
+      field &&
+      typeof field.label === "string" &&
+      typeof field.before === "string" &&
+      typeof field.after === "string"
+        ? [field]
+        : []
+    ));
+    return [{
+      id: candidate.id,
+      type: candidate.type as AssistantActionPreview["type"],
+      title: candidate.title,
+      description: candidate.description,
+      contextKind: candidate.contextKind as AssistantContextKind,
+      contextId: candidate.contextId,
+      fields,
+      payload: candidate.payload as Record<string, unknown>,
+      status: ["preview", "applying", "applied", "error"].includes(candidate.status ?? "")
+        ? candidate.status as AssistantActionPreview["status"]
+        : "preview",
+      resultMessage: typeof candidate.resultMessage === "string" ? candidate.resultMessage : "",
+    }];
+  });
+}
+
+function decodeAssistantMessage(content: string) {
+  const match = content.match(assistantActionMarkerPattern);
+  if (!match) return { content, actions: [] as AssistantActionPreview[] };
+  try {
+    const base64 = match[1].replace(/-/g, "+").replace(/_/g, "/");
+    const binary = window.atob(base64);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const actions = normalizeAssistantActions(JSON.parse(new TextDecoder().decode(bytes)));
+    return { content: content.replace(assistantActionMarkerPattern, "").trimEnd(), actions };
+  } catch {
+    return { content, actions: [] as AssistantActionPreview[] };
+  }
+}
+
+function encodeAssistantMessage(message: AssistantMessage) {
+  if (!message.actions?.length) return message.content;
+  const bytes = new TextEncoder().encode(JSON.stringify(message.actions));
+  let binary = "";
+  const chunkSize = 8_192;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.slice(offset, offset + chunkSize));
+  }
+  const encoded = window.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_");
+  return `${message.content.trimEnd()}\n\n<!--TASKO_ACTIONS:${encoded}-->`;
+}
+
 function normalizeThreads(value: unknown): AssistantThread[] {
   if (!Array.isArray(value)) return [];
 
@@ -259,13 +366,19 @@ function normalizeThreads(value: unknown): AssistantThread[] {
         archived: Boolean(candidate.archived),
         createdAt: candidate.createdAt || candidate.updatedAt,
         openClawSessionKey: candidate.openClawSessionKey ?? null,
-        messages: candidate.messages.filter((message) => (
-          message &&
-          typeof message.id === "string" &&
-          ["user", "assistant"].includes(message.role) &&
-          typeof message.content === "string" &&
-          typeof message.createdAt === "string"
-        )),
+        messages: candidate.messages.flatMap((message): AssistantMessage[] => {
+          if (
+            !message ||
+            typeof message.id !== "string" ||
+            !["user", "assistant"].includes(message.role) ||
+            typeof message.content !== "string" ||
+            typeof message.createdAt !== "string"
+          ) {
+            return [];
+          }
+          const decoded = decodeAssistantMessage(message.content);
+          return [{ ...message, content: decoded.content, actions: decoded.actions }];
+        }),
       };
     });
 }
@@ -294,7 +407,7 @@ async function persistAssistantMessage(threadId: string, message: AssistantMessa
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(message),
+      body: JSON.stringify({ ...message, content: encodeAssistantMessage(message), actions: undefined }),
     },
   );
   if (!response.ok) throw new Error(`Message persistence failed with status ${response.status}`);
@@ -519,6 +632,7 @@ export function AssistantView({
   launch,
   onLaunchHandled,
   onDocumentAttached,
+  onActionApplied,
 }: AssistantViewProps) {
   const [threads, setThreads] = useState<AssistantThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState("");
@@ -842,6 +956,104 @@ export function AssistantView({
     }
   }
 
+  function setMessageActionState(
+    threadId: string,
+    messageId: string,
+    actionId: string,
+    status: AssistantActionPreview["status"],
+    resultMessage = "",
+  ) {
+    setThreads((currentThreads) => currentThreads.map((thread) =>
+      thread.id === threadId
+        ? {
+            ...thread,
+            messages: thread.messages.map((message) =>
+              message.id === messageId
+                ? {
+                    ...message,
+                    actions: message.actions?.map((action) =>
+                      action.id === actionId ? { ...action, status, resultMessage } : action,
+                    ),
+                  }
+                : message,
+            ),
+          }
+        : thread,
+    ));
+  }
+
+  async function applyAssistantAction(message: AssistantMessage, action: AssistantActionPreview) {
+    if (!activeThread || action.status === "applying" || action.status === "applied") return;
+    const threadId = activeThread.id;
+    setMessageActionState(threadId, message.id, action.id, "applying");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/assistant/actions/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: {
+            ...action,
+            status: "preview",
+            resultMessage: "",
+          },
+        }),
+      });
+      const value = await response.json().catch(() => null) as AssistantAppliedAction | { detail?: string } | null;
+      if (!response.ok || !value || !("resourceKind" in value)) {
+        throw new Error(value && "detail" in value && typeof value.detail === "string" ? value.detail : "Action could not be applied");
+      }
+
+      const result = value as AssistantAppliedAction;
+      const completedMessage: AssistantMessage = {
+        ...message,
+        actions: message.actions?.map((item) =>
+          item.id === action.id
+            ? { ...item, status: "applied", resultMessage: result.message }
+            : item,
+        ),
+      };
+      setMessageActionState(threadId, message.id, action.id, "applied", result.message);
+      await persistAssistantMessage(threadId, completedMessage);
+
+      if (result.resourceKind === "document") {
+        const savedDocument = normalizeAssistantDocuments([result.resource])[0];
+        if (savedDocument) {
+          setDocuments((currentDocuments) => [
+            savedDocument,
+            ...currentDocuments.filter((document) => document.id !== savedDocument.id),
+          ]);
+          const applicationId = typeof action.payload.applicationId === "string"
+            ? action.payload.applicationId
+            : "";
+          if (applicationId) {
+            onDocumentAttached(applicationId, {
+              artifactId: savedDocument.id,
+              title: savedDocument.title,
+              fileName: documentFileName(savedDocument),
+              fileType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              uploadedAt: savedDocument.updatedAt,
+              dataUrl: `${apiBaseUrl}/documents/${encodeURIComponent(savedDocument.id)}/download`,
+            });
+          }
+        }
+      }
+      onActionApplied(result);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Action could not be applied";
+      const failedMessage: AssistantMessage = {
+        ...message,
+        actions: message.actions?.map((item) =>
+          item.id === action.id
+            ? { ...item, status: "error", resultMessage: errorMessage }
+            : item,
+        ),
+      };
+      setMessageActionState(threadId, message.id, action.id, "error", errorMessage);
+      void persistAssistantMessage(threadId, failedMessage).catch(() => setConnectionStatus("disconnected"));
+    }
+  }
+
   async function submitMessage(explicitPrompt?: string) {
     const prompt = (explicitPrompt ?? draft).trim();
     if (!prompt || isGenerating) return;
@@ -896,6 +1108,7 @@ export function AssistantView({
     let offset = 0;
     let completed = false;
     let terminalError = "";
+    let completedActions: AssistantActionPreview[] = [];
     const requestPayload = {
       requestId,
       threadId,
@@ -915,7 +1128,11 @@ export function AssistantView({
       } : null,
     };
 
-    const updateAssistantMessage = (content: string, source?: AssistantMessage["source"]) => {
+    const updateAssistantMessage = (
+      content: string,
+      source?: AssistantMessage["source"],
+      actions?: AssistantActionPreview[],
+    ) => {
       const updatedAt = new Date().toISOString();
       setThreads((currentThreads) => currentThreads.map((thread) =>
         thread.id === threadId
@@ -924,7 +1141,14 @@ export function AssistantView({
               updatedAt,
               messages: thread.messages.map((message) =>
                 message.id === assistantMessageId
-                  ? { ...message, content, source, status: "complete", createdAt: updatedAt }
+                  ? {
+                      ...message,
+                      content,
+                      source,
+                      status: "complete",
+                      createdAt: updatedAt,
+                      ...(actions ? { actions } : {}),
+                    }
                   : message,
               ),
             }
@@ -977,12 +1201,13 @@ export function AssistantView({
                     : thread,
                 ));
               }
+              completedActions = normalizeAssistantActions(metadata.actions);
             }
           });
 
           if (terminalEvent === "done") {
             completed = true;
-            updateAssistantMessage(streamedContent.trim(), "openclaw");
+            updateAssistantMessage(streamedContent.trim(), "openclaw", completedActions);
           } else if (terminalEvent === "stopped") {
             completed = true;
           } else if (terminalEvent === "error") {
@@ -1249,6 +1474,80 @@ export function AssistantView({
                           </span>
                         )}
                       </p>
+                      {message.role === "assistant" && message.id !== streamingMessageId && message.actions?.length ? (
+                        <div className="mt-3 space-y-2.5">
+                          {message.actions.map((action) => {
+                            const isApplied = action.status === "applied";
+                            const isApplying = action.status === "applying";
+                            return (
+                              <section
+                                key={action.id}
+                                className={cn(
+                                  "rounded-lg border p-3",
+                                  isApplied
+                                    ? "border-success/35 bg-success/[0.055]"
+                                    : "border-accent/35 bg-accent/[0.055]",
+                                )}
+                              >
+                                <div className="flex items-start gap-2.5">
+                                  <span className={cn(
+                                    "grid h-8 w-8 shrink-0 place-items-center rounded-md",
+                                    isApplied ? "bg-success/15 text-success" : "bg-accent/15 text-accent",
+                                  )}>
+                                    {isApplied ? <Check className="h-4 w-4" /> : <ShieldCheck className="h-4 w-4" />}
+                                  </span>
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <p className="text-xs font-bold text-white">{action.title}</p>
+                                      <span className={cn(
+                                        "rounded border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-wide",
+                                        isApplied
+                                          ? "border-success/35 bg-success/10 text-success"
+                                          : "border-accent/35 bg-accent/10 text-accent",
+                                      )}>
+                                        {isApplied ? "Applied" : "Preview"}
+                                      </span>
+                                    </div>
+                                    <p className="mt-1 text-[10px] leading-4 text-muted">{action.description}</p>
+                                  </div>
+                                </div>
+                                <div className="mt-2.5 space-y-2 rounded-md border border-border bg-black/10 p-2.5">
+                                  {action.fields.map((field) => (
+                                    <div key={`${action.id}-${field.label}`}>
+                                      <p className="text-[9px] font-black uppercase tracking-wide text-muted">{field.label}</p>
+                                      {field.before ? (
+                                        <p className="mt-1 max-h-20 overflow-y-auto whitespace-pre-wrap text-[10px] leading-4 text-muted line-through decoration-white/25">{field.before}</p>
+                                      ) : null}
+                                      <p className="mt-1 max-h-36 overflow-y-auto whitespace-pre-wrap text-[10px] leading-4 text-[#e8edf4]">{field.after || "Empty"}</p>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="mt-2.5 flex items-center justify-between gap-2">
+                                  <p className={cn(
+                                    "min-w-0 text-[9px] leading-4",
+                                    action.status === "error" ? "text-red-300" : isApplied ? "text-success" : "text-muted",
+                                  )}>
+                                    {action.resultMessage || (isApplied ? "Change applied" : "Nothing changes until you confirm.")}
+                                  </p>
+                                  {!isApplied ? (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      disabled={isApplying}
+                                      aria-label={`Apply ${action.title}`}
+                                      onClick={() => applyAssistantAction(message, action)}
+                                      className="h-8 shrink-0 rounded-md bg-accent px-3 text-[10px] font-bold text-white hover:bg-[#ff6b12] disabled:opacity-50"
+                                    >
+                                      {isApplying ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                                      {isApplying ? "Applying…" : action.status === "error" ? "Try again" : "Apply"}
+                                    </Button>
+                                  ) : null}
+                                </div>
+                              </section>
+                            );
+                          })}
+                        </div>
+                      ) : null}
                       {message.role === "assistant" && message.id !== streamingMessageId && message.content && (
                         <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
                           <Button variant="ghost" size="sm" onClick={() => copyMessage(message)} className="h-7 px-2 text-[10px] text-muted hover:text-white">

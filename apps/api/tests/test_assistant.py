@@ -364,6 +364,68 @@ def test_assistant_chat_stream_rejects_missing_resume_state() -> None:
     assert response.json()["detail"] == "Assistant stream is no longer available for recovery"
 
 
+def test_assistant_chat_stream_returns_and_persists_action_preview(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_run_openclaw_assistant(**_: object) -> tuple[str, str]:
+        return (
+            "Review this change before applying.\n\n"
+            '<TASKO_ACTIONS_JSON>[{"type":"update_profile_field",'
+            '"field":"headline","value":"Senior product designer"}]'
+            "</TASKO_ACTIONS_JSON>",
+            "session-actions",
+        )
+
+    monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        with testing_session_local() as db:
+            yield db
+
+    with testing_session_local() as db:
+        db.add(
+            ProfileRecord(
+                id="default", data=ProfilePayload(headline="Product designer").model_dump()
+            )
+        )
+        db.commit()
+
+    assistant_api.assistant_streams.clear()
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_assistant_enabled=True)
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/assistant/chat/stream",
+            json={
+                "requestId": "request-action-preview",
+                "threadId": "thread-action-preview",
+                "message": "Update my headline",
+                "contextKind": "profile",
+                "assistantMessageId": "message-action-preview",
+            },
+        )
+        with testing_session_local() as db:
+            stored_message = db.get(MessageRecord, "message-action-preview")
+    finally:
+        app.dependency_overrides.clear()
+        assistant_api.assistant_streams.clear()
+
+    assert response.status_code == 200
+    assert streamed_text(response.text) == "Review this change before applying."
+    assert '"type":"update_profile_field"' in response.text
+    assert stored_message is not None
+    assert stored_message.content.startswith("Review this change before applying.")
+    assert "<!--TASKO_ACTIONS:" in stored_message.content
+
+
 def streamed_text(sse_body: str) -> str:
     chunks: list[str] = []
     for block in sse_body.split("\n\n"):

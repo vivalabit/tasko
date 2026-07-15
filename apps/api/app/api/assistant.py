@@ -4,7 +4,9 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal
+from uuid import uuid4
 
 from pydantic import ValidationError
 from sqlalchemy import func, select
@@ -17,8 +19,11 @@ from fastapi.responses import StreamingResponse
 
 from app.core.database import get_db
 from app.core.settings import Settings, get_settings
-from app.models.applications import StoredApplicationRecord
+from app.models.applications import StoredApplicationEventRecord, StoredApplicationRecord
 from app.models.assistant import (
+    AppliedAssistantActionRecord,
+    AssistantActionApplyRequest,
+    AssistantActionApplyResponse,
     AssistantApplicationContext,
     AssistantChatRequest,
     AssistantChatResponse,
@@ -26,11 +31,18 @@ from app.models.assistant import (
     AssistantStreamRequest,
 )
 from app.models.conversations import ConversationRecord, MessageRecord, utc_now
+from app.models.documents import (
+    DocumentAttachmentRecord,
+    DocumentRecord,
+    DocumentVersionRecord,
+)
 from app.models.jobs import StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.assistant import (
     OpenClawAssistantError,
     OpenClawAssistantTimeoutError,
+    encode_message_actions,
+    extract_assistant_action_previews,
     run_openclaw_assistant,
 )
 
@@ -47,7 +59,7 @@ class AssistantStreamState:
     status: StreamStatus = "generating"
     text: str = ""
     error: str = ""
-    metadata: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, object] = field(default_factory=dict)
     updated_at: float = field(default_factory=time.monotonic)
     updated: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task[None] | None = None
@@ -98,12 +110,22 @@ async def chat_with_assistant(
             detail=str(exc),
         ) from exc
 
+    visible_message, actions = extract_assistant_action_previews(
+        message,
+        request_id=request.thread_id,
+        context_kind=request.context_kind,
+        context_id=request.context_id,
+        profile=profile,
+        job=job,
+        application=application,
+    )
     return AssistantChatResponse(
-        message=message,
+        message=visible_message,
         metadata={
             "sessionId": session_id,
             "contextKind": request.context_kind,
             "contextId": request.context_id,
+            "actions": [action.model_dump(by_alias=True, mode="json") for action in actions],
         },
     )
 
@@ -199,6 +221,38 @@ async def stop_chat_stream(request_id: str) -> dict[str, str]:
     return {"status": stream.status}
 
 
+@router.post("/actions/apply", response_model=AssistantActionApplyResponse)
+def apply_assistant_action(
+    request: AssistantActionApplyRequest,
+    db: Session = Depends(get_db),
+) -> AssistantActionApplyResponse:
+    action = request.action
+    try:
+        existing = db.get(AppliedAssistantActionRecord, action.id)
+        if existing:
+            return AssistantActionApplyResponse.model_validate(existing.result)
+
+        response = execute_assistant_action(db, action)
+        db.add(
+            AppliedAssistantActionRecord(
+                id=action.id,
+                action_type=action.type,
+                result=response.model_dump(by_alias=True, mode="json"),
+            )
+        )
+        db.commit()
+        return response
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Assistant action database is unavailable",
+        ) from exc
+
+
 async def generate_assistant_stream(
     *,
     stream: AssistantStreamState,
@@ -223,13 +277,23 @@ async def generate_assistant_stream(
             thinking=settings.openclaw_assistant_thinking,
             timeout_seconds=settings.openclaw_assistant_timeout_seconds,
         )
+        visible_message, actions = extract_assistant_action_previews(
+            message,
+            request_id=request.request_id,
+            context_kind=request.context_kind,
+            context_id=request.context_id,
+            profile=profile,
+            job=job,
+            application=application,
+        )
         stream.metadata = {
             "sessionId": session_id,
             "sessionKey": session_id,
             "contextKind": request.context_kind,
             "contextId": request.context_id,
+            "actions": [action.model_dump(by_alias=True, mode="json") for action in actions],
         }
-        for chunk in split_stream_text(message):
+        for chunk in split_stream_text(visible_message):
             stream.text += chunk
             touch_stream(stream)
             await asyncio.sleep(0.035)
@@ -237,7 +301,7 @@ async def generate_assistant_stream(
             history_bind,
             conversation_id=request.thread_id,
             assistant_message_id=assistant_message_id,
-            text=stream.text,
+            text=encode_message_actions(stream.text, actions),
             message_status="complete",
             source="openclaw",
             openclaw_session_key=session_id,
@@ -547,14 +611,319 @@ def load_application_context(
         return request.application
 
     try:
-        record = (
-            db.get(StoredApplicationRecord, request.context_id)
-            if request.context_id
-            else None
-        )
+        record = db.get(StoredApplicationRecord, request.context_id) if request.context_id else None
         if record:
             return AssistantApplicationContext.model_validate(record.data)
     except (SQLAlchemyError, ValidationError):
         pass
 
     return request.application
+
+
+PROFILE_ACTION_FIELDS = {
+    "name",
+    "current_role",
+    "desired_role",
+    "location",
+    "work_format",
+    "headline",
+    "linkedin",
+    "github",
+    "portfolio",
+    "personal_site",
+    "experience",
+    "skills",
+    "education",
+    "job_preferences",
+    "dealbreakers",
+    "additional_notes",
+}
+
+
+def execute_assistant_action(db: Session, action) -> AssistantActionApplyResponse:
+    payload = action.payload
+
+    if action.type in {
+        "add_application_note",
+        "update_application_next_step",
+        "create_interview_event",
+    }:
+        application_id = payload_string(payload, "applicationId", max_length=160)
+        if action.context_kind != "application" or action.context_id != application_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The application context changed; request a new preview",
+            )
+        application = require_stored_application(db, application_id)
+
+        if action.type == "add_application_note":
+            note = payload_string(payload, "note", max_length=4_000)
+            application_data = dict(application.data)
+            current_notes = str(application_data.get("notes", "")).strip()
+            application_data["notes"] = "\n".join(value for value in (current_notes, note) if value)
+            application.data = application_data
+            return action_response(
+                action,
+                message="Application note added",
+                resource_kind="application",
+                resource=application_data,
+            )
+
+        if action.type == "update_application_next_step":
+            next_step = payload_string(payload, "nextStep", max_length=500)
+            expected = payload_string(
+                payload,
+                "expectedValue",
+                max_length=500,
+                allow_empty=True,
+            )
+            application_data = dict(application.data)
+            current = str(application_data.get("nextStep", ""))
+            require_unchanged(current, expected)
+            application_data["nextStep"] = next_step
+            application.data = application_data
+            return action_response(
+                action,
+                message="Application next step updated",
+                resource_kind="application",
+                resource=application_data,
+            )
+
+        starts_at = payload_string(payload, "startsAt", max_length=80)
+        try:
+            parsed_start = datetime.fromisoformat(starts_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Interview start time is invalid",
+            ) from exc
+        if parsed_start.tzinfo is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Interview start time must include a timezone",
+            )
+        duration = payload.get("durationMinutes", 45)
+        if not isinstance(duration, int) or isinstance(duration, bool) or not 5 <= duration <= 480:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Interview duration is invalid",
+            )
+        event_id = f"assistant-event-{action.id.removeprefix('assistant-action-')}"
+        event_data = {
+            "id": event_id,
+            "applicationId": application_id,
+            "type": "interview",
+            "status": "scheduled",
+            "title": payload_string(payload, "title", max_length=240),
+            "startsAt": parsed_start.isoformat(),
+            "durationMinutes": duration,
+            "timezone": payload_string(payload, "timezone", max_length=120),
+            "location": payload_string(
+                payload,
+                "location",
+                max_length=500,
+                allow_empty=True,
+            ),
+            "notes": payload_string(
+                payload,
+                "notes",
+                max_length=4_000,
+                allow_empty=True,
+            ),
+        }
+        db.add(
+            StoredApplicationEventRecord(
+                id=event_id,
+                application_id=application_id,
+                data=event_data,
+            )
+        )
+        return action_response(
+            action,
+            message="Interview event created",
+            resource_kind="event",
+            resource=event_data,
+        )
+
+    if action.type == "save_document":
+        document_type = payload_string(payload, "documentType", max_length=32)
+        if document_type not in {"cover_letter", "tailored_resume"}:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Document type is invalid",
+            )
+        application_id = payload_string(
+            payload,
+            "applicationId",
+            max_length=160,
+            allow_empty=True,
+        )
+        job_id = payload_string(payload, "jobId", max_length=160, allow_empty=True)
+        if action.context_kind == "application" and action.context_id != application_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The application context changed; request a new preview",
+            )
+        if action.context_kind == "job" and action.context_id != job_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="The vacancy context changed; request a new preview",
+            )
+        if application_id:
+            require_stored_application(db, application_id)
+        now = utc_now()
+        document_id = str(uuid4())
+        document = DocumentRecord(
+            id=document_id,
+            type=document_type,
+            title=payload_string(payload, "title", max_length=240),
+            job_id=job_id or None,
+            current_version=1,
+            created_at=now,
+            updated_at=now,
+        )
+        document.versions.append(
+            DocumentVersionRecord(
+                id=str(uuid4()),
+                document_id=document_id,
+                version=1,
+                content=payload_string(payload, "content", max_length=200_000),
+                created_at=now,
+            )
+        )
+        if application_id:
+            document.attachments.append(
+                DocumentAttachmentRecord(
+                    id=str(uuid4()),
+                    document_id=document_id,
+                    application_id=application_id,
+                    created_at=now,
+                )
+            )
+        db.add(document)
+        db.flush()
+        resource = {
+            "id": document.id,
+            "type": document.type,
+            "title": document.title,
+            "jobId": document.job_id,
+            "applicationIds": [application_id] if application_id else [],
+            "currentVersion": 1,
+            "createdAt": now.isoformat(),
+            "updatedAt": now.isoformat(),
+            "versions": [
+                {
+                    "id": document.versions[0].id,
+                    "version": 1,
+                    "content": document.versions[0].content,
+                    "createdAt": now.isoformat(),
+                }
+            ],
+        }
+        return action_response(
+            action,
+            message="Document saved",
+            resource_kind="document",
+            resource=resource,
+        )
+
+    if action.type == "update_profile_field":
+        field_name = payload_string(payload, "field", max_length=80)
+        if field_name not in PROFILE_ACTION_FIELDS:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Profile field cannot be changed by the assistant",
+            )
+        value = payload_string(payload, "value", max_length=12_000, allow_empty=True)
+        expected = payload_string(
+            payload,
+            "expectedValue",
+            max_length=12_000,
+            allow_empty=True,
+        )
+        profile_record = db.get(ProfileRecord, "default")
+        profile = (
+            ProfilePayload.model_validate(profile_record.data)
+            if profile_record
+            else ProfilePayload()
+        )
+        current = str(getattr(profile, field_name))
+        require_unchanged(current, expected)
+        updated_data = profile.model_dump()
+        updated_data[field_name] = value
+        try:
+            updated_profile = ProfilePayload.model_validate(updated_data)
+        except ValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Profile field value is invalid",
+            ) from exc
+        if profile_record:
+            profile_record.data = updated_profile.model_dump()
+        else:
+            db.add(ProfileRecord(id="default", data=updated_profile.model_dump()))
+        return action_response(
+            action,
+            message=f"Profile field {field_name.replace('_', ' ')} updated",
+            resource_kind="profile",
+            resource=updated_profile.model_dump(),
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        detail="Assistant action type is not supported",
+    )
+
+
+def require_stored_application(db: Session, application_id: str) -> StoredApplicationRecord:
+    record = db.get(StoredApplicationRecord, application_id)
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found",
+        )
+    return record
+
+
+def payload_string(
+    payload: dict[str, object],
+    key: str,
+    *,
+    max_length: int,
+    allow_empty: bool = False,
+) -> str:
+    value = payload.get(key)
+    if (
+        not isinstance(value, str)
+        or len(value) > max_length
+        or (not allow_empty and not value.strip())
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Assistant action field {key} is invalid",
+        )
+    return value.strip()
+
+
+def require_unchanged(current: str, expected: str) -> None:
+    if current != expected:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="The data changed after this preview was created; request a new preview",
+        )
+
+
+def action_response(
+    action,
+    *,
+    message: str,
+    resource_kind: str,
+    resource: dict[str, object],
+) -> AssistantActionApplyResponse:
+    return AssistantActionApplyResponse(
+        actionId=action.id,
+        type=action.type,
+        message=message,
+        resourceKind=resource_kind,
+        resource=resource,
+    )
