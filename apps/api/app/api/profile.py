@@ -16,11 +16,8 @@ from app.models.profile import (
 from app.services.resume_import import (
     OpenClawResumeImportError,
     extract_resume_text,
-    parse_education_from_text,
     parse_education_with_openclaw,
-    parse_experience_from_text,
     parse_experience_with_openclaw,
-    parse_skills_from_text,
     parse_skills_with_openclaw,
 )
 from app.services.profile_versions import (
@@ -142,26 +139,27 @@ def import_experience_from_resume(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Could not read text from the attached resume",
+    )
+
+    if not settings.openclaw_resume_import_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI resume analysis is disabled.",
         )
 
-    if settings.openclaw_resume_import_enabled:
-        import_method = "OpenClaw"
-        try:
-            experience = parse_experience_with_openclaw(
-                text=text,
-                command=settings.openclaw_command,
-                agent_id=settings.openclaw_agent_id,
-                thinking=settings.openclaw_resume_import_thinking,
-                timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
-            )
-        except OpenClawResumeImportError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"OpenClaw resume import failed: {exc}",
-            ) from exc
-    else:
-        experience = parse_experience_from_text(text)
-        import_method = "local parser"
+    try:
+        experience = parse_experience_with_openclaw(
+            text=text,
+            command=settings.openclaw_command,
+            agent_id=settings.openclaw_agent_id,
+            thinking=settings.openclaw_resume_import_thinking,
+            timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
+        )
+    except OpenClawResumeImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI resume analysis is temporarily unavailable. Please try again.",
+        ) from exc
 
     if not experience:
         return ResumeExperienceImportResponse(
@@ -171,10 +169,7 @@ def import_experience_from_resume(
 
     return ResumeExperienceImportResponse(
         experience=experience,
-        message=(
-            f"Imported {len(experience)} experience entr{'y' if len(experience) == 1 else 'ies'} "
-            f"with {import_method}"
-        ),
+        message=f"Imported {len(experience)} experience entr{'y' if len(experience) == 1 else 'ies'} from CV",
     )
 
 
@@ -188,26 +183,27 @@ def import_education_from_resume(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Could not read text from the attached resume",
+    )
+
+    if not settings.openclaw_resume_import_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI resume analysis is disabled.",
         )
 
-    if settings.openclaw_resume_import_enabled:
-        import_method = "OpenClaw"
-        try:
-            education = parse_education_with_openclaw(
-                text=text,
-                command=settings.openclaw_command,
-                agent_id=settings.openclaw_agent_id,
-                thinking=settings.openclaw_resume_import_thinking,
-                timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
-            )
-        except OpenClawResumeImportError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"OpenClaw resume import failed: {exc}",
-            ) from exc
-    else:
-        education = parse_education_from_text(text)
-        import_method = "local parser"
+    try:
+        education = parse_education_with_openclaw(
+            text=text,
+            command=settings.openclaw_command,
+            agent_id=settings.openclaw_agent_id,
+            thinking=settings.openclaw_resume_import_thinking,
+            timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
+        )
+    except OpenClawResumeImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI resume analysis is temporarily unavailable. Please try again.",
+        ) from exc
 
     if not education:
         return ResumeEducationImportResponse(
@@ -217,10 +213,7 @@ def import_education_from_resume(
 
     return ResumeEducationImportResponse(
         education=education,
-        message=(
-            f"Imported {len(education)} education entr{'y' if len(education) == 1 else 'ies'} "
-            f"with {import_method}"
-        ),
+        message=f"Imported {len(education)} education entr{'y' if len(education) == 1 else 'ies'} from CV",
     )
 
 
@@ -234,26 +227,27 @@ def import_skills_from_resume(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="Could not read text from the attached resume",
+    )
+
+    if not settings.openclaw_resume_import_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI resume analysis is disabled.",
         )
 
-    if settings.openclaw_resume_import_enabled:
-        import_method = "OpenClaw"
-        try:
-            skills = parse_skills_with_openclaw(
-                text=text,
-                command=settings.openclaw_command,
-                agent_id=settings.openclaw_agent_id,
-                thinking=settings.openclaw_resume_import_thinking,
-                timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
-            )
-        except OpenClawResumeImportError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"OpenClaw resume import failed: {exc}",
-            ) from exc
-    else:
-        skills = parse_skills_from_text(text)
-        import_method = "local parser"
+    try:
+        skills = parse_skills_with_openclaw(
+            text=text,
+            command=settings.openclaw_command,
+            agent_id=settings.openclaw_agent_id,
+            thinking=settings.openclaw_resume_import_thinking,
+            timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
+        )
+    except OpenClawResumeImportError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI resume analysis is temporarily unavailable. Please try again.",
+        ) from exc
 
     if not skills:
         return ResumeSkillsImportResponse(
@@ -263,5 +257,5 @@ def import_skills_from_resume(
 
     return ResumeSkillsImportResponse(
         skills=skills,
-        message=f"Imported {len(skills)} skill{'s' if len(skills) != 1 else ''} with {import_method}",
+        message=f"Imported {len(skills)} skill{'s' if len(skills) != 1 else ''} from CV",
     )

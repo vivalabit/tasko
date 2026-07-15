@@ -8,6 +8,7 @@ import subprocess
 import zipfile
 from dataclasses import dataclass
 from io import BytesIO
+from uuid import uuid4
 from xml.etree import ElementTree
 
 from app.models.profile import ImportedEducationEntry, ImportedExperienceEntry
@@ -380,6 +381,8 @@ def parse_experience_with_openclaw(
                 "--local",
                 "--agent",
                 agent_id,
+                "--session-key",
+                f"agent:{agent_id}:resume-import-{uuid4().hex}",
                 "--message",
                 prompt,
                 "--thinking",
@@ -432,6 +435,8 @@ def parse_education_with_openclaw(
                 "--local",
                 "--agent",
                 agent_id,
+                "--session-key",
+                f"agent:{agent_id}:resume-import-{uuid4().hex}",
                 "--message",
                 prompt,
                 "--thinking",
@@ -484,6 +489,8 @@ def parse_skills_with_openclaw(
                 "--local",
                 "--agent",
                 agent_id,
+                "--session-key",
+                f"agent:{agent_id}:resume-import-{uuid4().hex}",
                 "--message",
                 prompt,
                 "--thinking",

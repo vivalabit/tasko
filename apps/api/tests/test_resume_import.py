@@ -1,15 +1,20 @@
 import base64
+import json
+import subprocess
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app.core.settings import Settings, get_settings
 from app.main import app
 from app.services.resume_import import (
+    OpenClawResumeImportError,
     extract_json_object,
     extract_openclaw_education_payload,
     extract_openclaw_experience_payload,
     parse_education_from_text,
     parse_experience_from_text,
+    parse_experience_with_openclaw,
     parse_skills_from_text,
 )
 
@@ -112,6 +117,71 @@ def test_import_experience_endpoint_reads_attached_resume_data() -> None:
     encoded_resume = base64.b64encode(resume_text.encode()).decode()
     client = TestClient(app)
 
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_resume_import_enabled=True)
+
+    try:
+        with patch(
+            "app.api.profile.parse_experience_with_openclaw",
+            return_value=parse_experience_from_text(resume_text),
+        ):
+            response = client.post(
+                "/profile/import-experience-from-resume",
+                json={
+                    "resume_file_name": "eduard-resume.pdf",
+                    "resume_data_url": f"data:application/pdf;base64,{encoded_resume}",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["experience"][0]["title"] == "Python Developer"
+    assert payload["experience"][0]["company"] == "Alpine Systems"
+    assert payload["experience"][0]["is_current"] is True
+
+
+def test_import_experience_reports_ai_failure_without_internal_details() -> None:
+    resume_text = """
+    Work Experience
+    Python Developer | Alpine Systems | 2022 - Present
+    Automated reporting pipelines and built API integrations.
+    Skills
+    Python, FastAPI
+    """
+    encoded_resume = base64.b64encode(resume_text.encode()).decode()
+    client = TestClient(app)
+
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_resume_import_enabled=True)
+
+    try:
+        with patch(
+            "app.api.profile.parse_experience_with_openclaw",
+            side_effect=OpenClawResumeImportError("internal analyzer details"),
+        ):
+            response = client.post(
+                "/profile/import-experience-from-resume",
+                json={
+                    "resume_file_name": "eduard-resume.pdf",
+                    "resume_data_url": f"data:application/pdf;base64,{encoded_resume}",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "AI resume analysis is temporarily unavailable. Please try again."
+    assert "internal analyzer details" not in response.text
+
+
+def test_import_experience_does_not_use_local_parser_when_ai_is_disabled() -> None:
+    resume_text = """
+    Work Experience
+    Python Developer | Alpine Systems | 2022 - Present
+    """
+    encoded_resume = base64.b64encode(resume_text.encode()).decode()
+    client = TestClient(app)
+
     app.dependency_overrides[get_settings] = lambda: Settings(openclaw_resume_import_enabled=False)
 
     try:
@@ -125,11 +195,8 @@ def test_import_experience_endpoint_reads_attached_resume_data() -> None:
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["experience"][0]["title"] == "Python Developer"
-    assert payload["experience"][0]["company"] == "Alpine Systems"
-    assert payload["experience"][0]["is_current"] is True
+    assert response.status_code == 503
+    assert response.json()["detail"] == "AI resume analysis is disabled."
 
 
 def test_import_education_endpoint_reads_attached_resume_data() -> None:
@@ -145,16 +212,20 @@ def test_import_education_endpoint_reads_attached_resume_data() -> None:
     encoded_resume = base64.b64encode(resume_text.encode()).decode()
     client = TestClient(app)
 
-    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_resume_import_enabled=False)
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_resume_import_enabled=True)
 
     try:
-        response = client.post(
-            "/profile/import-education-from-resume",
-            json={
-                "resume_file_name": "eduard-resume.pdf",
-                "resume_data_url": f"data:application/pdf;base64,{encoded_resume}",
-            },
-        )
+        with patch(
+            "app.api.profile.parse_education_with_openclaw",
+            return_value=parse_education_from_text(resume_text),
+        ):
+            response = client.post(
+                "/profile/import-education-from-resume",
+                json={
+                    "resume_file_name": "eduard-resume.pdf",
+                    "resume_data_url": f"data:application/pdf;base64,{encoded_resume}",
+                },
+            )
     finally:
         app.dependency_overrides.clear()
 
@@ -180,16 +251,20 @@ def test_import_skills_endpoint_reads_attached_resume_data() -> None:
     encoded_resume = base64.b64encode(resume_text.encode()).decode()
     client = TestClient(app)
 
-    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_resume_import_enabled=False)
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_resume_import_enabled=True)
 
     try:
-        response = client.post(
-            "/profile/import-skills-from-resume",
-            json={
-                "resume_file_name": "eduard-resume.pdf",
-                "resume_data_url": f"data:application/pdf;base64,{encoded_resume}",
-            },
-        )
+        with patch(
+            "app.api.profile.parse_skills_with_openclaw",
+            return_value=parse_skills_from_text(resume_text),
+        ):
+            response = client.post(
+                "/profile/import-skills-from-resume",
+                json={
+                    "resume_file_name": "eduard-resume.pdf",
+                    "resume_data_url": f"data:application/pdf;base64,{encoded_resume}",
+                },
+            )
     finally:
         app.dependency_overrides.clear()
 
@@ -227,6 +302,52 @@ def test_extract_openclaw_experience_payload_reads_json_result_wrapper() -> None
     )
 
     assert payload["experience"][0]["title"] == "Developer"
+
+
+def test_openclaw_resume_import_uses_a_fresh_isolated_session() -> None:
+    output = json.dumps(
+        {
+            "payloads": [
+                {
+                    "text": json.dumps(
+                        {
+                            "experience": [
+                                {
+                                    "title": "Developer",
+                                    "company": "Tasko",
+                                    "employment_type": "Full-time",
+                                    "location": "",
+                                    "start_date": "2024-01",
+                                    "end_date": "",
+                                    "is_current": True,
+                                    "description": "Built imports.",
+                                }
+                            ]
+                        }
+                    )
+                }
+            ]
+        }
+    )
+    completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=output, stderr="")
+
+    with patch("app.services.resume_import.subprocess.run", return_value=completed) as run:
+        for _ in range(2):
+            parse_experience_with_openclaw(
+                text="Developer at Tasko",
+                command="openclaw",
+                agent_id="tasko-assistant",
+                thinking="high",
+                timeout_seconds=120,
+            )
+
+    session_keys = []
+    for call in run.call_args_list:
+        command = call.args[0]
+        session_keys.append(command[command.index("--session-key") + 1])
+
+    assert all(key.startswith("agent:tasko-assistant:resume-import-") for key in session_keys)
+    assert len(set(session_keys)) == 2
 
 
 def test_extract_openclaw_education_payload_reads_json_result_wrapper() -> None:

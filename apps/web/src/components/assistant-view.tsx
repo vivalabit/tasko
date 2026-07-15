@@ -1465,14 +1465,9 @@ export function AssistantView({
                       {message.role === "assistant" && (
                         <p className="mb-1.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.1em] text-accent">
                           Tasko Assistant
-                          {message.source && (
-                            <span className={cn(
-                              "rounded border px-1.5 py-0.5 text-[8px] tracking-[0.08em]",
-                              message.source === "openclaw"
-                                ? "border-success/35 bg-success/10 text-success"
-                                : "border-border bg-white/[0.035] text-muted",
-                            )}>
-                              {message.source === "openclaw" ? "OpenClaw" : "Local fallback"}
+                          {message.source === "local" && (
+                            <span className="rounded border border-border bg-white/[0.035] px-1.5 py-0.5 text-[8px] tracking-[0.08em] text-muted">
+                              Local fallback
                             </span>
                           )}
                         </p>

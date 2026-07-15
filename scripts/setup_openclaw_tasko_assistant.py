@@ -36,6 +36,18 @@ def load_agents(command: str) -> list[dict[str, Any]]:
     return agents
 
 
+def load_allowed_plugins(command: str) -> list[str]:
+    try:
+        raw = run_openclaw(command, "config", "get", "plugins.allow", "--json")
+    except subprocess.CalledProcessError:
+        return []
+
+    allowed_plugins = json.loads(raw)
+    if not isinstance(allowed_plugins, list):
+        raise RuntimeError("OpenClaw plugins.allow is not an array")
+    return [plugin for plugin in allowed_plugins if isinstance(plugin, str)]
+
+
 def install_workspace(home: Path) -> Path:
     workspace = home / ".openclaw" / f"workspace-{AGENT_ID}"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -50,6 +62,7 @@ def install_workspace(home: Path) -> Path:
 
 def configure_agent(command: str, workspace: Path, model: str) -> None:
     agents = load_agents(command)
+    allowed_plugins = load_allowed_plugins(command)
     index = next(
         (index for index, agent in enumerate(agents) if agent.get("id") == AGENT_ID),
         None,
@@ -74,6 +87,7 @@ def configure_agent(command: str, workspace: Path, model: str) -> None:
 
     prefix = f"agents.list[{index}]"
     operations = [
+        {"path": "plugins.allow", "value": sorted({*allowed_plugins, "codex"})},
         {"path": f"{prefix}.name", "value": "Tasko Assistant"},
         {"path": f"{prefix}.workspace", "value": f"~/.openclaw/workspace-{AGENT_ID}"},
         {"path": f"{prefix}.agentDir", "value": f"~/.openclaw/agents/{AGENT_ID}/agent"},

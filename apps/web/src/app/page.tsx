@@ -6,8 +6,10 @@ import {
   Archive,
   ArchiveRestore,
   Ban,
+  BarChart3,
   Bell,
   Bookmark,
+  BrainCircuit,
   BriefcaseBusiness,
   Bot,
   Calendar,
@@ -17,13 +19,17 @@ import {
   ChevronLeft,
   ChevronRight,
   CircleDot,
+  Cloud,
+  Code2,
   Command,
   Copy,
+  Database,
   Download,
   Edit3,
   Eye,
   ExternalLink,
   FileText,
+  FlaskConical,
   Github,
   GraduationCap,
   Globe,
@@ -33,16 +39,19 @@ import {
   Mail,
   MapPin,
   MoreHorizontal,
+  Palette,
   Plus,
   Info,
   RotateCcw,
   Save,
   Search,
   Send,
+  Server,
   Share2,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Smartphone,
   Star,
   Settings,
   Target,
@@ -4390,7 +4399,7 @@ export default function HomePage() {
 
       if (importedEntries.length === 0) {
         setProfileSaveStatus("ready");
-        setExperienceImportMessage(importResult.message || "No experience entries were found in the attached CV");
+        setExperienceImportMessage("AI found no experience entries in the attached CV");
         return;
       }
 
@@ -4424,11 +4433,9 @@ export default function HomePage() {
       setProfileDraft(normalizedProfile);
       setProfileSaveStatus("ready");
       setProfileSaveMessage("");
-      setExperienceImportMessage(
-        importResult.message || `Imported ${addedCount} experience entr${addedCount === 1 ? "y" : "ies"} from CV`,
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Experience import failed";
+      setExperienceImportMessage(`AI imported ${addedCount} experience entr${addedCount === 1 ? "y" : "ies"} from CV`);
+    } catch {
+      const message = "AI could not import experience from CV. Please try again.";
       setProfileSaveStatus("error");
       setProfileSaveMessage(message);
       setExperienceImportMessage(message);
@@ -4473,7 +4480,7 @@ export default function HomePage() {
 
       if (importedEntries.length === 0) {
         setProfileSaveStatus("ready");
-        setEducationImportMessage(importResult.message || "No education entries were found in the attached CV");
+        setEducationImportMessage("AI found no education entries in the attached CV");
         return;
       }
 
@@ -4507,11 +4514,9 @@ export default function HomePage() {
       setProfileDraft(normalizedProfile);
       setProfileSaveStatus("ready");
       setProfileSaveMessage("");
-      setEducationImportMessage(
-        importResult.message || `Imported ${addedCount} education entr${addedCount === 1 ? "y" : "ies"} from CV`,
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Education import failed";
+      setEducationImportMessage(`AI imported ${addedCount} education entr${addedCount === 1 ? "y" : "ies"} from CV`);
+    } catch {
+      const message = "AI could not import education from CV. Please try again.";
       setProfileSaveStatus("error");
       setProfileSaveMessage(message);
       setEducationImportMessage(message);
@@ -4550,7 +4555,7 @@ export default function HomePage() {
       const importedSkills = importResult.skills ?? [];
       if (importedSkills.length === 0) {
         setProfileSaveStatus("ready");
-        setSkillsImportMessage(importResult.message || "No skills were found in the attached CV");
+        setSkillsImportMessage("AI found no skills in the attached CV");
         return;
       }
 
@@ -4585,9 +4590,9 @@ export default function HomePage() {
       setSkillsDraft(parseProfileLines(normalizedProfile.skills));
       setProfileSaveStatus("ready");
       setProfileSaveMessage("");
-      setSkillsImportMessage(`Added ${addedCount} new skill${addedCount === 1 ? "" : "s"} from CV`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Skills import failed";
+      setSkillsImportMessage(`AI added ${addedCount} new skill${addedCount === 1 ? "" : "s"} from CV`);
+    } catch {
+      const message = "AI could not import skills from CV. Please try again.";
       setProfileSaveStatus("error");
       setProfileSaveMessage(message);
       setSkillsImportMessage(message);
@@ -4990,7 +4995,7 @@ export default function HomePage() {
 
   return (
     <main className="h-screen overflow-hidden bg-background text-foreground">
-      <div className="fixed inset-0 bg-[radial-gradient(circle_at_16%_8%,rgba(255,90,0,0.12),transparent_26%),radial-gradient(circle_at_80%_0%,rgba(52,120,246,0.10),transparent_28%)]" />
+      <div className="fixed inset-0 bg-[radial-gradient(circle_at_80%_0%,rgba(52,120,246,0.10),transparent_28%)]" />
       <div className="relative mx-auto flex h-full max-w-[1536px] overflow-hidden rounded-none border-border bg-[#0a0f15]/96 shadow-panel lg:rounded-[14px] lg:border">
         <AppSidebar activeView={activeView} onChangeView={changeView} profile={profile} showLogs={uiSettings.showLogs} />
 
@@ -5237,7 +5242,7 @@ export default function HomePage() {
             <p className="shrink-0 px-1 pb-3 pt-3 text-sm font-semibold text-muted 2xl:pb-4 2xl:pt-5 2xl:text-base">
               {filteredJobs.length} {showArchivedJobs ? "archived jobs" : showSavedJobs ? "saved jobs" : "jobs"} found
             </p>
-            <div className="job-scroll min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+            <div className="job-scroll min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1 2xl:space-y-2">
               {filteredJobs.map((job) => (
                 <article
                   key={job.id}
@@ -5254,20 +5259,20 @@ export default function HomePage() {
                     setActiveTab("Overview");
                   }}
                   className={cn(
-                    "w-full cursor-pointer rounded-[8px] border p-3 text-left transition",
+                    "w-full cursor-pointer rounded-[8px] border p-2.5 text-left transition 2xl:p-3",
                     selectedJob?.id === job.id
                       ? "border-accent bg-white/[0.055] shadow-[0_0_0_1px_rgba(255,90,0,0.12)]"
                       : "border-border/80 bg-white/[0.035] hover:border-white/[0.16] hover:bg-white/[0.055]",
                   )}
                 >
-                  <div className="grid grid-cols-[42px_minmax(0,1fr)_50px] gap-2.5 2xl:grid-cols-[48px_minmax(0,1fr)_72px] 2xl:gap-3">
-                    <CompanyLogo logo={job.logo} compact />
+                  <div className="grid grid-cols-[42px_minmax(0,1fr)_68px] gap-2 2xl:grid-cols-[48px_minmax(0,1fr)_72px] 2xl:gap-3">
+                    <JobRoleIcon job={job} compact />
                     <div className="min-w-0 pt-0.5">
                       <h2 className="line-clamp-2 text-[13px] font-bold leading-tight text-white 2xl:text-base">{job.title}</h2>
                       <p className="mt-0.5 truncate text-xs font-bold text-[#aeb5c2] 2xl:text-sm">{job.company}</p>
                     </div>
-                    <div className="grid justify-items-end gap-2 2xl:grid-cols-2 2xl:justify-items-center 2xl:gap-1.5">
-                      <div className="2xl:col-span-2">
+                    <div className="grid grid-cols-2 justify-items-center gap-1.5">
+                      <div className="col-span-2">
                         <JobMatchRing job={job} />
                       </div>
                       <button
@@ -5279,11 +5284,11 @@ export default function HomePage() {
                           toggleSaved(job.id);
                         }}
                         className={cn(
-                          "grid h-8 w-8 place-items-center rounded-md border border-border bg-white/[0.025] text-muted transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white",
+                          "grid h-7 w-7 place-items-center rounded-md border border-border bg-white/[0.025] text-muted transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white 2xl:h-8 2xl:w-8",
                           savedJobs.includes(job.id) && "border-accent/60 text-accent",
                         )}
                       >
-                        <Bookmark className={cn("h-4 w-4", savedJobs.includes(job.id) && "fill-accent text-accent")} />
+                        <Bookmark className={cn("h-3.5 w-3.5 2xl:h-4 2xl:w-4", savedJobs.includes(job.id) && "fill-accent text-accent")} />
                       </button>
                       <button
                         type="button"
@@ -5294,14 +5299,14 @@ export default function HomePage() {
                           event.stopPropagation();
                           void rerunAiMatch(job);
                         }}
-                        className="grid h-8 w-8 place-items-center rounded-md border border-border bg-white/[0.025] text-muted transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white disabled:cursor-not-allowed disabled:opacity-55"
+                        className="grid h-7 w-7 place-items-center rounded-md border border-border bg-white/[0.025] text-muted transition hover:border-white/25 hover:bg-white/[0.07] hover:text-white disabled:cursor-not-allowed disabled:opacity-55 2xl:h-8 2xl:w-8"
                       >
-                        <RotateCcw className={cn("h-4 w-4", forceMatchingJobId === job.id && "animate-spin")} />
+                        <RotateCcw className={cn("h-3.5 w-3.5 2xl:h-4 2xl:w-4", forceMatchingJobId === job.id && "animate-spin")} />
                       </button>
                     </div>
                   </div>
 
-                  <div className="mt-3 border-t border-border/80 pt-2.5">
+                  <div className="mt-2 border-t border-border/80 pt-2 2xl:mt-3 2xl:pt-2.5">
                     <div className="grid gap-1.5 text-xs font-semibold text-muted sm:grid-cols-[minmax(0,1fr)_auto] 2xl:text-[13px]">
                       <p className="flex min-w-0 flex-nowrap items-center gap-x-1.5">
                         <MapPin className="h-3.5 w-3.5 shrink-0 2xl:h-4 2xl:w-4" />
@@ -5330,7 +5335,7 @@ export default function HomePage() {
             <div className="grid gap-5 2xl:gap-7">
               <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(300px,0.58fr)] min-[1500px]:grid-cols-[minmax(0,1fr)_minmax(470px,0.72fr)] 2xl:gap-7">
                 <div className="flex min-w-0 items-start gap-3 2xl:gap-4">
-                  <CompanyLogo logo={selectedJob.logo} large />
+                  <JobRoleIcon job={selectedJob} large />
                   <div className="min-w-0 pt-0.5">
                     <h2 className="text-[22px] font-bold leading-tight text-white lg:text-[20px] min-[1400px]:text-[22px] min-[1500px]:text-[24px] 2xl:text-[29px]">{selectedJob.title}</h2>
                     <p className="mt-1.5 text-sm font-semibold text-muted 2xl:mt-2 2xl:text-base">
@@ -5340,14 +5345,11 @@ export default function HomePage() {
                   </div>
                 </div>
 
-                <div className="grid content-start gap-3 sm:grid-cols-2">
+                <div className="grid w-full content-start gap-2.5 sm:grid-cols-2 lg:max-w-[420px] lg:justify-self-end 2xl:max-w-[460px]">
                   <Button
                     className={cn(
-                      "h-12 rounded-md border bg-transparent px-3 text-sm font-bold xl:px-4 xl:text-[15px] 2xl:h-[54px] 2xl:text-lg",
-                      selectedJobApplication && "gap-1 px-2 text-[10px] shadow-none xl:px-2 xl:text-[10px] 2xl:gap-1.5 2xl:px-3 2xl:text-sm",
-                      selectedJobApplication
-                        ? "border-border text-[#c7ced9] hover:bg-white/[0.045] hover:text-white"
-                        : "border-accent/70 text-accent hover:bg-accent/12",
+                      "h-10 rounded-md border border-white/[0.14] bg-white/[0.025] px-3 text-xs font-bold text-[#e3e8ef] shadow-none hover:border-white/[0.24] hover:bg-white/[0.06] hover:text-white xl:text-[13px] 2xl:h-11 2xl:text-sm",
+                      selectedJobApplication && "gap-1 px-2 text-[10px] shadow-none 2xl:gap-1.5 2xl:text-xs",
                     )}
                     onClick={() => {
                       if (selectedJobApplication) {
@@ -5357,19 +5359,25 @@ export default function HomePage() {
                       }
                     }}
                   >
-                    {selectedJobApplication ? <X className="h-3.5 w-3.5 2xl:h-4 2xl:w-4" /> : <Check className="h-5 w-5 2xl:h-6 2xl:w-6" />}
-                    {selectedJobApplication ? "Remove from Applications" : "Mark as Applied"}
+                    {selectedJobApplication ? (
+                      <X className="h-3.5 w-3.5 2xl:h-4 2xl:w-4" />
+                    ) : (
+                      <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full border border-[#cfd6df] 2xl:h-[18px] 2xl:w-[18px]">
+                        <Check className="h-2.5 w-2.5 2xl:h-3 2xl:w-3" strokeWidth={2.4} />
+                      </span>
+                    )}
+                    {selectedJobApplication ? "Remove application" : "Mark as Applied"}
                   </Button>
                   <Button
                     variant="ghost"
                     aria-disabled={!getJobApplyUrl(selectedJob)}
-                    className="h-12 rounded-md border border-[#3d7cff] bg-[#2f80ed] px-3 text-sm font-bold text-white shadow-[0_12px_28px_rgba(47,128,237,0.26)] hover:bg-[#3d8bff] xl:px-4 xl:text-[15px] 2xl:h-[54px] 2xl:text-lg"
+                    className="h-10 rounded-md border border-[#ff6a14] bg-accent px-3 text-xs font-bold text-white shadow-[0_8px_20px_rgba(255,90,0,0.18)] hover:border-[#ff7a26] hover:bg-[#ff6a14] xl:text-[13px] 2xl:h-11 2xl:text-sm"
                     onClick={() => {
                       const applyUrl = getJobApplyUrl(selectedJob);
                       if (applyUrl) window.open(applyUrl, "_blank", "noopener,noreferrer");
                     }}
                   >
-                    <Send className="h-5 w-5 2xl:h-6 2xl:w-6" />
+                    <ExternalLink className="h-4 w-4 2xl:h-5 2xl:w-5" />
                     Apply to Job
                   </Button>
                 </div>
@@ -6443,11 +6451,11 @@ function ApplicationsView({
   const activeCount = statusCounts.interview + statusCounts.assessment + statusCounts.offer;
   const responseRate = applications.length > 0 ? Math.round((activeCount / applications.length) * 100) : 0;
   const statCards = [
-    { label: "Total applications", value: applications.length.toString(), note: "tracked roles", icon: FileText, iconClassName: "bg-white/[0.055] text-[#d8dee8]" },
-    { label: "Interviews", value: statusCounts.interview.toString(), note: "active conversations", icon: CalendarDays, iconClassName: "bg-accent/16 text-accent" },
-    { label: "Assessments", value: statusCounts.assessment.toString(), note: "tasks pending", icon: FileText, iconClassName: "bg-[#2f80ed]/16 text-[#8cc7ff]" },
-    { label: "Offers", value: statusCounts.offer.toString(), note: "received", icon: BriefcaseBusiness, iconClassName: "bg-success/16 text-success" },
-    { label: "Response rate", value: `${responseRate}%`, note: "from tracked roles", icon: Target, iconClassName: "bg-[#9f7aea]/16 text-[#c4a7ff]" },
+    { label: "Total applications", value: applications.length.toString(), icon: FileText, iconClassName: "bg-white/[0.055] text-[#d8dee8]" },
+    { label: "Interviews", value: statusCounts.interview.toString(), icon: CalendarDays, iconClassName: "bg-accent/16 text-accent" },
+    { label: "Assessments", value: statusCounts.assessment.toString(), icon: FileText, iconClassName: "bg-[#2f80ed]/16 text-[#8cc7ff]" },
+    { label: "Offers", value: statusCounts.offer.toString(), icon: BriefcaseBusiness, iconClassName: "bg-success/16 text-success" },
+    { label: "Response rate", value: `${responseRate}%`, icon: Target, iconClassName: "bg-[#9f7aea]/16 text-[#c4a7ff]" },
   ];
   const normalizedApplicationQuery = applicationQuery.trim().toLowerCase();
   const filteredApplications = applications.filter((application) => {
@@ -6807,13 +6815,10 @@ function ApplicationsView({
 
       <div className="grid shrink-0 gap-2 sm:grid-cols-2 xl:grid-cols-5 2xl:gap-3">
         {statCards.map((stat) => (
-          <article key={stat.label} className="panel flex min-h-[62px] items-start justify-between gap-2 p-2 2xl:min-h-[104px] 2xl:gap-3 2xl:p-4">
+          <article key={stat.label} className="panel flex min-h-[62px] items-center justify-between gap-2 p-2 2xl:min-h-[104px] 2xl:gap-3 2xl:p-4">
             <div className="min-w-0">
               <p className="text-[10px] font-semibold leading-tight text-muted 2xl:text-xs">{stat.label}</p>
               <p className="mt-0.5 text-[18px] font-bold leading-none text-white 2xl:mt-1.5 2xl:text-[26px]">{stat.value}</p>
-              <p className="mt-0.5 text-[10px] font-semibold leading-tight text-success 2xl:mt-1.5 2xl:text-xs">
-                <span className="mr-1">↑</span>{stat.note}
-              </p>
             </div>
             <div className={cn("grid h-7 w-7 shrink-0 place-items-center rounded-md border border-white/[0.08] 2xl:h-10 2xl:w-10", stat.iconClassName)}>
               <stat.icon className="h-3.5 w-3.5 2xl:h-4 2xl:w-4" />
@@ -6875,7 +6880,7 @@ function ApplicationsView({
                       : "border-border bg-white/[0.025] hover:bg-white/[0.055]",
                   )}
                 >
-                  <CompanyLogo logo={application.job.logo} />
+                  <JobRoleIcon job={application.job} />
                   <div className="min-w-0">
                     <h3 className="truncate text-[13px] font-bold text-white 2xl:text-base">{application.job.title}</h3>
                     <p className="mt-0.5 truncate text-[11px] font-semibold text-[#cdd4df] 2xl:text-sm">{application.job.company}</p>
@@ -6910,7 +6915,7 @@ function ApplicationsView({
               <div className="flex h-full min-h-0 flex-col">
                 <div className="flex shrink-0 flex-col gap-2.5 lg:flex-row lg:items-start lg:justify-between">
                   <div className="flex min-w-0 items-start gap-2.5">
-                    <CompanyLogo logo={visibleSelectedApplication.job.logo} compact />
+                    <JobRoleIcon job={visibleSelectedApplication.job} compact />
                     <div className="min-w-0">
                       <h2 className="text-[16px] font-bold leading-tight text-white 2xl:text-[18px]">{visibleSelectedApplication.job.title}</h2>
                       <p className="mt-0.5 text-[11px] font-semibold text-muted 2xl:text-xs">
@@ -7721,7 +7726,7 @@ function ApplicationAiInfoDialog({
       <div className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[920px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] 2xl:p-5">
         <div className="flex shrink-0 items-start justify-between gap-4">
           <div className="flex min-w-0 items-start gap-3">
-            <CompanyLogo logo={job.logo} compact />
+            <JobRoleIcon job={job} compact />
             <div className="min-w-0">
               <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[24px]">AI application info</h2>
               <p className="mt-1 truncate text-sm font-medium text-muted">
@@ -8293,7 +8298,7 @@ function DashboardView({ onOpenJobs, onOpenAssistant }: { onOpenJobs: () => void
                   className="grid min-h-[56px] w-full grid-cols-[46px_minmax(0,1fr)_86px_24px] items-center gap-2.5 border-b border-border px-3 py-2 text-left last:border-0 2xl:min-h-[64px] 2xl:grid-cols-[58px_minmax(0,1fr)_104px_28px] 2xl:gap-3"
                   onClick={onOpenJobs}
                 >
-                  <CompanyLogo logo={job.logo} />
+                  <JobRoleIcon job={job} />
                   <div className="min-w-0">
                     <h3 className="truncate text-sm font-semibold 2xl:text-base">{job.title}</h3>
                     <p className="text-xs text-muted">{job.company}</p>
@@ -10864,18 +10869,18 @@ function AppSidebar({
 
   return (
     <aside className="app-sidebar hidden h-screen w-[190px] shrink-0 overflow-y-auto border-r border-border bg-white/[0.025] px-2.5 py-4 lg:flex lg:flex-col 2xl:w-[220px] 2xl:px-3 2xl:py-5">
-      <div className="app-sidebar-brand mb-5 flex items-center gap-2.5 px-2 2xl:mb-7 2xl:gap-3">
+      <div className="app-sidebar-brand mb-5 flex items-center gap-2 px-2 2xl:mb-7 2xl:gap-2.5">
         <img
           src="/brand/tasko-mark.png"
           alt=""
-          className="app-sidebar-mark h-[52px] w-[52px] object-contain 2xl:h-[58px] 2xl:w-[58px]"
+          className="app-sidebar-mark h-[42px] w-[42px] object-contain 2xl:h-12 2xl:w-12"
           aria-hidden="true"
         />
         <div className="min-w-0">
-          <p className="bg-gradient-to-b from-[#ff8a1f] to-[#ff4d00] bg-clip-text text-[19px] font-black leading-none text-transparent 2xl:text-[22px]">
-            tasko
+          <p className="text-[19px] font-extrabold leading-none tracking-[-0.025em] text-[#f5f2f0] 2xl:text-[22px]">tasko</p>
+          <p className="mt-1.5 whitespace-nowrap text-[10px] font-medium leading-none tracking-[0.015em] text-[#aeb5c2] 2xl:text-[11px]">
+            Career Assistant
           </p>
-          <p className="mt-0.5 text-[11px] text-muted 2xl:mt-1 2xl:text-xs">AI Career Assistant</p>
         </div>
       </div>
 
@@ -10920,7 +10925,7 @@ function AppSidebar({
             aria-hidden="true"
           />
           <div className="min-w-0 flex-1">
-            <p className="truncate text-[11px] font-semibold leading-tight text-white 2xl:text-xs">
+            <p className="truncate text-xs font-semibold leading-tight text-white 2xl:text-[13px]">
               {displayProfileFirstName(profile.name, "Set up profile")}
             </p>
             <p className="truncate text-[10px] leading-tight text-muted 2xl:text-[11px]">
@@ -11372,50 +11377,90 @@ function JobMatchRing({ job }: { job: Job }) {
   );
 }
 
-function CompanyLogo({ logo, large = false, compact = false }: { logo: Job["logo"] | "airbnb"; large?: boolean; compact?: boolean }) {
+const jobRoleVisuals = {
+  ai: { label: "AI / Machine Learning", icon: BrainCircuit, className: "border-orange-400/25 bg-orange-400/10 text-orange-300" },
+  analytics: { label: "Analytics", icon: BarChart3, className: "border-emerald-400/25 bg-emerald-400/10 text-emerald-300" },
+  backend: { label: "Backend", icon: Server, className: "border-blue-400/25 bg-blue-400/10 text-blue-300" },
+  data: { label: "Data Engineering", icon: Database, className: "border-cyan-400/25 bg-cyan-400/10 text-cyan-300" },
+  design: { label: "Product Design", icon: Palette, className: "border-pink-400/25 bg-pink-400/10 text-pink-300" },
+  devops: { label: "DevOps / Cloud", icon: Cloud, className: "border-indigo-400/25 bg-indigo-400/10 text-indigo-300" },
+  frontend: { label: "Frontend", icon: Code2, className: "border-violet-400/25 bg-violet-400/10 text-violet-300" },
+  mobile: { label: "Mobile", icon: Smartphone, className: "border-teal-400/25 bg-teal-400/10 text-teal-300" },
+  qa: { label: "Quality Assurance", icon: FlaskConical, className: "border-amber-400/25 bg-amber-400/10 text-amber-300" },
+  security: { label: "Security", icon: ShieldCheck, className: "border-red-400/25 bg-red-400/10 text-red-300" },
+  software: { label: "Software Engineering", icon: Code2, className: "border-slate-400/25 bg-slate-400/10 text-slate-300" },
+  general: { label: "General", icon: BriefcaseBusiness, className: "border-white/15 bg-white/[0.06] text-[#cbd2dc]" },
+} as const;
+
+type JobRoleCategory = keyof typeof jobRoleVisuals;
+
+const jobSourceBadges: Record<Job["logo"], { label: string; text: string; className: string }> = {
+  linkedin: { label: "LinkedIn", text: "in", className: "bg-[#0a66c2] text-white" },
+  manual: { label: "Manually added", text: "+", className: "bg-[#2a323d] text-[#dce2ea]" },
+  figma: { label: "Figma", text: "F", className: "bg-black text-white" },
+  stripe: { label: "Stripe", text: "S", className: "bg-[#635bff] text-white" },
+};
+
+function getSpecializedJobRoleCategory(value: string): JobRoleCategory | null {
+  const text = value.toLowerCase();
+  const has = (...keywords: string[]) => keywords.some((keyword) => text.includes(keyword));
+
+  if (has("cybersecurity", "cyber security", "information security", "security engineer", "security analyst", "infosec", "soc analyst")) return "security";
+  if (has("artificial intelligence", "machine learning", "deep learning", "generative ai", "genai", "llm", "computer vision", "natural language processing", "data scientist", "data science", "pytorch", "tensorflow", "ml engineer") || /(^|[^a-z])(ai|ml)([^a-z]|$)/.test(text)) return "ai";
+  if (has("data analyst", "business analyst", "analytics", "business intelligence", "tableau", "power bi", "bi developer")) return "analytics";
+  if (has("data engineer", "data platform", "database engineer", "data warehouse", "etl", "snowflake", "databricks", "apache spark", "kafka")) return "data";
+  if (has("devops", "site reliability", "cloud engineer", "platform engineer", "infrastructure engineer", "kubernetes", "terraform", "sre")) return "devops";
+  if (has("ios", "android", "mobile developer", "mobile engineer", "react native", "flutter", "swift", "kotlin")) return "mobile";
+  if (has("frontend", "front-end", "front end", "web developer", "react developer", "ui engineer", "react", "vue", "angular", "next.js")) return "frontend";
+  if (has("backend", "back-end", "back end", "server-side", "api engineer", "java developer", "python developer", "golang", "node.js", "spring boot", "django", "fastapi")) return "backend";
+  if (has("quality assurance", "qa engineer", "test engineer", "test automation", "software tester", "sdet", "selenium", "cypress", "playwright")) return "qa";
+  if (has("product design", "product designer", "ux designer", "ui designer", "interaction designer", "design lead", "design system")) return "design";
+  return null;
+}
+
+function getJobRoleCategory(job: Job): JobRoleCategory {
+  const titleCategory = getSpecializedJobRoleCategory(job.title);
+  if (titleCategory) return titleCategory;
+
+  const normalizedTitle = job.title.toLowerCase();
+  if (normalizedTitle.includes("full stack") || normalizedTitle.includes("full-stack")) return "software";
+
+  const departmentCategory = getSpecializedJobRoleCategory(job.department);
+  if (departmentCategory) return departmentCategory;
+
+  const skillsCategory = getSpecializedJobRoleCategory(job.skills.join(" "));
+  if (skillsCategory) return skillsCategory;
+
+  if (["software engineer", "software developer", "application developer", "engineer", "developer"].some((keyword) => normalizedTitle.includes(keyword))) return "software";
+  return "general";
+}
+
+function JobRoleIcon({ job, large = false, compact = false }: { job: Job; large?: boolean; compact?: boolean }) {
+  const role = jobRoleVisuals[getJobRoleCategory(job)];
+  const source = jobSourceBadges[job.logo];
+  const Icon = role.icon;
   const sizeClass = compact ? "h-9 w-9 2xl:h-11 2xl:w-11" : large ? "h-16 w-16 2xl:h-[88px] 2xl:w-[88px]" : "h-11 w-11 2xl:h-14 2xl:w-14";
-
-  if (logo === "linkedin") {
-    return (
-      <div className={cn("grid shrink-0 place-items-center rounded-md bg-[#0a66c2] font-black text-white", large ? "text-2xl 2xl:text-3xl" : compact ? "text-base" : "text-lg 2xl:text-xl", sizeClass)}>
-        in
-      </div>
-    );
-  }
-
-  if (logo === "figma") {
-    return (
-      <div className={cn("grid shrink-0 place-items-center rounded-md bg-black", sizeClass)}>
-        <div className={cn("grid grid-cols-2", large ? "scale-125 2xl:scale-150" : compact ? "scale-75" : "scale-90 2xl:scale-100")}>
-          <span className="h-4 w-4 rounded-l-full bg-[#ff7262]" />
-          <span className="h-4 w-4 rounded-r-full bg-[#f24e1e]" />
-          <span className="h-4 w-4 rounded-l-full bg-[#a259ff]" />
-          <span className="h-4 w-4 rounded-r-full bg-[#1abcfe]" />
-          <span className="h-4 w-4 rounded-full bg-[#0acf83]" />
-        </div>
-      </div>
-    );
-  }
-
-  if (logo === "airbnb") {
-    return (
-      <div className={cn("grid shrink-0 place-items-center rounded-md bg-black text-[#ff385c]", sizeClass)}>
-        <span className={cn("font-black", large ? "text-3xl 2xl:text-4xl" : compact ? "text-lg" : "text-xl 2xl:text-2xl")}>A</span>
-      </div>
-    );
-  }
-
-  if (logo === "manual") {
-    return (
-      <div className={cn("grid shrink-0 place-items-center rounded-md bg-white/[0.08] text-[#d8dee8]", sizeClass)}>
-        <BriefcaseBusiness className={cn(large ? "h-7 w-7 2xl:h-9 2xl:w-9" : compact ? "h-4 w-4 2xl:h-5 2xl:w-5" : "h-5 w-5 2xl:h-6 2xl:w-6")} />
-      </div>
-    );
-  }
+  const iconSizeClass = compact ? "h-4 w-4 2xl:h-5 2xl:w-5" : large ? "h-8 w-8 2xl:h-11 2xl:w-11" : "h-5 w-5 2xl:h-6 2xl:w-6";
+  const badgeSizeClass = compact
+    ? "-bottom-0.5 -right-0.5 h-3.5 min-w-3.5 px-0.5 text-[6px] 2xl:h-4 2xl:min-w-4 2xl:text-[7px]"
+    : large
+      ? "-bottom-1 -right-1 h-6 min-w-6 px-1 text-[9px] 2xl:h-7 2xl:min-w-7 2xl:text-[10px]"
+      : "-bottom-0.5 -right-0.5 h-4 min-w-4 px-0.5 text-[7px] 2xl:h-5 2xl:min-w-5 2xl:text-[8px]";
 
   return (
-    <div className={cn("grid shrink-0 place-items-center rounded-md bg-black font-black text-white", large ? "text-xl 2xl:text-2xl" : compact ? "text-sm 2xl:text-base" : "text-base 2xl:text-xl", sizeClass)}>
-      {compact ? "S" : "stripe"}
+    <div
+      role="img"
+      aria-label={`${role.label} role · ${source.label}`}
+      title={`${role.label} · ${source.label}`}
+      className={cn("relative grid shrink-0 place-items-center rounded-lg border", role.className, sizeClass)}
+    >
+      <Icon className={iconSizeClass} strokeWidth={large ? 1.7 : 1.9} aria-hidden="true" />
+      <span
+        aria-hidden="true"
+        className={cn("absolute grid place-items-center rounded border border-[#111820] font-black leading-none shadow-sm", source.className, badgeSizeClass)}
+      >
+        {source.text}
+      </span>
     </div>
   );
 }
