@@ -23,6 +23,10 @@ from app.services.resume_import import (
     parse_skills_from_text,
     parse_skills_with_openclaw,
 )
+from app.services.profile_versions import (
+    is_suspicious_profile_replacement,
+    record_profile_version,
+)
 
 router = APIRouter()
 
@@ -54,6 +58,7 @@ def normalize_profile_record(profile: ProfileRecord, db: Session) -> ProfilePayl
             normalized_data[field] = ""
 
     if normalized_data != profile.data:
+        record_profile_version(db, profile, reason="legacy_normalization")
         profile.data = normalized_data
         db.commit()
         db.refresh(profile)
@@ -86,10 +91,28 @@ def get_profile(db: Session = Depends(get_db)) -> ProfilePayload:
 
 
 @router.put("", response_model=ProfilePayload)
-def update_profile(payload: ProfilePayload, db: Session = Depends(get_db)) -> ProfilePayload:
+def update_profile(
+    payload: ProfilePayload,
+    allow_destructive: bool = False,
+    db: Session = Depends(get_db),
+) -> ProfilePayload:
     try:
         profile = db.get(ProfileRecord, "default")
         if profile:
+            current_profile = ProfilePayload.model_validate(profile.data)
+            if (
+                not allow_destructive
+                and is_suspicious_profile_replacement(current_profile, payload)
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Profile update would remove most existing data. "
+                        "Reload the profile or explicitly allow a destructive replacement."
+                    ),
+                )
+            if current_profile != payload:
+                record_profile_version(db, profile, reason="api_update")
             profile.data = payload.model_dump()
         else:
             profile = ProfileRecord(id="default", data=payload.model_dump())
@@ -98,6 +121,9 @@ def update_profile(payload: ProfilePayload, db: Session = Depends(get_db)) -> Pr
         db.commit()
         db.refresh(profile)
         return ProfilePayload.model_validate(profile.data)
+    except HTTPException:
+        db.rollback()
+        raise
     except SQLAlchemyError as exc:
         db.rollback()
         raise HTTPException(

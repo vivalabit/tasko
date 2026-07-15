@@ -1,6 +1,6 @@
 FROM node:22-bookworm-slim AS node
 
-RUN npm install -g openclaw@2026.6.11
+RUN npm install -g openclaw@2026.7.1
 
 FROM python:3.12-slim
 

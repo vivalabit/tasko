@@ -12,7 +12,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     openclaw_resume_import_enabled: bool = True
     openclaw_command: str = "openclaw"
-    openclaw_agent_id: str = "main"
+    openclaw_agent_id: str = "tasko-assistant"
     openclaw_resume_import_thinking: str = "high"
     openclaw_resume_import_timeout_seconds: int = 120
     openclaw_ai_match_enabled: bool = True

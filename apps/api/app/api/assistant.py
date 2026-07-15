@@ -45,6 +45,7 @@ from app.services.assistant import (
     extract_assistant_action_previews,
     run_openclaw_assistant,
 )
+from app.services.profile_versions import record_profile_version
 
 router = APIRouter()
 
@@ -859,6 +860,7 @@ def execute_assistant_action(db: Session, action) -> AssistantActionApplyRespons
                 detail="Profile field value is invalid",
             ) from exc
         if profile_record:
+            record_profile_version(db, profile_record, reason="assistant_action")
             profile_record.data = updated_profile.model_dump()
         else:
             db.add(ProfileRecord(id="default", data=updated_profile.model_dump()))

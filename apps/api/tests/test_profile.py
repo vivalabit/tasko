@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base, get_db
 from app.main import app
-from app.models.profile import ProfileRecord
+from app.models.profile import ProfileRecord, ProfileVersionRecord
 
 
 def test_profile_can_be_updated_and_read() -> None:
@@ -69,6 +69,58 @@ def test_profile_can_be_updated_and_read() -> None:
             assert stored_profile.data["name"] == "Eduard Ishchenko"
     finally:
         app.dependency_overrides.clear()
+
+
+def test_sparse_profile_update_cannot_erase_a_complete_profile() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    with testing_session_local() as db:
+        db.add(
+            ProfileRecord(
+                id="default",
+                data={
+                    "name": "Eduard Ishchenko",
+                    "current_role": "Web Developer",
+                    "desired_role": "AI Engineer",
+                    "headline": "Python developer",
+                    "skills": "Python\nFastAPI",
+                },
+            )
+        )
+        db.commit()
+
+    def override_get_db() -> Generator[Session, None, None]:
+        with testing_session_local() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        response = client.put("/profile", json={"headline": "Product designer"})
+        forced_response = client.put(
+            "/profile?allow_destructive=true",
+            json={"headline": "Product designer"},
+        )
+
+        with testing_session_local() as db:
+            stored_profile = db.get(ProfileRecord, "default")
+            versions = db.query(ProfileVersionRecord).all()
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+    assert forced_response.status_code == 200
+    assert stored_profile is not None
+    assert stored_profile.data["headline"] == "Product designer"
+    assert stored_profile.data["skills"] == ""
+    assert len(versions) == 1
+    assert versions[0].data["skills"] == "Python\nFastAPI"
 
 
 def test_default_profile_is_empty_for_new_registration() -> None:

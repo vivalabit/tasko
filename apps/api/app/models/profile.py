@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, String
@@ -13,6 +14,20 @@ class ProfileRecord(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class ProfileVersionRecord(Base):
+    __tablename__ = "profile_versions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: uuid4().hex)
+    profile_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    reason: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
 
 
 class CandidateMatchSnapshotRecord(Base):

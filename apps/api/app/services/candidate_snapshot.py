@@ -219,6 +219,7 @@ def build_snapshot_with_openclaw(
             [
                 executable,
                 "agent",
+                "--local",
                 "--agent",
                 settings.openclaw_agent_id,
                 "--message",

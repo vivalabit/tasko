@@ -22,9 +22,13 @@ pnpm openclaw:setup
 ```
 
 The setup is idempotent. It creates a separate workspace and agent state,
-selects `openai/gpt-5.4-mini`, disables reasoning, caps answers at 1,200
+selects `openai/gpt-5.6-terra`, disables reasoning, caps answers at 1,200
 tokens, and disables all external skills and tools. Tasko conversations and
 memory are therefore kept separate from the personal assistant.
+
+GPT-5.6 Terra requires OpenClaw 2026.7.1 or newer.
+It runs through OpenClaw's native Codex harness while retaining the isolated
+Tasko workspace, memory, token cap, and disabled tool policy.
 
 Assistant responses use resumable SSE through `POST /assistant/chat/stream`.
 Clients reconnect with the same `requestId` and last received `offset`; active

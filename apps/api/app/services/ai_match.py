@@ -276,7 +276,18 @@ def score_with_openclaw(
     prompt = build_openclaw_ai_match_prompt(profile_snapshot, jobs)
     try:
         result = subprocess.run(
-            [executable, "agent", "--agent", agent_id, "--message", prompt, "--thinking", thinking, "--json"],
+            [
+                executable,
+                "agent",
+                "--local",
+                "--agent",
+                agent_id,
+                "--message",
+                prompt,
+                "--thinking",
+                thinking,
+                "--json",
+            ],
             capture_output=True,
             check=True,
             text=True,

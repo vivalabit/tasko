@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 AGENT_ID = "tasko-assistant"
-DEFAULT_MODEL = "openai/gpt-5.4-mini"
+DEFAULT_MODEL = "openai/gpt-5.6-terra"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_DIR = REPO_ROOT / "openclaw" / AGENT_ID
 
@@ -83,7 +83,7 @@ def configure_agent(command: str, workspace: Path, model: str) -> None:
         },
         {
             "path": f"{prefix}.models",
-            "value": {model: {"agentRuntime": {"id": "openclaw"}}},
+            "value": {model: {"agentRuntime": {"id": "codex"}}},
         },
         {"path": f"{prefix}.thinkingDefault", "value": "off"},
         {"path": f"{prefix}.reasoningDefault", "value": "off"},

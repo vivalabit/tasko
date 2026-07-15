@@ -374,7 +374,18 @@ def parse_experience_with_openclaw(
     prompt = build_openclaw_resume_prompt(resume_text[:50000])
     try:
         result = subprocess.run(
-            [executable, "agent", "--agent", agent_id, "--message", prompt, "--thinking", thinking, "--json"],
+            [
+                executable,
+                "agent",
+                "--local",
+                "--agent",
+                agent_id,
+                "--message",
+                prompt,
+                "--thinking",
+                thinking,
+                "--json",
+            ],
             capture_output=True,
             check=True,
             text=True,
@@ -415,7 +426,18 @@ def parse_education_with_openclaw(
     prompt = build_openclaw_education_prompt(resume_text[:50000])
     try:
         result = subprocess.run(
-            [executable, "agent", "--agent", agent_id, "--message", prompt, "--thinking", thinking, "--json"],
+            [
+                executable,
+                "agent",
+                "--local",
+                "--agent",
+                agent_id,
+                "--message",
+                prompt,
+                "--thinking",
+                thinking,
+                "--json",
+            ],
             capture_output=True,
             check=True,
             text=True,
@@ -456,7 +478,18 @@ def parse_skills_with_openclaw(
     prompt = build_openclaw_skills_prompt(resume_text[:50000])
     try:
         result = subprocess.run(
-            [executable, "agent", "--agent", agent_id, "--message", prompt, "--thinking", thinking, "--json"],
+            [
+                executable,
+                "agent",
+                "--local",
+                "--agent",
+                agent_id,
+                "--message",
+                prompt,
+                "--thinking",
+                thinking,
+                "--json",
+            ],
             capture_output=True,
             check=True,
             text=True,
