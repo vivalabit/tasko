@@ -746,20 +746,24 @@ export function AssistantView({
   }, []);
 
   useEffect(() => {
+    if (!isLoaded) return;
     if (!activeThread) return;
     setContextKind(activeThread.contextKind);
     setContextId(activeThread.contextId);
-  }, [activeThread?.id]);
+  }, [activeThread?.id, isLoaded]);
 
   useEffect(() => {
-    if (!launch || launchedIdRef.current === launch.id) return;
+    // A launch from Jobs must win over the conversation selected while history loads.
+    // Keep it pending until that initial selection has settled, then start a fresh
+    // conversation with the vacancy/application supplied by the originating action.
+    if (!isLoaded || !launch || launchedIdRef.current === launch.id) return;
     launchedIdRef.current = launch.id;
     setActiveThreadId("");
     setContextKind(launch.contextKind);
     setContextId(launch.contextId ?? "");
     setDraft(launch.prompt);
     onLaunchHandled();
-  }, [launch, onLaunchHandled]);
+  }, [isLoaded, launch, onLaunchHandled]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
