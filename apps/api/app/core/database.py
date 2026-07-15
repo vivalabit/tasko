@@ -17,6 +17,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 def init_db() -> None:
     import app.models.applications  # noqa: F401
+    import app.models.conversations  # noqa: F401
     import app.models.jobs  # noqa: F401
     import app.models.profile  # noqa: F401
 

@@ -97,7 +97,7 @@ async def run_openclaw_assistant(
     if not response:
         raise OpenClawAssistantError("OpenClaw did not return an assistant message")
 
-    return response, session_token
+    return response, session_key
 
 
 def build_openclaw_assistant_prompt(

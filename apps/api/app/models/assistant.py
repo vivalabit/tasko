@@ -47,6 +47,9 @@ class AssistantChatRequest(BaseModel):
 
 class AssistantStreamRequest(AssistantChatRequest):
     request_id: str = Field(min_length=1, max_length=160, alias="requestId")
+    user_message_id: str = Field(default="", max_length=160, alias="userMessageId")
+    assistant_message_id: str = Field(default="", max_length=160, alias="assistantMessageId")
+    conversation_title: str = Field(default="", max_length=240, alias="conversationTitle")
     offset: int = Field(default=0, ge=0, le=1_000_000)
 
 

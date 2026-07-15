@@ -29,3 +29,10 @@ therefore kept separate from the personal assistant.
 Assistant responses use resumable SSE through `POST /assistant/chat/stream`.
 Clients reconnect with the same `requestId` and last received `offset`; active
 generation can be cancelled with `DELETE /assistant/chat/stream/{requestId}`.
+
+Assistant history is stored in PostgreSQL in normalized `conversations` and
+`messages` tables. `GET /assistant/conversations` returns active conversations;
+pass `archived=true` for the archive. Conversation context, title, timestamps,
+messages, and the isolated OpenClaw session key are persisted across browsers.
+The frontend imports the legacy `localStorage` history once, without
+overwriting conversations that already exist on the server.

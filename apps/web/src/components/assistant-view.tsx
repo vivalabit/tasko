@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  Archive,
+  ArchiveRestore,
   Bot,
   BriefcaseBusiness,
   Check,
@@ -78,6 +80,7 @@ type AssistantMessage = {
   content: string;
   createdAt: string;
   source?: "openclaw" | "local";
+  status?: "generating" | "complete" | "stopped" | "error";
 };
 
 type AssistantThread = {
@@ -85,6 +88,9 @@ type AssistantThread = {
   title: string;
   contextKind: AssistantContextKind;
   contextId: string;
+  openClawSessionKey?: string | null;
+  archived: boolean;
+  createdAt: string;
   updatedAt: string;
   messages: AssistantMessage[];
 };
@@ -97,7 +103,7 @@ type AssistantViewProps = {
   onLaunchHandled: () => void;
 };
 
-const assistantThreadsStorageKey = "tasko.assistantThreads.v1";
+const legacyAssistantThreadsStorageKey = "tasko.assistantThreads.v1";
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const quickActions = [
@@ -185,7 +191,7 @@ function normalizeThreads(value: unknown): AssistantThread[] {
   if (!Array.isArray(value)) return [];
 
   return value
-    .filter((item): item is AssistantThread => {
+    .filter((item) => {
       if (!item || typeof item !== "object") return false;
       const candidate = item as Partial<AssistantThread>;
       return (
@@ -196,7 +202,52 @@ function normalizeThreads(value: unknown): AssistantThread[] {
         ["profile", "job", "application"].includes(candidate.contextKind ?? "")
       );
     })
-    .slice(0, 30);
+    .map((item) => {
+      const candidate = item as AssistantThread;
+      return {
+        ...candidate,
+        archived: Boolean(candidate.archived),
+        createdAt: candidate.createdAt || candidate.updatedAt,
+        openClawSessionKey: candidate.openClawSessionKey ?? null,
+        messages: candidate.messages.filter((message) => (
+          message &&
+          typeof message.id === "string" &&
+          ["user", "assistant"].includes(message.role) &&
+          typeof message.content === "string" &&
+          typeof message.createdAt === "string"
+        )),
+      };
+    });
+}
+
+async function fetchAssistantThreads(archived: boolean): Promise<AssistantThread[]> {
+  const response = await fetch(`${apiBaseUrl}/assistant/conversations?archived=${archived}`);
+  if (!response.ok) throw new Error(`Conversation loading failed with status ${response.status}`);
+  return normalizeThreads(await response.json());
+}
+
+async function importLegacyThread(thread: AssistantThread) {
+  const response = await fetch(
+    `${apiBaseUrl}/assistant/conversations/${encodeURIComponent(thread.id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(thread),
+    },
+  );
+  if (!response.ok) throw new Error(`Conversation import failed with status ${response.status}`);
+}
+
+async function persistAssistantMessage(threadId: string, message: AssistantMessage) {
+  const response = await fetch(
+    `${apiBaseUrl}/assistant/conversations/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(message.id)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(message),
+    },
+  );
+  if (!response.ok) throw new Error(`Message persistence failed with status ${response.status}`);
 }
 
 function formatThreadDate(value: string) {
@@ -383,6 +434,7 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
   const [threads, setThreads] = useState<AssistantThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState("");
   const [historyQuery, setHistoryQuery] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const [draft, setDraft] = useState("");
   const [contextKind, setContextKind] = useState<AssistantContextKind>("profile");
   const [contextId, setContextId] = useState("");
@@ -421,22 +473,41 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
   }, [historyQuery, threads]);
 
   useEffect(() => {
-    try {
-      const rawThreads = window.localStorage.getItem(assistantThreadsStorageKey);
-      const storedThreads = normalizeThreads(rawThreads ? JSON.parse(rawThreads) : []);
-      setThreads(storedThreads);
-      setActiveThreadId(storedThreads[0]?.id ?? "");
-    } catch {
-      window.localStorage.removeItem(assistantThreadsStorageKey);
-    } finally {
-      setIsLoaded(true);
-    }
-  }, []);
+    let cancelled = false;
 
-  useEffect(() => {
-    if (!isLoaded) return;
-    window.localStorage.setItem(assistantThreadsStorageKey, JSON.stringify(threads.slice(0, 30)));
-  }, [isLoaded, threads]);
+    async function loadHistory() {
+      setIsLoaded(false);
+      try {
+        let serverThreads = await fetchAssistantThreads(showArchived);
+        if (!showArchived) {
+          const rawThreads = window.localStorage.getItem(legacyAssistantThreadsStorageKey);
+          const legacyThreads = normalizeThreads(rawThreads ? JSON.parse(rawThreads) : []);
+          if (legacyThreads.length) {
+            const archivedThreads = await fetchAssistantThreads(true);
+            const serverIds = new Set(
+              [...serverThreads, ...archivedThreads].map((thread) => thread.id),
+            );
+            const threadsToImport = legacyThreads.filter((thread) => !serverIds.has(thread.id));
+            await Promise.all(threadsToImport.map(importLegacyThread));
+            window.localStorage.removeItem(legacyAssistantThreadsStorageKey);
+            if (threadsToImport.length) serverThreads = await fetchAssistantThreads(false);
+          }
+        }
+        if (cancelled) return;
+        setThreads(serverThreads);
+        setActiveThreadId(serverThreads[0]?.id ?? "");
+      } catch {
+        if (!cancelled) setConnectionStatus("disconnected");
+      } finally {
+        if (!cancelled) setIsLoaded(true);
+      }
+    }
+
+    void loadHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [showArchived]);
 
   useEffect(() => {
     if (!activeThread) return;
@@ -468,16 +539,55 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
         ? { ...thread, contextKind: nextKind, contextId: nextId, updatedAt: new Date().toISOString() }
         : thread,
     ));
+    void fetch(`${apiBaseUrl}/assistant/conversations/${encodeURIComponent(activeThread.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contextKind: nextKind, contextId: nextId }),
+    }).then((response) => {
+      if (!response.ok) throw new Error("Conversation context update failed");
+    }).catch(() => setConnectionStatus("disconnected"));
   }
 
   function startNewChat() {
+    if (showArchived) setShowArchived(false);
     setActiveThreadId("");
     setDraft("");
     setContextKind("profile");
     setContextId("");
   }
 
-  function deleteThread(threadId: string) {
+  async function deleteThread(threadId: string) {
+    if (isGenerating && activeThreadId === threadId) return;
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/assistant/conversations/${encodeURIComponent(threadId)}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) throw new Error("Conversation deletion failed");
+    } catch {
+      setConnectionStatus("disconnected");
+      return;
+    }
+    setThreads((currentThreads) => currentThreads.filter((thread) => thread.id !== threadId));
+    if (activeThreadId === threadId) setActiveThreadId("");
+  }
+
+  async function setThreadArchived(threadId: string, archived: boolean) {
+    if (isGenerating && activeThreadId === threadId) return;
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/assistant/conversations/${encodeURIComponent(threadId)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ archived }),
+        },
+      );
+      if (!response.ok) throw new Error("Conversation archive update failed");
+    } catch {
+      setConnectionStatus("disconnected");
+      return;
+    }
     setThreads((currentThreads) => currentThreads.filter((thread) => thread.id !== threadId));
     if (activeThreadId === threadId) setActiveThreadId("");
   }
@@ -493,6 +603,7 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
       role: "user",
       content: prompt,
       createdAt: now,
+      status: "complete",
     };
     const assistantMessageId = createId("assistant-response");
     const pendingAssistantMessage: AssistantMessage = {
@@ -500,6 +611,7 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
       role: "assistant",
       content: "",
       createdAt: now,
+      status: "generating",
     };
     if (activeThread) {
       setThreads((currentThreads) => currentThreads.map((thread) =>
@@ -513,6 +625,8 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
         title: createThreadTitle(prompt),
         contextKind,
         contextId,
+        archived: false,
+        createdAt: now,
         updatedAt: now,
         messages: [userMessage, pendingAssistantMessage],
       }, ...currentThreads]);
@@ -535,6 +649,9 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
     const requestPayload = {
       requestId,
       threadId,
+      userMessageId: userMessage.id,
+      assistantMessageId,
+      conversationTitle: activeThread?.title ?? createThreadTitle(prompt),
       message: prompt,
       contextKind,
       contextId,
@@ -556,7 +673,9 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
               ...thread,
               updatedAt,
               messages: thread.messages.map((message) =>
-                message.id === assistantMessageId ? { ...message, content, source, createdAt: updatedAt } : message,
+                message.id === assistantMessageId
+                  ? { ...message, content, source, status: "complete", createdAt: updatedAt }
+                  : message,
               ),
             }
           : thread,
@@ -597,6 +716,17 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
             }
             if (event === "error") {
               terminalError = typeof data.message === "string" ? data.message : "Assistant generation failed";
+              return;
+            }
+            if (event === "done" && data.metadata && typeof data.metadata === "object") {
+              const metadata = data.metadata as Record<string, unknown>;
+              if (typeof metadata.sessionKey === "string") {
+                setThreads((currentThreads) => currentThreads.map((thread) =>
+                  thread.id === threadId
+                    ? { ...thread, openClawSessionKey: metadata.sessionKey as string }
+                    : thread,
+                ));
+              }
             }
           });
 
@@ -633,6 +763,14 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
           application: selectedApplication,
         });
         updateAssistantMessage(fallbackResponse, "local");
+        void persistAssistantMessage(threadId, {
+          id: assistantMessageId,
+          role: "assistant",
+          content: fallbackResponse,
+          createdAt: new Date().toISOString(),
+          source: "local",
+          status: "complete",
+        }).catch(() => setConnectionStatus("disconnected"));
         setConnectionStatus("disconnected");
       } else {
         setConnectionStatus("disconnected");
@@ -672,6 +810,12 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
         ? { ...thread, messages: thread.messages.filter((message) => message.id !== messageId) }
         : thread,
     ));
+    void fetch(
+      `${apiBaseUrl}/assistant/conversations/${encodeURIComponent(activeThread.id)}/messages/${encodeURIComponent(messageId)}`,
+      { method: "DELETE" },
+    ).then((response) => {
+      if (!response.ok) throw new Error("Message deletion failed");
+    }).catch(() => setConnectionStatus("disconnected"));
     setDraft(previousUserMessage.content);
   }
 
@@ -703,7 +847,19 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
       <div className="grid min-h-0 flex-1 gap-3 lg:grid-cols-[210px_minmax(0,1fr)] xl:grid-cols-[220px_minmax(0,1fr)_260px] 2xl:grid-cols-[250px_minmax(0,1fr)_290px] 2xl:gap-4">
         <aside className="panel hidden min-h-0 overflow-hidden lg:flex lg:flex-col">
           <div className="border-b border-border p-3">
-            <p className="text-xs font-bold uppercase tracking-[0.12em] text-muted">Conversations</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-bold uppercase tracking-[0.12em] text-muted">
+                {showArchived ? "Archived" : "Conversations"}
+              </p>
+              <button
+                type="button"
+                onClick={() => setShowArchived((value) => !value)}
+                className="flex items-center gap-1 rounded px-1.5 py-1 text-[9px] font-bold uppercase tracking-wide text-muted transition hover:bg-white/10 hover:text-white"
+              >
+                {showArchived ? <ArchiveRestore className="h-3 w-3" /> : <Archive className="h-3 w-3" />}
+                {showArchived ? "Active" : "Archive"}
+              </button>
+            </div>
             <label className="mt-2.5 flex h-9 items-center gap-2 rounded-md border border-border bg-white/[0.035] px-2.5 focus-within:border-accent/60">
               <Search className="h-3.5 w-3.5 text-muted" />
               <input value={historyQuery} onChange={(event) => setHistoryQuery(event.target.value)} placeholder="Search history" className="min-w-0 flex-1 bg-transparent text-xs text-white outline-none placeholder:text-muted" />
@@ -712,12 +868,20 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
           <div className="job-scroll min-h-0 flex-1 overflow-y-auto p-2">
             {filteredThreads.length ? filteredThreads.map((thread) => (
               <div key={thread.id} className={cn("group relative mb-1 rounded-md border transition", thread.id === activeThreadId ? "border-accent/35 bg-accent/10" : "border-transparent hover:border-border hover:bg-white/[0.035]")}>
-                <button type="button" onClick={() => setActiveThreadId(thread.id)} className="w-full p-2.5 pr-8 text-left">
+                <button type="button" onClick={() => setActiveThreadId(thread.id)} className="w-full p-2.5 pr-14 text-left">
                   <p className="line-clamp-2 text-xs font-bold leading-4 text-[#e7ebf2]">{thread.title}</p>
                   <div className="mt-1.5 flex items-center justify-between gap-2 text-[10px] text-muted">
                     <span className="truncate">{getContextLabel(thread.contextKind, thread.contextId, jobs, applications)}</span>
                     <span className="shrink-0">{formatThreadDate(thread.updatedAt)}</span>
                   </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setThreadArchived(thread.id, !showArchived)}
+                  aria-label={showArchived ? "Restore conversation" : "Archive conversation"}
+                  className="absolute right-7 top-2 rounded p-1 text-muted opacity-0 transition hover:bg-white/10 hover:text-white group-hover:opacity-100"
+                >
+                  {showArchived ? <ArchiveRestore className="h-3.5 w-3.5" /> : <Archive className="h-3.5 w-3.5" />}
                 </button>
                 <button type="button" onClick={() => deleteThread(thread.id)} aria-label="Delete conversation" className="absolute right-1.5 top-2 rounded p-1 text-muted opacity-0 transition hover:bg-white/10 hover:text-white group-hover:opacity-100">
                   <Trash2 className="h-3.5 w-3.5" />
@@ -726,7 +890,9 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
             )) : (
               <div className="px-2 py-8 text-center">
                 <Bot className="mx-auto h-6 w-6 text-muted" />
-                <p className="mt-2 text-xs font-semibold text-muted">No conversations yet</p>
+                <p className="mt-2 text-xs font-semibold text-muted">
+                  {!isLoaded ? "Loading conversations…" : showArchived ? "No archived conversations" : "No conversations yet"}
+                </p>
               </div>
             )}
           </div>
@@ -792,7 +958,7 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
                 </div>
                 <div className="mt-5 grid gap-2 sm:grid-cols-2 2xl:mt-6 2xl:gap-3">
                   {quickActions.map((action) => (
-                    <button key={action.title} type="button" onClick={() => submitMessage(action.prompt)} className="group rounded-lg border border-border bg-white/[0.025] p-3 text-left transition hover:border-accent/40 hover:bg-accent/[0.07] 2xl:p-4">
+                    <button key={action.title} type="button" disabled={showArchived} onClick={() => submitMessage(action.prompt)} className="group rounded-lg border border-border bg-white/[0.025] p-3 text-left transition hover:border-accent/40 hover:bg-accent/[0.07] disabled:cursor-not-allowed disabled:opacity-40 2xl:p-4">
                       <span className="grid h-8 w-8 place-items-center rounded-md bg-accent/12 text-accent transition group-hover:bg-accent/20"><action.icon className="h-4 w-4" /></span>
                       <p className="mt-2.5 text-sm font-bold text-white">{action.title}</p>
                       <p className="mt-1 text-[11px] leading-4 text-muted 2xl:text-xs">{action.description}</p>
@@ -855,6 +1021,7 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
             <div className="mx-auto max-w-[780px] rounded-lg border border-border bg-white/[0.035] p-2 shadow-[0_12px_34px_rgba(0,0,0,0.18)] focus-within:border-accent/60">
               <textarea
                 value={draft}
+                disabled={showArchived}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -863,7 +1030,7 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
                   }
                 }}
                 rows={2}
-                placeholder="Ask anything about your job search…"
+                placeholder={showArchived ? "Restore a conversation to continue…" : "Ask anything about your job search…"}
                 className="max-h-32 min-h-[42px] w-full resize-none bg-transparent px-2 py-1 text-[13px] leading-5 text-white outline-none placeholder:text-muted 2xl:text-sm"
               />
               <div className="flex items-center justify-between gap-2 px-1">
@@ -873,7 +1040,7 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
                     <Square className="h-3 w-3 fill-current" /> Stop generating
                   </Button>
                 ) : (
-                  <Button onClick={() => submitMessage()} disabled={!draft.trim()} aria-label="Send message" className="h-8 w-8 rounded-md bg-accent p-0 text-white hover:bg-[#ff6b12] disabled:opacity-40">
+                  <Button onClick={() => submitMessage()} disabled={showArchived || !draft.trim()} aria-label="Send message" className="h-8 w-8 rounded-md bg-accent p-0 text-white hover:bg-[#ff6b12] disabled:opacity-40">
                     <Send className="h-4 w-4" />
                   </Button>
                 )}

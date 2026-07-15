@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from pydantic import ValidationError
+from sqlalchemy import func, select
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -23,6 +25,7 @@ from app.models.assistant import (
     AssistantJobContext,
     AssistantStreamRequest,
 )
+from app.models.conversations import ConversationRecord, MessageRecord, utc_now
 from app.models.jobs import StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.assistant import (
@@ -143,6 +146,17 @@ async def stream_chat_with_assistant(
             request_id=request.request_id,
             fingerprint=fingerprint,
         )
+        try:
+            _, assistant_message_id = prepare_stream_history(db, request)
+            history_bind = db.get_bind()
+        except HTTPException:
+            raise
+        except SQLAlchemyError as exc:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Conversations database is unavailable",
+            ) from exc
         assistant_streams[request.request_id] = stream
         stream.task = asyncio.create_task(
             generate_assistant_stream(
@@ -152,6 +166,8 @@ async def stream_chat_with_assistant(
                 job=job,
                 application=application,
                 settings=settings,
+                history_bind=history_bind,
+                assistant_message_id=assistant_message_id,
             )
         )
 
@@ -191,6 +207,8 @@ async def generate_assistant_stream(
     job: AssistantJobContext | None,
     application: AssistantApplicationContext | None,
     settings: Settings,
+    history_bind: Engine | Connection,
+    assistant_message_id: str,
 ) -> None:
     try:
         message, session_id = await run_openclaw_assistant(
@@ -207,6 +225,7 @@ async def generate_assistant_stream(
         )
         stream.metadata = {
             "sessionId": session_id,
+            "sessionKey": session_id,
             "contextKind": request.context_kind,
             "contextId": request.context_id,
         }
@@ -214,17 +233,55 @@ async def generate_assistant_stream(
             stream.text += chunk
             touch_stream(stream)
             await asyncio.sleep(0.035)
+        persist_stream_history(
+            history_bind,
+            conversation_id=request.thread_id,
+            assistant_message_id=assistant_message_id,
+            text=stream.text,
+            message_status="complete",
+            source="openclaw",
+            openclaw_session_key=session_id,
+        )
         update_stream_status(stream, "complete")
     except asyncio.CancelledError:
+        persist_stream_history_safely(
+            history_bind,
+            conversation_id=request.thread_id,
+            assistant_message_id=assistant_message_id,
+            text=stream.text,
+            message_status="stopped",
+            source="openclaw" if stream.text else None,
+        )
         update_stream_status(stream, "stopped")
     except OpenClawAssistantTimeoutError:
         stream.error = "OpenClaw assistant timed out"
+        persist_stream_history_safely(
+            history_bind,
+            conversation_id=request.thread_id,
+            assistant_message_id=assistant_message_id,
+            text=stream.text,
+            message_status="error",
+        )
         update_stream_status(stream, "error")
     except OpenClawAssistantError as exc:
         stream.error = str(exc)
+        persist_stream_history_safely(
+            history_bind,
+            conversation_id=request.thread_id,
+            assistant_message_id=assistant_message_id,
+            text=stream.text,
+            message_status="error",
+        )
         update_stream_status(stream, "error")
     except Exception:
         stream.error = "Assistant generation failed"
+        persist_stream_history_safely(
+            history_bind,
+            conversation_id=request.thread_id,
+            assistant_message_id=assistant_message_id,
+            text=stream.text,
+            message_status="error",
+        )
         update_stream_status(stream, "error")
 
 
@@ -315,6 +372,146 @@ def prune_assistant_streams() -> None:
     ]
     for request_id in expired:
         assistant_streams.pop(request_id, None)
+
+
+def prepare_stream_history(
+    db: Session,
+    request: AssistantStreamRequest,
+) -> tuple[str, str]:
+    now = utc_now()
+    conversation = db.get(ConversationRecord, request.thread_id)
+    if not conversation:
+        conversation = ConversationRecord(
+            id=request.thread_id,
+            title=request.conversation_title or create_conversation_title(request.message),
+            context_kind=request.context_kind,
+            context_id=request.context_id,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(conversation)
+        db.flush()
+    else:
+        conversation.context_kind = request.context_kind
+        conversation.context_id = request.context_id
+        conversation.archived = False
+        conversation.updated_at = now
+
+    user_message_id = request.user_message_id or stream_message_id(request.request_id, "user")
+    assistant_message_id = request.assistant_message_id or stream_message_id(
+        request.request_id,
+        "assistant",
+    )
+    current_sequence = db.scalar(
+        select(func.max(MessageRecord.sequence)).where(
+            MessageRecord.conversation_id == request.thread_id
+        )
+    )
+    next_sequence = (current_sequence if current_sequence is not None else -1) + 1
+
+    ensure_stream_message_id_available(db, user_message_id, request.thread_id)
+    ensure_stream_message_id_available(db, assistant_message_id, request.thread_id)
+    if not db.get(MessageRecord, user_message_id):
+        db.add(
+            MessageRecord(
+                id=user_message_id,
+                conversation_id=request.thread_id,
+                sequence=next_sequence,
+                role="user",
+                content=request.message,
+                status="complete",
+                created_at=now,
+            )
+        )
+        next_sequence += 1
+    if not db.get(MessageRecord, assistant_message_id):
+        db.add(
+            MessageRecord(
+                id=assistant_message_id,
+                conversation_id=request.thread_id,
+                sequence=next_sequence,
+                role="assistant",
+                content="",
+                status="generating",
+                created_at=now,
+            )
+        )
+    db.commit()
+    return user_message_id, assistant_message_id
+
+
+def ensure_stream_message_id_available(
+    db: Session,
+    message_id: str,
+    conversation_id: str,
+) -> None:
+    message = db.get(MessageRecord, message_id)
+    if message and message.conversation_id != conversation_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Message id already belongs to another conversation",
+        )
+
+
+def persist_stream_history(
+    bind: Engine | Connection,
+    *,
+    conversation_id: str,
+    assistant_message_id: str,
+    text: str,
+    message_status: str,
+    source: str | None = None,
+    openclaw_session_key: str | None = None,
+) -> None:
+    with Session(bind=bind) as db:
+        conversation = db.get(ConversationRecord, conversation_id)
+        message = db.get(MessageRecord, assistant_message_id)
+        if not conversation or not message:
+            raise RuntimeError("Assistant conversation disappeared while generating")
+        if message_status == "stopped" and not text:
+            db.delete(message)
+        else:
+            message.content = text
+            message.status = message_status
+            message.source = source
+        if openclaw_session_key:
+            conversation.openclaw_session_key = openclaw_session_key
+        conversation.updated_at = utc_now()
+        db.commit()
+
+
+def persist_stream_history_safely(
+    bind: Engine | Connection,
+    *,
+    conversation_id: str,
+    assistant_message_id: str,
+    text: str,
+    message_status: str,
+    source: str | None = None,
+    openclaw_session_key: str | None = None,
+) -> None:
+    try:
+        persist_stream_history(
+            bind,
+            conversation_id=conversation_id,
+            assistant_message_id=assistant_message_id,
+            text=text,
+            message_status=message_status,
+            source=source,
+            openclaw_session_key=openclaw_session_key,
+        )
+    except Exception:
+        pass
+
+
+def stream_message_id(request_id: str, role: str) -> str:
+    digest = hashlib.sha256(f"{request_id}:{role}".encode()).hexdigest()[:32]
+    return f"assistant-{role}-{digest}"
+
+
+def create_conversation_title(message: str) -> str:
+    normalized = " ".join(message.split())
+    return f"{normalized[:42].rstrip()}…" if len(normalized) > 42 else normalized
 
 
 def load_profile(db: Session) -> ProfilePayload:

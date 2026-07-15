@@ -13,6 +13,7 @@ from app.core.database import Base, get_db
 from app.core.settings import Settings, get_settings
 from app.main import app
 from app.models.assistant import AssistantJobContext
+from app.models.conversations import ConversationRecord, MessageRecord
 from app.models.jobs import StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.assistant import (
@@ -278,14 +279,30 @@ def test_assistant_chat_stream_emits_resumable_sse(monkeypatch: pytest.MonkeyPat
         return "A streamed Tasko response.", "session-stream"
 
     monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        with testing_session_local() as db:
+            yield db
+
     assistant_api.assistant_streams.clear()
     app.dependency_overrides[get_settings] = lambda: Settings(openclaw_assistant_enabled=True)
+    app.dependency_overrides[get_db] = override_get_db
     client = TestClient(app)
     request_payload = {
         "requestId": "request-stream-test",
         "threadId": "thread-stream",
         "message": "Review my profile",
         "contextKind": "profile",
+        "conversationTitle": "Profile review",
+        "userMessageId": "stream-user-message",
+        "assistantMessageId": "stream-assistant-message",
     }
 
     try:
@@ -294,6 +311,14 @@ def test_assistant_chat_stream_emits_resumable_sse(monkeypatch: pytest.MonkeyPat
             "/assistant/chat/stream",
             json={**request_payload, "offset": 11},
         )
+        with testing_session_local() as db:
+            conversation = db.get(ConversationRecord, "thread-stream")
+            messages = (
+                db.query(MessageRecord)
+                .filter(MessageRecord.conversation_id == "thread-stream")
+                .order_by(MessageRecord.sequence)
+                .all()
+            )
     finally:
         app.dependency_overrides.clear()
         assistant_api.assistant_streams.clear()
@@ -305,6 +330,15 @@ def test_assistant_chat_stream_emits_resumable_sse(monkeypatch: pytest.MonkeyPat
     assert "event: done" in response.text
     assert streamed_text(response.text) == "A streamed Tasko response."
     assert streamed_text(resumed_response.text) == "Tasko response."
+    assert conversation is not None
+    assert conversation.title == "Profile review"
+    assert conversation.openclaw_session_key == "session-stream"
+    assert [(message.role, message.content) for message in messages] == [
+        ("user", "Review my profile"),
+        ("assistant", "A streamed Tasko response."),
+    ]
+    assert messages[1].status == "complete"
+    assert messages[1].source == "openclaw"
 
 
 def test_assistant_chat_stream_rejects_missing_resume_state() -> None:
