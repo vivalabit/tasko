@@ -1,6 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -21,8 +22,15 @@ class Settings(BaseSettings):
     openclaw_ai_match_max_jobs: int = 20
     openclaw_assistant_enabled: bool = True
     openclaw_assistant_agent_id: str = "tasko-assistant"
+    openclaw_assistant_model: str = "openai/gpt-5.6-terra"
     openclaw_assistant_thinking: str = "off"
-    openclaw_assistant_timeout_seconds: int = 120
+    openclaw_assistant_timeout_seconds: int = Field(default=120, ge=10, le=600)
+    openclaw_assistant_max_attempts: int = Field(default=2, ge=1, le=4)
+    openclaw_assistant_retry_backoff_seconds: float = Field(default=0.8, ge=0, le=10)
+    openclaw_assistant_max_prompt_chars: int = Field(default=32_000, ge=4_000, le=200_000)
+    openclaw_assistant_max_user_message_chars: int = Field(default=6_000, ge=200, le=12_000)
+    openclaw_assistant_max_history_messages: int = Field(default=12, ge=0, le=100)
+    openclaw_assistant_max_history_chars: int = Field(default=8_000, ge=0, le=100_000)
     brightdata_api_key: str | None = None
     brightdata_api_url: str = "https://api.brightdata.com/datasets/v3"
     brightdata_linkedin_jobs_dataset_id: str = "gd_lpfll7v5hcqtkxl6l"

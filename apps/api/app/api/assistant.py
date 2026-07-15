@@ -39,8 +39,10 @@ from app.models.documents import (
 from app.models.jobs import StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.assistant import (
+    OpenClawAssistantRun,
     OpenClawAssistantError,
     OpenClawAssistantTimeoutError,
+    compact_conversation_history,
     encode_message_actions,
     extract_assistant_action_previews,
     run_openclaw_assistant,
@@ -78,17 +80,19 @@ async def chat_with_assistant(
     if not settings.openclaw_assistant_enabled:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OpenClaw assistant is disabled",
+            detail="The assistant is temporarily disabled. Check the server configuration.",
         )
+    validate_assistant_message_length(request.message, settings)
 
     profile = load_profile(db)
     job = load_job_context(db, request)
     application = load_application_context(db, request)
     if application:
         job = application.job
+    history = load_compact_conversation_history(db, request.thread_id, settings)
 
     try:
-        message, session_id = await run_openclaw_assistant(
+        run = await run_openclaw_assistant(
             thread_id=request.thread_id,
             message=request.message,
             context_kind=request.context_kind,
@@ -99,7 +103,14 @@ async def chat_with_assistant(
             agent_id=settings.openclaw_assistant_agent_id,
             thinking=settings.openclaw_assistant_thinking,
             timeout_seconds=settings.openclaw_assistant_timeout_seconds,
+            model=settings.openclaw_assistant_model,
+            history=history,
+            session_scope=uuid4().hex,
+            max_prompt_chars=settings.openclaw_assistant_max_prompt_chars,
+            max_attempts=settings.openclaw_assistant_max_attempts,
+            retry_backoff_seconds=settings.openclaw_assistant_retry_backoff_seconds,
         )
+        message, session_id, metrics = unpack_assistant_run(run)
     except OpenClawAssistantTimeoutError as exc:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
@@ -126,6 +137,7 @@ async def chat_with_assistant(
             "sessionId": session_id,
             "contextKind": request.context_kind,
             "contextId": request.context_id,
+            "metrics": metrics,
             "actions": [action.model_dump(by_alias=True, mode="json") for action in actions],
         },
     )
@@ -140,8 +152,9 @@ async def stream_chat_with_assistant(
     if not settings.openclaw_assistant_enabled:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="OpenClaw assistant is disabled",
+            detail="The assistant is temporarily disabled. Check the server configuration.",
         )
+    validate_assistant_message_length(request.message, settings)
 
     prune_assistant_streams()
     fingerprint = stream_request_fingerprint(request)
@@ -159,6 +172,7 @@ async def stream_chat_with_assistant(
         )
 
     if not stream:
+        history = load_compact_conversation_history(db, request.thread_id, settings)
         profile = load_profile(db)
         job = load_job_context(db, request)
         application = load_application_context(db, request)
@@ -189,6 +203,7 @@ async def stream_chat_with_assistant(
                 job=job,
                 application=application,
                 settings=settings,
+                history=history,
                 history_bind=history_bind,
                 assistant_message_id=assistant_message_id,
             )
@@ -262,11 +277,12 @@ async def generate_assistant_stream(
     job: AssistantJobContext | None,
     application: AssistantApplicationContext | None,
     settings: Settings,
+    history: dict[str, object],
     history_bind: Engine | Connection,
     assistant_message_id: str,
 ) -> None:
     try:
-        message, session_id = await run_openclaw_assistant(
+        run = await run_openclaw_assistant(
             thread_id=request.thread_id,
             message=request.message,
             context_kind=request.context_kind,
@@ -277,7 +293,14 @@ async def generate_assistant_stream(
             agent_id=settings.openclaw_assistant_agent_id,
             thinking=settings.openclaw_assistant_thinking,
             timeout_seconds=settings.openclaw_assistant_timeout_seconds,
+            model=settings.openclaw_assistant_model,
+            history=history,
+            session_scope=request.request_id,
+            max_prompt_chars=settings.openclaw_assistant_max_prompt_chars,
+            max_attempts=settings.openclaw_assistant_max_attempts,
+            retry_backoff_seconds=settings.openclaw_assistant_retry_backoff_seconds,
         )
+        message, session_id, metrics = unpack_assistant_run(run)
         visible_message, actions = extract_assistant_action_previews(
             message,
             request_id=request.request_id,
@@ -292,6 +315,7 @@ async def generate_assistant_stream(
             "sessionKey": session_id,
             "contextKind": request.context_kind,
             "contextId": request.context_id,
+            "metrics": metrics,
             "actions": [action.model_dump(by_alias=True, mode="json") for action in actions],
         }
         for chunk in split_stream_text(visible_message):
@@ -318,8 +342,8 @@ async def generate_assistant_stream(
             source="openclaw" if stream.text else None,
         )
         update_stream_status(stream, "stopped")
-    except OpenClawAssistantTimeoutError:
-        stream.error = "OpenClaw assistant timed out"
+    except OpenClawAssistantTimeoutError as exc:
+        stream.error = str(exc)
         persist_stream_history_safely(
             history_bind,
             conversation_id=request.thread_id,
@@ -577,6 +601,47 @@ def stream_message_id(request_id: str, role: str) -> str:
 def create_conversation_title(message: str) -> str:
     normalized = " ".join(message.split())
     return f"{normalized[:42].rstrip()}…" if len(normalized) > 42 else normalized
+
+
+def validate_assistant_message_length(message: str, settings: Settings) -> None:
+    limit = settings.openclaw_assistant_max_user_message_chars
+    if len(message) > limit:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Message is too long ({len(message):,} characters). The limit is {limit:,}.",
+        )
+
+
+def load_compact_conversation_history(
+    db: Session,
+    conversation_id: str,
+    settings: Settings,
+) -> dict[str, object]:
+    try:
+        records = (
+            db.query(MessageRecord)
+            .filter(
+                MessageRecord.conversation_id == conversation_id,
+                MessageRecord.status.in_(("complete", "stopped")),
+            )
+            .order_by(MessageRecord.sequence)
+            .all()
+        )
+    except SQLAlchemyError:
+        return {}
+    return compact_conversation_history(
+        [{"role": record.role, "content": record.content} for record in records],
+        max_messages=settings.openclaw_assistant_max_history_messages,
+        max_chars=settings.openclaw_assistant_max_history_chars,
+    )
+
+
+def unpack_assistant_run(
+    run: OpenClawAssistantRun | tuple[str, str],
+) -> tuple[str, str, dict[str, object]]:
+    message, session_key = run
+    metrics = run.metrics.as_dict() if isinstance(run, OpenClawAssistantRun) else {}
+    return message, session_key, metrics
 
 
 def load_profile(db: Session) -> ProfilePayload:

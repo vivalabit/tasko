@@ -186,6 +186,7 @@ type AssistantViewProps = {
 
 const legacyAssistantThreadsStorageKey = "tasko.assistantThreads.v1";
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const assistantMessageMaxChars = 6_000;
 const assistantActionMarkerPattern = /\s*<!--TASKO_ACTIONS:([A-Za-z0-9_\-=]+)-->\s*$/;
 
 const quickActions = [
@@ -267,6 +268,15 @@ async function consumeAssistantSse(
 
 function wait(milliseconds: number) {
   return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+}
+
+async function readAssistantApiError(response: Response) {
+  const payload = await response.json().catch(() => null) as { detail?: unknown } | null;
+  if (typeof payload?.detail === "string" && payload.detail.trim()) return payload.detail;
+  if (response.status === 413) return "This message is too long. Shorten it and try again.";
+  if (response.status === 504) return "The assistant took too long to respond. Try a shorter request.";
+  if (response.status === 503) return "The assistant is temporarily unavailable. Try again shortly.";
+  return `Assistant request failed (HTTP ${response.status}). Please try again.`;
 }
 
 function normalizeAssistantActions(value: unknown): AssistantActionPreview[] {
@@ -650,6 +660,7 @@ export function AssistantView({
   const [documentDraft, setDocumentDraft] = useState<AssistantDocumentDraft | null>(null);
   const [isDocumentSaving, setIsDocumentSaving] = useState(false);
   const [documentError, setDocumentError] = useState("");
+  const [assistantError, setAssistantError] = useState("");
   const launchedIdRef = useRef("");
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const streamAbortControllerRef = useRef<AbortController | null>(null);
@@ -1057,6 +1068,11 @@ export function AssistantView({
   async function submitMessage(explicitPrompt?: string) {
     const prompt = (explicitPrompt ?? draft).trim();
     if (!prompt || isGenerating) return;
+    if (prompt.length > assistantMessageMaxChars) {
+      setAssistantError(`Message is too long. The limit is ${assistantMessageMaxChars.toLocaleString()} characters.`);
+      return;
+    }
+    setAssistantError("");
 
     const now = new Date().toISOString();
     const threadId = activeThread?.id ?? createId("assistant-thread");
@@ -1132,6 +1148,7 @@ export function AssistantView({
       content: string,
       source?: AssistantMessage["source"],
       actions?: AssistantActionPreview[],
+      messageStatus: AssistantMessage["status"] = "complete",
     ) => {
       const updatedAt = new Date().toISOString();
       setThreads((currentThreads) => currentThreads.map((thread) =>
@@ -1145,7 +1162,7 @@ export function AssistantView({
                       ...message,
                       content,
                       source,
-                      status: "complete",
+                      status: messageStatus,
                       createdAt: updatedAt,
                       ...(actions ? { actions } : {}),
                     }
@@ -1174,7 +1191,7 @@ export function AssistantView({
             signal: abortController.signal,
           });
           if (!apiResponse.ok) {
-            throw new Error(`Assistant stream failed with status ${apiResponse.status}`);
+            throw new Error(await readAssistantApiError(apiResponse));
           }
 
           const terminalEvent = await consumeAssistantSse(apiResponse, ({ event, data }) => {
@@ -1220,7 +1237,7 @@ export function AssistantView({
           if (attempt === 3 || terminalError) throw error;
         }
       }
-    } catch {
+    } catch (error) {
       if (stopRequestedRef.current) {
         if (!streamedContent) {
           setThreads((currentThreads) => currentThreads.map((thread) =>
@@ -1230,24 +1247,17 @@ export function AssistantView({
           ));
         }
         setConnectionStatus("idle");
-      } else if (!streamedContent) {
-        const fallbackResponse = getAssistantResponse({
-          prompt,
-          profile,
-          job: selectedJob,
-          application: selectedApplication,
-        });
-        updateAssistantMessage(fallbackResponse, "local");
-        void persistAssistantMessage(threadId, {
-          id: assistantMessageId,
-          role: "assistant",
-          content: fallbackResponse,
-          createdAt: new Date().toISOString(),
-          source: "local",
-          status: "complete",
-        }).catch(() => setConnectionStatus("disconnected"));
-        setConnectionStatus("disconnected");
       } else {
+        const errorMessage = terminalError || (error instanceof Error
+          ? error.message
+          : "The assistant could not complete the request. Please try again.");
+        setAssistantError(errorMessage);
+        updateAssistantMessage(
+          streamedContent || errorMessage,
+          streamedContent ? "openclaw" : undefined,
+          undefined,
+          "error",
+        );
         setConnectionStatus("disconnected");
       }
     } finally {
@@ -1574,10 +1584,19 @@ export function AssistantView({
           </div>
 
           <div className="shrink-0 border-t border-border p-3 2xl:p-4">
+            {assistantError ? (
+              <div className="mx-auto mb-2 flex max-w-[780px] items-start gap-2 rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-[11px] leading-4 text-red-200">
+                <span className="min-w-0 flex-1">{assistantError}</span>
+                <button type="button" onClick={() => setAssistantError("")} aria-label="Dismiss assistant error" className="shrink-0 text-red-300 hover:text-white">
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ) : null}
             <div className="mx-auto max-w-[780px] rounded-lg border border-border bg-white/[0.035] p-2 shadow-[0_12px_34px_rgba(0,0,0,0.18)] focus-within:border-accent/60">
               <textarea
                 value={draft}
                 disabled={showArchived}
+                maxLength={assistantMessageMaxChars}
                 onChange={(event) => setDraft(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
@@ -1590,7 +1609,10 @@ export function AssistantView({
                 className="max-h-32 min-h-[42px] w-full resize-none bg-transparent px-2 py-1 text-[13px] leading-5 text-white outline-none placeholder:text-muted 2xl:text-sm"
               />
               <div className="flex items-center justify-between gap-2 px-1">
-                <p className="truncate text-[10px] text-muted">Using: {contextLabel}</p>
+                <p className="truncate text-[10px] text-muted">
+                  Using: {contextLabel}
+                  {draft.length >= assistantMessageMaxChars * 0.8 ? ` · ${draft.length.toLocaleString()}/${assistantMessageMaxChars.toLocaleString()}` : ""}
+                </p>
                 {isGenerating ? (
                   <Button onClick={stopGenerating} aria-label="Stop generating" className="h-8 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 text-[10px] font-bold text-red-300 hover:bg-red-500/20">
                     <Square className="h-3 w-3 fill-current" /> Stop generating

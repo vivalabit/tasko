@@ -34,6 +34,27 @@ Assistant responses use resumable SSE through `POST /assistant/chat/stream`.
 Clients reconnect with the same `requestId` and last received `offset`; active
 generation can be cancelled with `DELETE /assistant/chat/stream/{requestId}`.
 
+Assistant requests have a bounded 32,000-character prompt and a 6,000-character
+user-message limit. PostgreSQL keeps the complete conversation, while the model
+receives a compact summary of older turns plus the latest 12 messages. Each
+generation uses a fresh isolated OpenClaw session so hidden provider context
+cannot grow without a bound. Temporary timeouts, rate limits, and network
+failures are retried once with exponential backoff. Every run writes a
+structured JSON log containing latency, model, token counts (provider-reported
+when available, otherwise explicitly marked estimates), prompt size, and retry
+count. Vacancy/profile/application text is passed through an untrusted-data
+boundary that removes common prompt-injection instructions before generation.
+
+The reliability budget can be adjusted with these API environment variables:
+
+- `OPENCLAW_ASSISTANT_TIMEOUT_SECONDS`
+- `OPENCLAW_ASSISTANT_MAX_ATTEMPTS`
+- `OPENCLAW_ASSISTANT_RETRY_BACKOFF_SECONDS`
+- `OPENCLAW_ASSISTANT_MAX_PROMPT_CHARS`
+- `OPENCLAW_ASSISTANT_MAX_USER_MESSAGE_CHARS`
+- `OPENCLAW_ASSISTANT_MAX_HISTORY_MESSAGES`
+- `OPENCLAW_ASSISTANT_MAX_HISTORY_CHARS`
+
 Assistant history is stored in PostgreSQL in normalized `conversations` and
 `messages` tables. `GET /assistant/conversations` returns active conversations;
 pass `archived=true` for the archive. Conversation context, title, timestamps,
