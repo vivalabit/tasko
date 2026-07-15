@@ -9,10 +9,15 @@ import {
   Check,
   ChevronDown,
   Copy,
+  Download,
   FileText,
+  History,
   Mail,
   MessageSquarePlus,
+  Paperclip,
+  Pencil,
   RefreshCw,
+  Save,
   Search,
   Send,
   Sparkles,
@@ -20,6 +25,7 @@ import {
   Target,
   Trash2,
   UserRound,
+  X,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -36,8 +42,11 @@ type AssistantProfile = {
   name: string;
   current_role: string;
   desired_role: string;
+  location: string;
+  headline: string;
   skills: string;
   experience: string;
+  education: string;
   resume_file_name: string;
 };
 
@@ -95,12 +104,53 @@ type AssistantThread = {
   messages: AssistantMessage[];
 };
 
+type AssistantDocumentVersion = {
+  id: string;
+  version: number;
+  content: string;
+  createdAt: string;
+};
+
+type AssistantDocument = {
+  id: string;
+  type: "cover_letter" | "tailored_resume";
+  title: string;
+  jobId: string | null;
+  applicationIds: string[];
+  currentVersion: number;
+  createdAt: string;
+  updatedAt: string;
+  versions: AssistantDocumentVersion[];
+};
+
+type AssistantDocumentDraft = {
+  id: string;
+  type: AssistantDocument["type"];
+  title: string;
+  content: string;
+  jobId: string;
+  applicationId: string;
+};
+
+export type AssistantDocumentAttachment = {
+  artifactId: string;
+  title: string;
+  fileName: string;
+  fileType: string;
+  uploadedAt: string;
+  dataUrl: string;
+};
+
 type AssistantViewProps = {
   profile: AssistantProfile;
   jobs: AssistantJob[];
   applications: AssistantApplication[];
   launch: AssistantLaunch | null;
   onLaunchHandled: () => void;
+  onDocumentAttached: (
+    applicationId: string,
+    document: AssistantDocumentAttachment,
+  ) => void;
 };
 
 const legacyAssistantThreadsStorageKey = "tasko.assistantThreads.v1";
@@ -109,8 +159,8 @@ const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const quickActions = [
   {
     title: "Tailor my resume",
-    description: "Highlight the right evidence for a vacancy",
-    prompt: "Tailor my resume for this job and suggest the five highest-impact changes.",
+    description: "Create an editable vacancy-specific draft",
+    prompt: "Create a complete tailored resume draft for this job using only verified evidence from my profile. Use clear section headings and concise achievement bullets.",
     icon: FileText,
   },
   {
@@ -250,6 +300,33 @@ async function persistAssistantMessage(threadId: string, message: AssistantMessa
   if (!response.ok) throw new Error(`Message persistence failed with status ${response.status}`);
 }
 
+function normalizeAssistantDocuments(value: unknown): AssistantDocument[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is AssistantDocument => {
+    if (!item || typeof item !== "object") return false;
+    const candidate = item as Partial<AssistantDocument>;
+    return (
+      typeof candidate.id === "string" &&
+      ["cover_letter", "tailored_resume"].includes(candidate.type ?? "") &&
+      typeof candidate.title === "string" &&
+      typeof candidate.currentVersion === "number" &&
+      Array.isArray(candidate.versions)
+    );
+  });
+}
+
+function currentDocumentContent(document: AssistantDocument) {
+  return document.versions.find((version) => version.version === document.currentVersion)?.content ?? "";
+}
+
+function documentFileName(document: Pick<AssistantDocument, "title" | "currentVersion">) {
+  const base = document.title
+    .trim()
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/^[._-]+|[._-]+$/g, "") || "tasko-document";
+  return `${base}-v${document.currentVersion}.docx`;
+}
+
 function formatThreadDate(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Recently";
@@ -377,19 +454,24 @@ function getAssistantResponse({
 
   if (normalizedPrompt.includes("resume") || normalizedPrompt.includes("cv") || normalizedPrompt.includes("резюме")) {
     return [
-      `Resume tailoring plan for ${roleLabel}`,
+      profile.name.trim() || "Candidate",
+      `${job?.title ?? desiredRole}${profile.location ? ` · ${profile.location}` : ""}`,
       "",
-      `1. Rewrite the headline around “${job?.title ?? desiredRole}” and keep it specific.`,
-      `2. Move the most relevant verified achievements into the top third of the resume.`,
-      `3. Add supported keywords${skills.length ? `: ${skills.join(", ")}` : " from the vacancy requirements"}.`,
-      "4. Turn responsibility statements into outcome statements with scope, action, and result.",
-      gaps.length
-        ? `5. Address these gaps honestly: ${gaps.join("; ")}. Do not add experience you cannot defend.`
-        : "5. Check every claim against your profile and remove generic filler.",
+      "# Professional summary",
+      profile.headline.trim() || `${profile.current_role || desiredRole} targeting ${roleLabel}.`,
       "",
-      profile.resume_file_name
-        ? `Context used: ${profile.resume_file_name}, profile, and the selected vacancy.`
-        : "Your profile is available, but no resume file is attached. Attach one for line-by-line tailoring.",
+      "# Core skills",
+      ...(profile.skills.trim()
+        ? profile.skills.split(/[\n,;]+/).map((skill) => `- ${skill.trim()}`).filter((skill) => skill !== "- ")
+        : skills.map((skill) => `- ${skill}`)),
+      "",
+      "# Experience",
+      profile.experience.trim() || "Add verified experience entries from the candidate profile.",
+      "",
+      "# Education",
+      profile.education.trim() || "Add verified education from the candidate profile.",
+      "",
+      gaps.length ? `Review before sending: address these gaps honestly — ${gaps.join("; ")}.` : "Review every claim before sending.",
     ].join("\n");
   }
 
@@ -430,7 +512,14 @@ function getAssistantResponse({
   ].join("\n");
 }
 
-export function AssistantView({ profile, jobs, applications, launch, onLaunchHandled }: AssistantViewProps) {
+export function AssistantView({
+  profile,
+  jobs,
+  applications,
+  launch,
+  onLaunchHandled,
+  onDocumentAttached,
+}: AssistantViewProps) {
   const [threads, setThreads] = useState<AssistantThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState("");
   const [historyQuery, setHistoryQuery] = useState("");
@@ -443,6 +532,10 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
   const [streamingMessageId, setStreamingMessageId] = useState("");
   const [copiedMessageId, setCopiedMessageId] = useState("");
   const [isLoaded, setIsLoaded] = useState(false);
+  const [documents, setDocuments] = useState<AssistantDocument[]>([]);
+  const [documentDraft, setDocumentDraft] = useState<AssistantDocumentDraft | null>(null);
+  const [isDocumentSaving, setIsDocumentSaving] = useState(false);
+  const [documentError, setDocumentError] = useState("");
   const launchedIdRef = useRef("");
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const streamAbortControllerRef = useRef<AbortController | null>(null);
@@ -508,6 +601,24 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
       cancelled = true;
     };
   }, [showArchived]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${apiBaseUrl}/documents`)
+      .then((response) => {
+        if (!response.ok) throw new Error("Document loading failed");
+        return response.json();
+      })
+      .then((value) => {
+        if (!cancelled) setDocuments(normalizeAssistantDocuments(value));
+      })
+      .catch(() => {
+        if (!cancelled) setDocumentError("Documents are temporarily unavailable");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!activeThread) return;
@@ -590,6 +701,145 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
     }
     setThreads((currentThreads) => currentThreads.filter((thread) => thread.id !== threadId));
     if (activeThreadId === threadId) setActiveThreadId("");
+  }
+
+  function openDocumentFromMessage(
+    message: AssistantMessage,
+    type: AssistantDocument["type"],
+  ) {
+    const roleLabel = selectedJob
+      ? `${selectedJob.title} · ${selectedJob.company}`
+      : profile.desired_role || profile.current_role || "Job search";
+    setDocumentDraft({
+      id: "",
+      type,
+      title: `${type === "cover_letter" ? "Cover letter" : "Tailored resume"} · ${roleLabel}`,
+      content: message.content,
+      jobId: selectedJob?.id ?? "",
+      applicationId: selectedApplication?.id ?? "",
+    });
+    setDocumentError("");
+  }
+
+  function openSavedDocument(document: AssistantDocument) {
+    setDocumentDraft({
+      id: document.id,
+      type: document.type,
+      title: document.title,
+      content: currentDocumentContent(document),
+      jobId: document.jobId ?? "",
+      applicationId: document.applicationIds[0] ?? "",
+    });
+    setDocumentError("");
+  }
+
+  async function saveDocumentArtifact() {
+    if (!documentDraft?.title.trim() || !documentDraft.content.trim()) return;
+    setIsDocumentSaving(true);
+    setDocumentError("");
+    try {
+      const isExisting = Boolean(documentDraft.id);
+      const response = await fetch(
+        isExisting
+          ? `${apiBaseUrl}/documents/${encodeURIComponent(documentDraft.id)}`
+          : `${apiBaseUrl}/documents`,
+        {
+          method: isExisting ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...(isExisting ? {} : { type: documentDraft.type }),
+            title: documentDraft.title.trim(),
+            content: documentDraft.content.trim(),
+            jobId: documentDraft.jobId || null,
+            ...(!isExisting && documentDraft.applicationId
+              ? { applicationId: documentDraft.applicationId }
+              : {}),
+          }),
+        },
+      );
+      if (!response.ok) throw new Error("Document save failed");
+      let savedDocument = (await response.json()) as AssistantDocument;
+
+      if (
+        isExisting &&
+        documentDraft.applicationId &&
+        !savedDocument.applicationIds.includes(documentDraft.applicationId)
+      ) {
+        const attachResponse = await fetch(
+          `${apiBaseUrl}/documents/${encodeURIComponent(savedDocument.id)}/attachments`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ applicationId: documentDraft.applicationId }),
+          },
+        );
+        if (!attachResponse.ok) throw new Error("Document attachment failed");
+        savedDocument = (await attachResponse.json()) as AssistantDocument;
+      }
+
+      setDocuments((currentDocuments) => [
+        savedDocument,
+        ...currentDocuments.filter((document) => document.id !== savedDocument.id),
+      ]);
+      if (documentDraft.applicationId) {
+        onDocumentAttached(documentDraft.applicationId, {
+          artifactId: savedDocument.id,
+          title: savedDocument.title,
+          fileName: documentFileName(savedDocument),
+          fileType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          uploadedAt: savedDocument.updatedAt,
+          dataUrl: `${apiBaseUrl}/documents/${encodeURIComponent(savedDocument.id)}/download`,
+        });
+      }
+      setDocumentDraft(null);
+    } catch (error) {
+      setDocumentError(error instanceof Error ? error.message : "Document save failed");
+    } finally {
+      setIsDocumentSaving(false);
+    }
+  }
+
+  async function restoreDocumentVersion(documentId: string, version: number) {
+    setIsDocumentSaving(true);
+    setDocumentError("");
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/documents/${encodeURIComponent(documentId)}/restore`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version }),
+        },
+      );
+      if (!response.ok) throw new Error("Version restore failed");
+      const restored = (await response.json()) as AssistantDocument;
+      setDocuments((currentDocuments) => [
+        restored,
+        ...currentDocuments.filter((document) => document.id !== restored.id),
+      ]);
+      setDocumentDraft((currentDraft) => currentDraft
+        ? { ...currentDraft, content: currentDocumentContent(restored) }
+        : currentDraft);
+    } catch (error) {
+      setDocumentError(error instanceof Error ? error.message : "Version restore failed");
+    } finally {
+      setIsDocumentSaving(false);
+    }
+  }
+
+  async function deleteDocumentArtifact(documentId: string) {
+    if (!window.confirm("Delete this document and all its versions?")) return;
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/documents/${encodeURIComponent(documentId)}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) throw new Error("Document deletion failed");
+      setDocuments((currentDocuments) => currentDocuments.filter((document) => document.id !== documentId));
+      setDocumentDraft(null);
+    } catch (error) {
+      setDocumentError(error instanceof Error ? error.message : "Document deletion failed");
+    }
   }
 
   async function submitMessage(explicitPrompt?: string) {
@@ -826,6 +1076,7 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
   }
 
   return (
+    <>
     <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
       <header className="mb-3 flex shrink-0 items-start justify-between gap-3 2xl:mb-4">
         <div>
@@ -999,12 +1250,18 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
                         )}
                       </p>
                       {message.role === "assistant" && message.id !== streamingMessageId && message.content && (
-                        <div className="mt-2.5 flex items-center gap-1.5 border-t border-border pt-2">
+                        <div className="mt-2.5 flex flex-wrap items-center gap-1.5 border-t border-border pt-2">
                           <Button variant="ghost" size="sm" onClick={() => copyMessage(message)} className="h-7 px-2 text-[10px] text-muted hover:text-white">
                             {copiedMessageId === message.id ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />} {copiedMessageId === message.id ? "Copied" : "Copy"}
                           </Button>
                           <Button variant="ghost" size="sm" onClick={() => regenerateMessage(message.id)} className="h-7 px-2 text-[10px] text-muted hover:text-white">
                             <RefreshCw className="h-3.5 w-3.5" /> Regenerate
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => openDocumentFromMessage(message, "cover_letter")} className="h-7 px-2 text-[10px] text-muted hover:text-white">
+                            <Save className="h-3.5 w-3.5" /> Save as cover letter
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={() => openDocumentFromMessage(message, "tailored_resume")} className="h-7 px-2 text-[10px] text-muted hover:text-white">
+                            <FileText className="h-3.5 w-3.5" /> Save tailored resume
                           </Button>
                         </div>
                       )}
@@ -1083,6 +1340,38 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
             </div>
           </div>
 
+          <div className="border-b border-border p-3.5 2xl:p-4">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-xs font-bold text-white">Saved documents</p>
+              <span className="text-[9px] font-bold uppercase text-muted">{documents.length}</span>
+            </div>
+            {documentError && !documentDraft ? (
+              <p className="mt-2 text-[10px] leading-4 text-red-300">{documentError}</p>
+            ) : null}
+            <div className="mt-2 space-y-1.5">
+              {documents.length ? documents.slice(0, 5).map((document) => (
+                <div key={document.id} className="flex items-center gap-1.5 rounded-md border border-border bg-white/[0.025] p-2">
+                  <button type="button" onClick={() => openSavedDocument(document)} className="min-w-0 flex-1 text-left">
+                    <p className="truncate text-[10px] font-bold text-[#e2e7ef]">{document.title}</p>
+                    <p className="mt-0.5 text-[9px] text-muted">
+                      {document.type === "cover_letter" ? "Cover letter" : "Tailored resume"} · v{document.currentVersion}
+                    </p>
+                  </button>
+                  <a
+                    href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download`}
+                    download={documentFileName(document)}
+                    aria-label={`Download ${document.title}`}
+                    className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted transition hover:bg-white/10 hover:text-white"
+                  >
+                    <Download className="h-3.5 w-3.5" />
+                  </a>
+                </div>
+              )) : (
+                <p className="text-[10px] leading-4 text-muted">Save an Assistant response to create an editable DOCX artifact.</p>
+              )}
+            </div>
+          </div>
+
           <div className="p-3.5 2xl:p-4">
             <p className="text-xs font-bold text-white">How Tasko uses context</p>
             <p className="mt-2 text-[11px] leading-5 text-muted">Answers are grounded in the selected data. Missing evidence is called out instead of being invented.</p>
@@ -1095,5 +1384,136 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
         </aside>
       </div>
     </section>
+    {documentDraft && (
+      <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-4 backdrop-blur-sm">
+        <div role="dialog" aria-modal="true" aria-label="Document editor" className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-border bg-[#111821] shadow-2xl">
+          <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-accent">Document artifact</p>
+              <h2 className="mt-1 text-lg font-bold text-white">{documentDraft.id ? "Edit document" : "Create document"}</h2>
+            </div>
+            <button type="button" onClick={() => setDocumentDraft(null)} aria-label="Close document editor" className="rounded-md p-1.5 text-muted hover:bg-white/10 hover:text-white">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div className="job-scroll grid min-h-0 flex-1 overflow-y-auto lg:grid-cols-[minmax(0,1fr)_240px]">
+            <div className="space-y-3 p-4">
+              <div className="grid gap-3 sm:grid-cols-[170px_minmax(0,1fr)]">
+                <label className="space-y-1">
+                  <span className="text-[10px] font-bold uppercase tracking-wide text-muted">Type</span>
+                  <select
+                    value={documentDraft.type}
+                    disabled={Boolean(documentDraft.id)}
+                    onChange={(event) => setDocumentDraft((draft) => draft ? { ...draft, type: event.target.value as AssistantDocument["type"] } : draft)}
+                    className="h-9 w-full rounded-md border border-border bg-[#151c24] px-2.5 text-xs text-white outline-none focus:border-accent/60 disabled:opacity-60"
+                  >
+                    <option value="cover_letter">Cover letter</option>
+                    <option value="tailored_resume">Tailored resume</option>
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[10px] font-bold uppercase tracking-wide text-muted">Title</span>
+                  <input
+                    value={documentDraft.title}
+                    onChange={(event) => setDocumentDraft((draft) => draft ? { ...draft, title: event.target.value } : draft)}
+                    className="h-9 w-full rounded-md border border-border bg-[#151c24] px-2.5 text-xs text-white outline-none focus:border-accent/60"
+                  />
+                </label>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="space-y-1">
+                  <span className="text-[10px] font-bold uppercase tracking-wide text-muted">Vacancy version</span>
+                  <select
+                    value={documentDraft.jobId}
+                    onChange={(event) => setDocumentDraft((draft) => draft ? { ...draft, jobId: event.target.value } : draft)}
+                    className="h-9 w-full rounded-md border border-border bg-[#151c24] px-2.5 text-xs text-white outline-none focus:border-accent/60"
+                  >
+                    <option value="">General version</option>
+                    {jobs.map((job) => <option key={job.id} value={job.id}>{job.title} · {job.company}</option>)}
+                  </select>
+                </label>
+                <label className="space-y-1">
+                  <span className="text-[10px] font-bold uppercase tracking-wide text-muted">Attach to application</span>
+                  <select
+                    value={documentDraft.applicationId}
+                    onChange={(event) => setDocumentDraft((draft) => draft ? { ...draft, applicationId: event.target.value } : draft)}
+                    className="h-9 w-full rounded-md border border-border bg-[#151c24] px-2.5 text-xs text-white outline-none focus:border-accent/60"
+                  >
+                    <option value="">Do not attach</option>
+                    {applications.map((application) => <option key={application.id} value={application.id}>{application.job.title} · {application.job.company}</option>)}
+                  </select>
+                </label>
+              </div>
+
+              <label className="block space-y-1">
+                <span className="text-[10px] font-bold uppercase tracking-wide text-muted">Content</span>
+                <textarea
+                  value={documentDraft.content}
+                  onChange={(event) => setDocumentDraft((draft) => draft ? { ...draft, content: event.target.value } : draft)}
+                  rows={18}
+                  className="min-h-[360px] w-full resize-y rounded-md border border-border bg-[#0c1219] p-3 font-mono text-xs leading-5 text-[#e5e9f0] outline-none focus:border-accent/60"
+                />
+              </label>
+              {documentError ? <p className="text-xs text-red-300">{documentError}</p> : null}
+            </div>
+
+            <aside className="border-t border-border p-4 lg:border-l lg:border-t-0">
+              <div className="flex items-center gap-2 text-xs font-bold text-white">
+                <History className="h-4 w-4 text-accent" /> Versions
+              </div>
+              {documentDraft.id ? (
+                <div className="mt-3 space-y-2">
+                  {(documents.find((document) => document.id === documentDraft.id)?.versions ?? [])
+                    .slice()
+                    .reverse()
+                    .map((version) => (
+                      <div key={version.id} className="rounded-md border border-border bg-white/[0.025] p-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[10px] font-bold text-white">Version {version.version}</span>
+                          {version.version === documents.find((document) => document.id === documentDraft.id)?.currentVersion ? (
+                            <span className="text-[8px] font-bold uppercase text-success">Current</span>
+                          ) : (
+                            <button type="button" disabled={isDocumentSaving} onClick={() => restoreDocumentVersion(documentDraft.id, version.version)} className="text-[9px] font-bold text-accent hover:text-white">Restore</button>
+                          )}
+                        </div>
+                        <p className="mt-1 text-[9px] text-muted">{formatThreadDate(version.createdAt)}</p>
+                        <a href={`${apiBaseUrl}/documents/${encodeURIComponent(documentDraft.id)}/download?version=${version.version}`} className="mt-2 inline-flex items-center gap-1 text-[9px] font-semibold text-muted hover:text-white">
+                          <Download className="h-3 w-3" /> Download
+                        </a>
+                      </div>
+                    ))}
+                </div>
+              ) : (
+                <p className="mt-3 text-[10px] leading-4 text-muted">The first version is created when you save. Every content edit creates the next version.</p>
+              )}
+            </aside>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border px-4 py-3">
+            <div>
+              {documentDraft.id ? (
+                <Button variant="ghost" onClick={() => deleteDocumentArtifact(documentDraft.id)} className="h-8 px-2 text-[10px] text-red-300 hover:bg-red-500/10 hover:text-red-200">
+                  <Trash2 className="h-3.5 w-3.5" /> Delete document
+                </Button>
+              ) : null}
+            </div>
+            <div className="flex items-center gap-2">
+              {documentDraft.id ? (
+                <a href={`${apiBaseUrl}/documents/${encodeURIComponent(documentDraft.id)}/download`} className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-[10px] font-bold text-muted hover:bg-white/10 hover:text-white">
+                  <Download className="h-3.5 w-3.5" /> Download DOCX
+                </a>
+              ) : null}
+              <Button onClick={saveDocumentArtifact} disabled={isDocumentSaving || !documentDraft.title.trim() || !documentDraft.content.trim()} className="h-8 rounded-md bg-accent px-3 text-[10px] font-bold text-white hover:bg-[#ff6b12] disabled:opacity-40">
+                {documentDraft.applicationId ? <Paperclip className="h-3.5 w-3.5" /> : <Pencil className="h-3.5 w-3.5" />}
+                {isDocumentSaving ? "Saving…" : documentDraft.applicationId ? "Save & attach" : "Save version"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

@@ -36,3 +36,9 @@ pass `archived=true` for the archive. Conversation context, title, timestamps,
 messages, and the isolated OpenClaw session key are persisted across browsers.
 The frontend imports the legacy `localStorage` history once, without
 overwriting conversations that already exist on the server.
+
+Assistant responses can be saved as editable cover letters or tailored
+resumes. Documents, vacancy-specific variants, immutable content versions, and
+application attachments are stored in PostgreSQL through `/documents`.
+`GET /documents/{id}/download` produces a styled `.docx` for the current or a
+selected historical version.

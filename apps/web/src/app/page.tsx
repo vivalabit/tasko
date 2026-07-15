@@ -52,7 +52,11 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { AssistantView, type AssistantLaunch } from "@/components/assistant-view";
+import {
+  AssistantView,
+  type AssistantDocumentAttachment,
+  type AssistantLaunch,
+} from "@/components/assistant-view";
 import { cn } from "@/lib/utils";
 
 type AiMatchMetadata = {
@@ -133,6 +137,7 @@ type ApplicationEventOutcome = "positive" | "negative" | "neutral";
 
 type ApplicationDocument = {
   id: string;
+  artifactId?: string;
   title: string;
   fileName: string;
   fileSize: string;
@@ -2226,6 +2231,7 @@ function normalizeApplicationDocuments(value: unknown) {
     return [
       {
         id: candidate.id,
+        artifactId: candidate.artifactId?.trim() || undefined,
         title: candidate.title?.trim() || fileName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || fileName,
         fileName,
         fileSize: candidate.fileSize?.trim() ?? "",
@@ -3400,6 +3406,36 @@ export default function HomePage() {
             }
           : application,
       ),
+    );
+  }
+
+  function attachGeneratedDocumentToApplication(
+    applicationId: string,
+    document: AssistantDocumentAttachment,
+  ) {
+    setApplications((currentApplications) =>
+      currentApplications.map((application) => {
+        if (application.id !== applicationId) return application;
+        const generatedDocument: ApplicationDocument = {
+          id: `artifact-${document.artifactId}`,
+          artifactId: document.artifactId,
+          title: document.title,
+          fileName: document.fileName,
+          fileSize: "",
+          fileType: document.fileType,
+          uploadedAt: document.uploadedAt,
+          dataUrl: document.dataUrl,
+        };
+        const existingIndex = application.documents.findIndex(
+          (item) => item.artifactId === document.artifactId,
+        );
+        const nextDocuments = existingIndex >= 0
+          ? application.documents.map((item, index) => (
+              index === existingIndex ? generatedDocument : item
+            ))
+          : [...application.documents, generatedDocument];
+        return { ...application, documents: nextDocuments };
+      }),
     );
   }
 
@@ -4955,6 +4991,7 @@ export default function HomePage() {
             applications={applications}
             launch={assistantLaunch}
             onLaunchHandled={() => setAssistantLaunch(null)}
+            onDocumentAttached={attachGeneratedDocumentToApplication}
           />
         ) : activeView === "Profile" ? (
           <ProfileView
@@ -6594,6 +6631,14 @@ function ApplicationsView({
 
   function deleteApplicationDocument(documentId: string) {
     if (!visibleSelectedApplication) return;
+
+    const document = visibleSelectedApplication.documents.find((item) => item.id === documentId);
+    if (document?.artifactId) {
+      void fetch(
+        `${apiBaseUrl}/documents/${encodeURIComponent(document.artifactId)}/attachments/${encodeURIComponent(visibleSelectedApplication.id)}`,
+        { method: "DELETE" },
+      );
+    }
 
     onChangeDocuments(
       visibleSelectedApplication.id,

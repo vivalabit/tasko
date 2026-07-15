@@ -8,6 +8,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.api.applications import router as applications_router
 from app.api.assistant import router as assistant_router
 from app.api.conversations import router as conversations_router
+from app.api.documents import router as documents_router
 from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
 from app.api.parsers import router as parsers_router
@@ -54,6 +55,7 @@ app.include_router(
     prefix="/assistant/conversations",
     tags=["assistant conversations"],
 )
+app.include_router(documents_router, prefix="/documents", tags=["documents"])
 app.include_router(parsers_router, prefix="/parsers", tags=["parsers"])
 app.include_router(profile_router, prefix="/profile", tags=["profile"])
 app.include_router(settings_router, prefix="/settings", tags=["settings"])
