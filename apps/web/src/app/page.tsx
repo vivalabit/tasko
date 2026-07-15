@@ -528,6 +528,16 @@ const parserSearchConfigsLocalUrl = "/parser-search-configs.local.json";
 const legacyMovedFromJobsNote = "Moved from Jobs after applying.";
 const maxStoredAppLogs = 300;
 
+const assistantPrompts = {
+  analyzeJob: "Analyze this vacancy against my profile. Summarize the strongest evidence, gaps, risks, and whether I should apply.",
+  tailorResume: "Create a complete tailored resume draft for this job using only verified evidence from my profile. Use clear section headings and concise achievement bullets.",
+  writeCoverLetter: "Write a concise, evidence-based cover letter for this job using only verified information from my profile.",
+  followUpApplication: "Write a concise recruiter follow-up for this application based on its current status, next step, and notes.",
+  prepareInterview: "Prepare me for an interview for this role with likely questions, answer guidance, verified evidence to use, and questions to ask.",
+  improveProfile: "Review my candidate profile and give me a prioritized, evidence-based improvement plan. Identify missing or weak sections and rewrite my headline and summary without inventing facts.",
+  improveResume: "Review my profile and attached resume. Create an improved general resume draft using only verified evidence, with clear sections and concise achievement bullets. Call out missing metrics instead of inventing them.",
+} as const;
+
 const defaultParserSearchForm: ParserSearchForm = {
   keywords: "",
   location: "",
@@ -4981,6 +4991,7 @@ export default function HomePage() {
           <CalendarView
             applications={applications}
             events={applicationEvents}
+            onOpenAssistant={(prompt, applicationId) => openAssistant(prompt, applicationId ? "application" : "profile", applicationId)}
             onSaveEvent={saveApplicationEvent}
             onDeleteEvent={deleteApplicationEvent}
           />
@@ -4996,6 +5007,7 @@ export default function HomePage() {
         ) : activeView === "Profile" ? (
           <ProfileView
             profile={profile}
+            onOpenAssistant={(prompt) => openAssistant(prompt, "profile")}
             onEditProfile={openProfileEditor}
             onAddExperience={() => openExperienceEditor()}
             onEditExperience={openExperienceEditor}
@@ -5335,6 +5347,32 @@ export default function HomePage() {
               </div>
 
               <div className="h-px bg-border" />
+
+              <div>
+                <p className="mb-2 text-[10px] font-black uppercase tracking-[0.14em] text-muted 2xl:mb-3 2xl:text-xs">Ask Assistant</p>
+                <div className="grid gap-2 sm:grid-cols-3 2xl:gap-3">
+                  {[
+                    { label: "Analyze", prompt: assistantPrompts.analyzeJob, icon: Sparkles },
+                    { label: "Tailor resume", prompt: assistantPrompts.tailorResume, icon: FileText },
+                    { label: "Write cover letter", prompt: assistantPrompts.writeCoverLetter, icon: Mail },
+                  ].map((action) => {
+                    const Icon = action.icon;
+                    return (
+                      <Button
+                        key={action.label}
+                        type="button"
+                        variant="ghost"
+                        className="h-10 justify-start rounded-md border border-accent/35 bg-accent/[0.045] px-3 text-xs font-bold text-[#f2f4f8] hover:border-accent/60 hover:bg-accent/[0.10] 2xl:h-11 2xl:text-sm"
+                        onClick={() => openAssistant(action.prompt, "job", selectedJob.id)}
+                      >
+                        <Icon className="h-4 w-4 text-accent 2xl:h-[18px] 2xl:w-[18px]" />
+                        {action.label}
+                        <ChevronRight className="ml-auto h-4 w-4 text-muted" />
+                      </Button>
+                    );
+                  })}
+                </div>
+              </div>
 
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5 2xl:gap-3">
                 <Button
@@ -5985,11 +6023,13 @@ function createCalendarDemoEvents(month: Date): ApplicationEvent[] {
 function CalendarView({
   applications,
   events,
+  onOpenAssistant,
   onSaveEvent,
   onDeleteEvent,
 }: {
   applications: TrackedApplication[];
   events: ApplicationEvent[];
+  onOpenAssistant: (prompt: string, applicationId: string) => void;
   onSaveEvent: (event: ApplicationEvent) => void;
   onDeleteEvent: (eventId: string) => void;
 }) {
@@ -6016,6 +6056,9 @@ function CalendarView({
   const upcomingEvents = sortApplicationEvents(
     filteredEvents.filter((event) => event.status === "scheduled" && new Date(event.startsAt).getTime() >= today.getTime()),
   ).slice(0, 3);
+  const nextInterview = sortApplicationEvents(
+    displayEvents.filter((event) => event.type === "interview" && event.status === "scheduled" && new Date(event.startsAt).getTime() >= today.getTime()),
+  )[0] ?? null;
 
   function applicationForEvent(event: ApplicationEvent) {
     return applications.find((application) => application.id === event.applicationId);
@@ -6028,6 +6071,25 @@ function CalendarView({
     if (event.type === "follow_up") return event.notes || "Reminder";
     if (event.type === "offer_deadline") return event.notes || "Offer";
     return event.title;
+  }
+
+  function prepareForNextInterview() {
+    if (!nextInterview) return;
+    const application = applicationForEvent(nextInterview);
+    const startsAt = new Date(nextInterview.startsAt).toLocaleString("en-US", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    const prompt = [
+      assistantPrompts.prepareInterview,
+      `Interview: ${nextInterview.title}`,
+      application ? `Role: ${application.job.title} at ${application.job.company}` : "",
+      `When: ${startsAt} (${nextInterview.timezone})`,
+      nextInterview.location ? `Location: ${nextInterview.location}` : "",
+      nextInterview.notes ? `Notes: ${nextInterview.notes}` : "",
+    ].filter(Boolean).join("\n");
+
+    onOpenAssistant(prompt, application?.id ?? "");
   }
 
   function moveMonth(offset: number) {
@@ -6119,13 +6181,27 @@ function CalendarView({
     <section className="relative flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
       <header className="flex shrink-0 items-center justify-between gap-4">
         <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">Calendar</h1>
-        <Button
-          onClick={() => openNewEvent()}
-          className="h-10 rounded-md bg-gradient-to-r from-[#ff6b19] to-[#ff4318] px-4 text-[13px] font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.22)] hover:from-[#ff7b2f] hover:to-[#ff542b] 2xl:h-11 2xl:px-5"
-        >
-          <Plus className="h-4 w-4" />
-          Add event
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={!nextInterview}
+            title={nextInterview ? `Prepare for ${nextInterview.title}` : "No upcoming interview"}
+            onClick={prepareForNextInterview}
+            className="h-10 rounded-md border border-accent/40 bg-accent/[0.055] px-3 text-[12px] font-bold text-white hover:bg-accent/[0.11] disabled:cursor-not-allowed disabled:opacity-45 2xl:h-11 2xl:px-4 2xl:text-[13px]"
+          >
+            <Sparkles className="h-4 w-4 text-accent" />
+            <span className="hidden sm:inline">Prepare next interview</span>
+            <span className="sm:hidden">Prepare</span>
+          </Button>
+          <Button
+            onClick={() => openNewEvent()}
+            className="h-10 rounded-md bg-gradient-to-r from-[#ff6b19] to-[#ff4318] px-4 text-[13px] font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.22)] hover:from-[#ff7b2f] hover:to-[#ff542b] 2xl:h-11 2xl:px-5"
+          >
+            <Plus className="h-4 w-4" />
+            Add event
+          </Button>
+        </div>
       </header>
 
       <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2.5 2xl:mt-4">
@@ -7148,8 +7224,8 @@ function ApplicationsView({
               <h2 className="text-sm font-bold text-white 2xl:text-lg">AI Actions</h2>
               <div className="mt-3 grid gap-2 2xl:mt-4">
                 {[
-                  { label: "Prepare interview", prompt: "Prepare me for an interview for this role with likely questions and answer guidance." },
-                  { label: "Write follow-up", prompt: "Write a concise recruiter follow-up for this application." },
+                  { label: "Follow-up", prompt: assistantPrompts.followUpApplication },
+                  { label: "Prepare interview", prompt: assistantPrompts.prepareInterview },
                   { label: "Tailor resume", prompt: "Tailor my resume for this job and suggest the five highest-impact changes." },
                   { label: "Summarize fit", prompt: "Summarize my fit for this role, including the strongest evidence, gaps, and next step." },
                 ].map((action) => (
@@ -8308,6 +8384,7 @@ function getProfileLinks(profile: CandidateProfile) {
 
 function ProfileView({
   profile,
+  onOpenAssistant,
   onEditProfile,
   onAddExperience,
   onEditExperience,
@@ -8334,6 +8411,7 @@ function ProfileView({
   onSaveResume,
 }: {
   profile: CandidateProfile;
+  onOpenAssistant: (prompt: string) => void;
   onEditProfile: () => void;
   onAddExperience: () => void;
   onEditExperience: (experience: ExperienceEntry) => void;
@@ -8365,6 +8443,26 @@ function ProfileView({
         <div>
           <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">My Profile</h1>
           <p className="mt-1 text-[13px] text-muted 2xl:mt-1.5 2xl:text-base">Your professional profile and job preferences</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => onOpenAssistant(assistantPrompts.improveProfile)}
+            className="h-10 rounded-md border border-accent/40 bg-accent/[0.055] px-3 text-xs font-bold text-white hover:bg-accent/[0.11] 2xl:h-11 2xl:px-4 2xl:text-sm"
+          >
+            <Sparkles className="h-4 w-4 text-accent" />
+            Improve profile
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => onOpenAssistant(assistantPrompts.improveResume)}
+            className="h-10 rounded-md border border-border bg-white/[0.025] px-3 text-xs font-bold text-white hover:bg-white/[0.07] 2xl:h-11 2xl:px-4 2xl:text-sm"
+          >
+            <FileText className="h-4 w-4 text-accent" />
+            Improve resume
+          </Button>
         </div>
       </header>
 
