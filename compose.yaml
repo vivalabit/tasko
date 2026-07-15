@@ -12,11 +12,15 @@ services:
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
       OPENCLAW_COMMAND: openclaw
+      OPENCLAW_ASSISTANT_AGENT_ID: tasko-assistant
+      OPENCLAW_ASSISTANT_THINKING: "off"
     ports:
       - "${API_PORT:-8000}:8000"
     volumes:
       - .:/workspace
       - ${HOME}/.openclaw:/root/.openclaw
+      - ${HOME}/.openclaw/workspace-tasko-assistant:${HOME}/.openclaw/workspace-tasko-assistant
+      - ${HOME}/.openclaw/agents/tasko-assistant:${HOME}/.openclaw/agents/tasko-assistant
     depends_on:
       postgres:
         condition: service_healthy

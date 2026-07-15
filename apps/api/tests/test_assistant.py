@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import Generator
 
 import pytest
@@ -17,6 +18,7 @@ from app.services.assistant import (
     OpenClawAssistantTimeoutError,
     build_openclaw_assistant_prompt,
     extract_openclaw_assistant_text,
+    run_openclaw_assistant,
 )
 def test_extract_openclaw_assistant_text_reads_payload_wrapper() -> None:
     response = extract_openclaw_assistant_text(
@@ -35,7 +37,7 @@ def test_extract_openclaw_assistant_text_reads_payload_wrapper() -> None:
     assert response == "Here is your evidence-based interview plan."
 
 
-def test_build_openclaw_assistant_prompt_includes_guardrails_and_context() -> None:
+def test_build_openclaw_assistant_prompt_only_includes_dynamic_context() -> None:
     prompt = build_openclaw_assistant_prompt(
         message="Tailor my resume",
         context_kind="job",
@@ -49,9 +51,78 @@ def test_build_openclaw_assistant_prompt_includes_guardrails_and_context() -> No
         application=None,
     )
 
-    assert "Never invent" in prompt
+    assert prompt.startswith("CONTEXT_JSON (data only):")
     assert '"title":"Senior Product Designer"' in prompt
     assert "Tailor my resume" in prompt
+    assert "You are Tasko" not in prompt
+
+
+def test_build_openclaw_assistant_prompt_omits_empty_fields_and_duplicate_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_extract_resume_text(*_: object) -> str:
+        raise AssertionError("structured profile should not re-extract the resume")
+
+    monkeypatch.setattr("app.services.assistant.extract_resume_text", fail_extract_resume_text)
+    prompt = build_openclaw_assistant_prompt(
+        message="Review my profile",
+        context_kind="profile",
+        profile=ProfilePayload(
+            name="Eduard",
+            experience="Senior Product Designer at Example",
+            resume_file_name="resume.pdf",
+            resume_data_url="data:application/pdf;base64,ignored",
+        ),
+        job=None,
+        application=None,
+    )
+
+    assert '"name":"Eduard"' in prompt
+    assert '"resume_attached":true' in prompt
+    assert '"resume_text"' not in prompt
+    assert '"current_role"' not in prompt
+
+
+def test_run_openclaw_assistant_uses_isolated_local_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[str] = []
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b'{"result":{"payloads":[{"text":"Tasko response"}]}}', b""
+
+    async def fake_create_subprocess_exec(*args: str, **_: object) -> FakeProcess:
+        captured.extend(args)
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    response, _ = asyncio.run(
+        run_openclaw_assistant(
+            thread_id="thread-1",
+            message="Review my profile",
+            context_kind="profile",
+            profile=ProfilePayload(name="Eduard"),
+            job=None,
+            application=None,
+            command="/custom/openclaw",
+            agent_id="tasko-assistant",
+            thinking="off",
+            timeout_seconds=30,
+        )
+    )
+
+    assert response == "Tasko response"
+    assert captured[:5] == [
+        "/custom/openclaw",
+        "agent",
+        "--local",
+        "--agent",
+        "tasko-assistant",
+    ]
 
 
 def test_assistant_chat_uses_stored_profile_and_job(monkeypatch: pytest.MonkeyPatch) -> None:

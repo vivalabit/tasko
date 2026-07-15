@@ -8,6 +8,7 @@
     "build:web": "pnpm --filter @tasko/web build",
     "lint:web": "pnpm --filter @tasko/web lint",
     "typecheck:web": "pnpm --filter @tasko/web typecheck",
+    "openclaw:setup": "python3 scripts/setup_openclaw_tasko_assistant.py",
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f"

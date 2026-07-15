@@ -12,4 +12,16 @@ Personal AI assistant for job search workflows: profile setup, vacancy search, m
 - Automation: Playwright Python
 - Storage: S3-compatible storage later
 
+## Tasko OpenClaw agent
 
+The AI Assistant uses its own isolated `tasko-assistant` agent instead of the
+personal `main` agent. Set it up once before starting the API:
+
+```bash
+pnpm openclaw:setup
+```
+
+The setup is idempotent. It creates a separate workspace and agent state,
+selects `openai/gpt-5.4-mini`, disables reasoning, caps answers at 1,200
+tokens, and disables all skills and tools. Tasko conversations and memory are
+therefore kept separate from the personal assistant.
