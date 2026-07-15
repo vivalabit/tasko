@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import Generator
 
 import pytest
@@ -20,6 +21,8 @@ from app.services.assistant import (
     extract_openclaw_assistant_text,
     run_openclaw_assistant,
 )
+
+
 def test_extract_openclaw_assistant_text_reads_payload_wrapper() -> None:
     response = extract_openclaw_assistant_text(
         """
@@ -125,6 +128,59 @@ def test_run_openclaw_assistant_uses_isolated_local_agent(
     ]
 
 
+def test_run_openclaw_assistant_kills_process_when_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeProcess:
+        returncode = 0
+        killed = False
+        waited = False
+        started = asyncio.Event()
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            self.started.set()
+            await asyncio.Future()
+            return b"", b""
+
+        def kill(self) -> None:
+            self.killed = True
+
+        async def wait(self) -> None:
+            self.waited = True
+
+    process = FakeProcess()
+
+    async def fake_create_subprocess_exec(*_: str, **__: object) -> FakeProcess:
+        return process
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    async def cancel_generation() -> None:
+        task = asyncio.create_task(
+            run_openclaw_assistant(
+                thread_id="thread-cancel",
+                message="Draft a cover letter",
+                context_kind="profile",
+                profile=ProfilePayload(name="Eduard"),
+                job=None,
+                application=None,
+                command="/custom/openclaw",
+                agent_id="tasko-assistant",
+                thinking="off",
+                timeout_seconds=30,
+            )
+        )
+        await process.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(cancel_generation())
+
+    assert process.killed is True
+    assert process.waited is True
+
+
 def test_assistant_chat_uses_stored_profile_and_job(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = create_engine(
         "sqlite://",
@@ -215,3 +271,71 @@ def test_assistant_chat_maps_openclaw_timeout(monkeypatch: pytest.MonkeyPatch) -
 
     assert response.status_code == 504
     assert response.json()["detail"] == "OpenClaw assistant timed out"
+
+
+def test_assistant_chat_stream_emits_resumable_sse(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_run_openclaw_assistant(**_: object) -> tuple[str, str]:
+        return "A streamed Tasko response.", "session-stream"
+
+    monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
+    assistant_api.assistant_streams.clear()
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_assistant_enabled=True)
+    client = TestClient(app)
+    request_payload = {
+        "requestId": "request-stream-test",
+        "threadId": "thread-stream",
+        "message": "Review my profile",
+        "contextKind": "profile",
+    }
+
+    try:
+        response = client.post("/assistant/chat/stream", json=request_payload)
+        resumed_response = client.post(
+            "/assistant/chat/stream",
+            json={**request_payload, "offset": 11},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        assistant_api.assistant_streams.clear()
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: connected" in response.text
+    assert "event: delta" in response.text
+    assert "event: done" in response.text
+    assert streamed_text(response.text) == "A streamed Tasko response."
+    assert streamed_text(resumed_response.text) == "Tasko response."
+
+
+def test_assistant_chat_stream_rejects_missing_resume_state() -> None:
+    assistant_api.assistant_streams.clear()
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_assistant_enabled=True)
+    client = TestClient(app)
+
+    try:
+        response = client.post(
+            "/assistant/chat/stream",
+            json={
+                "requestId": "expired-request",
+                "threadId": "thread-stream",
+                "message": "Review my profile",
+                "contextKind": "profile",
+                "offset": 12,
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 410
+    assert response.json()["detail"] == "Assistant stream is no longer available for recovery"
+
+
+def streamed_text(sse_body: str) -> str:
+    chunks: list[str] = []
+    for block in sse_body.split("\n\n"):
+        if "event: delta" not in block:
+            continue
+        data_line = next(line for line in block.splitlines() if line.startswith("data: "))
+        payload = json.loads(data_line.removeprefix("data: "))
+        chunks.append(payload["text"])
+    return "".join(chunks)

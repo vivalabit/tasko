@@ -45,6 +45,11 @@ class AssistantChatRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class AssistantStreamRequest(AssistantChatRequest):
+    request_id: str = Field(min_length=1, max_length=160, alias="requestId")
+    offset: int = Field(default=0, ge=0, le=1_000_000)
+
+
 class AssistantChatResponse(BaseModel):
     message: str
     source: Literal["openclaw"] = "openclaw"

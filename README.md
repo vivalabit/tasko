@@ -25,3 +25,7 @@ The setup is idempotent. It creates a separate workspace and agent state,
 selects `openai/gpt-5.4-mini`, disables reasoning, caps answers at 1,200
 tokens, and disables all skills and tools. Tasko conversations and memory are
 therefore kept separate from the personal assistant.
+
+Assistant responses use resumable SSE through `POST /assistant/chat/stream`.
+Clients reconnect with the same `requestId` and last received `offset`; active
+generation can be cancelled with `DELETE /assistant/chat/stream/{requestId}`.

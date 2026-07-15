@@ -77,6 +77,10 @@ async def run_openclaw_assistant(
             process.communicate(),
             timeout=timeout_seconds + 5,
         )
+    except asyncio.CancelledError:
+        process.kill()
+        await process.wait()
+        raise
     except TimeoutError as exc:
         process.kill()
         await process.wait()

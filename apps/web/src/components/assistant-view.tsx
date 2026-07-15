@@ -14,6 +14,7 @@ import {
   Search,
   Send,
   Sparkles,
+  Square,
   Target,
   Trash2,
   UserRound,
@@ -64,6 +65,12 @@ type AssistantApplication = {
 };
 
 type AssistantContextKind = AssistantLaunch["contextKind"];
+type AssistantConnectionStatus = "idle" | "connecting" | "connected" | "reconnecting" | "disconnected";
+
+type AssistantSseEvent = {
+  event: string;
+  data: Record<string, unknown>;
+};
 
 type AssistantMessage = {
   id: string;
@@ -122,6 +129,56 @@ const quickActions = [
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function parseSseEvent(block: string): AssistantSseEvent | null {
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const line of block.split("\n")) {
+    if (line.startsWith(":")) continue;
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+  }
+  if (!dataLines.length) return null;
+
+  try {
+    const data = JSON.parse(dataLines.join("\n")) as unknown;
+    return data && typeof data === "object" ? { event, data: data as Record<string, unknown> } : null;
+  } catch {
+    return null;
+  }
+}
+
+async function consumeAssistantSse(
+  response: Response,
+  onEvent: (event: AssistantSseEvent) => void,
+): Promise<"done" | "stopped" | "error" | null> {
+  if (!response.body) throw new Error("Assistant stream has no response body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const parsed = parseSseEvent(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+      if (parsed) {
+        onEvent(parsed);
+        if (["done", "stopped", "error"].includes(parsed.event)) {
+          return parsed.event as "done" | "stopped" | "error";
+        }
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+    if (done) return null;
+  }
+}
+
+function wait(milliseconds: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 }
 
 function normalizeThreads(value: unknown): AssistantThread[] {
@@ -330,10 +387,15 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
   const [contextKind, setContextKind] = useState<AssistantContextKind>("profile");
   const [contextId, setContextId] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<AssistantConnectionStatus>("idle");
+  const [streamingMessageId, setStreamingMessageId] = useState("");
   const [copiedMessageId, setCopiedMessageId] = useState("");
   const [isLoaded, setIsLoaded] = useState(false);
   const launchedIdRef = useRef("");
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const streamAbortControllerRef = useRef<AbortController | null>(null);
+  const activeRequestIdRef = useRef("");
+  const stopRequestedRef = useRef(false);
 
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
   const selectedApplication = contextKind === "application"
@@ -341,6 +403,15 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
     : null;
   const selectedJob = getContextJob(contextKind, contextId, jobs, applications);
   const contextLabel = getContextLabel(contextKind, contextId, jobs, applications);
+  const connectionLabel = connectionStatus === "connecting"
+    ? "Connecting…"
+    : connectionStatus === "connected"
+      ? "Connected"
+      : connectionStatus === "reconnecting"
+        ? "Reconnecting…"
+        : connectionStatus === "disconnected"
+          ? "Connection lost"
+          : "Ready";
 
   const filteredThreads = useMemo(() => {
     const query = historyQuery.trim().toLowerCase();
@@ -385,7 +456,7 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [activeThread?.messages.length, isGenerating]);
+  }, [activeThread?.messages.length, activeThread?.messages.at(-1)?.content, isGenerating]);
 
   function updateThreadContext(nextKind: AssistantContextKind, nextId: string) {
     setContextKind(nextKind);
@@ -423,10 +494,17 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
       content: prompt,
       createdAt: now,
     };
+    const assistantMessageId = createId("assistant-response");
+    const pendingAssistantMessage: AssistantMessage = {
+      id: assistantMessageId,
+      role: "assistant",
+      content: "",
+      createdAt: now,
+    };
     if (activeThread) {
       setThreads((currentThreads) => currentThreads.map((thread) =>
         thread.id === threadId
-          ? { ...thread, messages: [...thread.messages, userMessage], updatedAt: now }
+          ? { ...thread, messages: [...thread.messages, userMessage, pendingAssistantMessage], updatedAt: now }
           : thread,
       ));
     } else {
@@ -436,75 +514,150 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
         contextKind,
         contextId,
         updatedAt: now,
-        messages: [userMessage],
+        messages: [userMessage, pendingAssistantMessage],
       }, ...currentThreads]);
       setActiveThreadId(threadId);
     }
 
     setDraft("");
     setIsGenerating(true);
+    setStreamingMessageId(assistantMessageId);
+    setConnectionStatus("connecting");
+    stopRequestedRef.current = false;
+    const requestId = createId("assistant-stream");
+    activeRequestIdRef.current = requestId;
+    const abortController = new AbortController();
+    streamAbortControllerRef.current = abortController;
+    let streamedContent = "";
+    let offset = 0;
+    let completed = false;
+    let terminalError = "";
+    const requestPayload = {
+      requestId,
+      threadId,
+      message: prompt,
+      contextKind,
+      contextId,
+      job: serializeAssistantJob(selectedJob),
+      application: selectedApplication ? {
+        id: selectedApplication.id,
+        status: selectedApplication.status,
+        notes: selectedApplication.notes,
+        nextStep: selectedApplication.nextStep,
+        job: serializeAssistantJob(selectedApplication.job),
+      } : null,
+    };
+
+    const updateAssistantMessage = (content: string, source?: AssistantMessage["source"]) => {
+      const updatedAt = new Date().toISOString();
+      setThreads((currentThreads) => currentThreads.map((thread) =>
+        thread.id === threadId
+          ? {
+              ...thread,
+              updatedAt,
+              messages: thread.messages.map((message) =>
+                message.id === assistantMessageId ? { ...message, content, source, createdAt: updatedAt } : message,
+              ),
+            }
+          : thread,
+      ));
+    };
 
     try {
-      const apiResponse = await fetch(`${apiBaseUrl}/assistant/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          threadId,
-          message: prompt,
-          contextKind,
-          contextId,
-          job: serializeAssistantJob(selectedJob),
-          application: selectedApplication ? {
-            id: selectedApplication.id,
-            status: selectedApplication.status,
-            notes: selectedApplication.notes,
-            nextStep: selectedApplication.nextStep,
-            job: serializeAssistantJob(selectedApplication.job),
-          } : null,
-        }),
-      });
-      if (!apiResponse.ok) {
-        throw new Error(`Assistant request failed with status ${apiResponse.status}`);
-      }
+      for (let attempt = 0; attempt < 4 && !completed; attempt += 1) {
+        if (attempt > 0) {
+          setConnectionStatus("reconnecting");
+          await wait(Math.min(400 * (2 ** (attempt - 1)), 1600));
+        }
 
-      const payload = (await apiResponse.json()) as { message?: unknown; source?: unknown };
-      if (typeof payload.message !== "string" || !payload.message.trim()) {
-        throw new Error("Assistant response was empty");
-      }
+        try {
+          const apiResponse = await fetch(`${apiBaseUrl}/assistant/chat/stream`, {
+            method: "POST",
+            headers: {
+              Accept: "text/event-stream",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ ...requestPayload, offset }),
+            signal: abortController.signal,
+          });
+          if (!apiResponse.ok) {
+            throw new Error(`Assistant stream failed with status ${apiResponse.status}`);
+          }
 
-      const assistantMessage: AssistantMessage = {
-        id: createId("assistant-response"),
-        role: "assistant",
-        content: payload.message.trim(),
-        createdAt: new Date().toISOString(),
-        source: "openclaw",
-      };
-      setThreads((currentThreads) => currentThreads.map((thread) =>
-        thread.id === threadId
-          ? { ...thread, messages: [...thread.messages, assistantMessage], updatedAt: assistantMessage.createdAt }
-          : thread,
-      ));
+          const terminalEvent = await consumeAssistantSse(apiResponse, ({ event, data }) => {
+            if (event === "connected") {
+              setConnectionStatus("connected");
+              return;
+            }
+            if (event === "delta" && typeof data.text === "string" && typeof data.offset === "number") {
+              streamedContent += data.text;
+              offset = data.offset;
+              updateAssistantMessage(streamedContent, "openclaw");
+              return;
+            }
+            if (event === "error") {
+              terminalError = typeof data.message === "string" ? data.message : "Assistant generation failed";
+            }
+          });
+
+          if (terminalEvent === "done") {
+            completed = true;
+            updateAssistantMessage(streamedContent.trim(), "openclaw");
+          } else if (terminalEvent === "stopped") {
+            completed = true;
+          } else if (terminalEvent === "error") {
+            throw new Error(terminalError || "Assistant generation failed");
+          } else {
+            throw new Error("Assistant stream disconnected");
+          }
+        } catch (error) {
+          if (stopRequestedRef.current || abortController.signal.aborted) throw error;
+          if (attempt === 3 || terminalError) throw error;
+        }
+      }
     } catch {
-      const fallbackResponse = getAssistantResponse({
-        prompt,
-        profile,
-        job: selectedJob,
-        application: selectedApplication,
-      });
-      const assistantMessage: AssistantMessage = {
-        id: createId("assistant-response"),
-        role: "assistant",
-        content: fallbackResponse,
-        createdAt: new Date().toISOString(),
-        source: "local",
-      };
-      setThreads((currentThreads) => currentThreads.map((thread) =>
-        thread.id === threadId
-          ? { ...thread, messages: [...thread.messages, assistantMessage], updatedAt: assistantMessage.createdAt }
-          : thread,
-      ));
+      if (stopRequestedRef.current) {
+        if (!streamedContent) {
+          setThreads((currentThreads) => currentThreads.map((thread) =>
+            thread.id === threadId
+              ? { ...thread, messages: thread.messages.filter((message) => message.id !== assistantMessageId) }
+              : thread,
+          ));
+        }
+        setConnectionStatus("idle");
+      } else if (!streamedContent) {
+        const fallbackResponse = getAssistantResponse({
+          prompt,
+          profile,
+          job: selectedJob,
+          application: selectedApplication,
+        });
+        updateAssistantMessage(fallbackResponse, "local");
+        setConnectionStatus("disconnected");
+      } else {
+        setConnectionStatus("disconnected");
+      }
     } finally {
       setIsGenerating(false);
+      setStreamingMessageId("");
+      streamAbortControllerRef.current = null;
+      activeRequestIdRef.current = "";
+      if (completed) setConnectionStatus("idle");
+    }
+  }
+
+  async function stopGenerating() {
+    const requestId = activeRequestIdRef.current;
+    if (!requestId || !isGenerating) return;
+    stopRequestedRef.current = true;
+    streamAbortControllerRef.current?.abort();
+    setConnectionStatus("idle");
+    try {
+      await fetch(`${apiBaseUrl}/assistant/chat/stream/${encodeURIComponent(requestId)}`, {
+        method: "DELETE",
+      });
+    } catch {
+      // The local abort already stopped rendering; the server expires orphaned streams.
     }
   }
 
@@ -542,7 +695,7 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
             </div>
           </div>
         </div>
-        <Button onClick={startNewChat} className="h-9 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#dd3d00] px-3 text-xs 2xl:h-10 2xl:text-sm">
+        <Button onClick={startNewChat} disabled={isGenerating} className="h-9 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#dd3d00] px-3 text-xs 2xl:h-10 2xl:text-sm">
           <MessageSquarePlus className="h-4 w-4" /> New chat
         </Button>
       </header>
@@ -610,8 +763,20 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
                 <ChevronDown className="pointer-events-none absolute right-2 top-2 h-4 w-4 text-muted" />
               </div>
             )}
-            <span className="ml-auto hidden items-center gap-1.5 text-[10px] font-semibold text-success sm:inline-flex">
-              <span className="h-1.5 w-1.5 rounded-full bg-success" /> Context ready
+            <span className={cn(
+              "ml-auto hidden items-center gap-1.5 text-[10px] font-semibold sm:inline-flex",
+              connectionStatus === "connected" && "text-success",
+              ["connecting", "reconnecting"].includes(connectionStatus) && "text-amber-400",
+              connectionStatus === "disconnected" && "text-red-400",
+              connectionStatus === "idle" && "text-muted",
+            )}>
+              <span className={cn(
+                "h-1.5 w-1.5 rounded-full",
+                connectionStatus === "connected" && "bg-success",
+                ["connecting", "reconnecting"].includes(connectionStatus) && "animate-pulse bg-amber-400",
+                connectionStatus === "disconnected" && "bg-red-400",
+                connectionStatus === "idle" && "bg-muted",
+              )} /> {connectionLabel}
             </span>
           </div>
 
@@ -656,8 +821,18 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
                           )}
                         </p>
                       )}
-                      <p className={cn("whitespace-pre-wrap text-[13px] leading-5 2xl:text-sm 2xl:leading-6", message.role === "assistant" ? "text-[#e4e9f1]" : "text-white")}>{message.content}</p>
-                      {message.role === "assistant" && (
+                      <p className={cn("whitespace-pre-wrap text-[13px] leading-5 2xl:text-sm 2xl:leading-6", message.role === "assistant" ? "text-[#e4e9f1]" : "text-white")}>
+                        {message.content}
+                        {message.id === streamingMessageId && message.content && <span className="ml-0.5 inline-block h-4 w-0.5 animate-pulse bg-accent align-middle" />}
+                        {message.id === streamingMessageId && !message.content && (
+                          <span className="flex gap-1 py-1">
+                            <i className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted" />
+                            <i className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted [animation-delay:120ms]" />
+                            <i className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted [animation-delay:240ms]" />
+                          </span>
+                        )}
+                      </p>
+                      {message.role === "assistant" && message.id !== streamingMessageId && message.content && (
                         <div className="mt-2.5 flex items-center gap-1.5 border-t border-border pt-2">
                           <Button variant="ghost" size="sm" onClick={() => copyMessage(message)} className="h-7 px-2 text-[10px] text-muted hover:text-white">
                             {copiedMessageId === message.id ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />} {copiedMessageId === message.id ? "Copied" : "Copy"}
@@ -671,12 +846,6 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
                     {message.role === "user" && <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-white/[0.08] text-[#dfe4ec]"><UserRound className="h-4 w-4" /></span>}
                   </article>
                 ))}
-                {isGenerating && (
-                  <div className="flex items-center gap-3 text-xs text-muted">
-                    <span className="grid h-8 w-8 place-items-center rounded-full bg-accent/15 text-accent"><Bot className="h-4 w-4" /></span>
-                    <span className="flex gap-1"><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted" /><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted [animation-delay:120ms]" /><i className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted [animation-delay:240ms]" /></span>
-                  </div>
-                )}
                 <div ref={messagesEndRef} />
               </div>
             )}
@@ -699,9 +868,15 @@ export function AssistantView({ profile, jobs, applications, launch, onLaunchHan
               />
               <div className="flex items-center justify-between gap-2 px-1">
                 <p className="truncate text-[10px] text-muted">Using: {contextLabel}</p>
-                <Button onClick={() => submitMessage()} disabled={!draft.trim() || isGenerating} aria-label="Send message" className="h-8 w-8 rounded-md bg-accent p-0 text-white hover:bg-[#ff6b12] disabled:opacity-40">
-                  <Send className="h-4 w-4" />
-                </Button>
+                {isGenerating ? (
+                  <Button onClick={stopGenerating} aria-label="Stop generating" className="h-8 rounded-md border border-red-400/30 bg-red-500/10 px-2.5 text-[10px] font-bold text-red-300 hover:bg-red-500/20">
+                    <Square className="h-3 w-3 fill-current" /> Stop generating
+                  </Button>
+                ) : (
+                  <Button onClick={() => submitMessage()} disabled={!draft.trim()} aria-label="Send message" className="h-8 w-8 rounded-md bg-accent p-0 text-white hover:bg-[#ff6b12] disabled:opacity-40">
+                    <Send className="h-4 w-4" />
+                  </Button>
+                )}
               </div>
             </div>
             <p className="mt-1.5 text-center text-[9px] text-muted">Tasko may make mistakes. Verify generated claims before using them.</p>
