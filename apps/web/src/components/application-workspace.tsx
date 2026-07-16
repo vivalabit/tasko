@@ -79,6 +79,7 @@ type ProfileSourceDocument = {
   id: string;
   title: string;
   category: string;
+  language: string;
   file_name: string;
   file_size: string;
   file_type: string;
@@ -137,6 +138,7 @@ type ApplicationWorkspaceProps = {
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const docxContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const preApplicationReviewPrompt = `Create a complete pre-application review for this vacancy using only verified profile and vacancy evidence. Return concise plain text with these exact sections:
+VACANCY LANGUAGE: English or German
 BEST POSITIONING
 CV IMPROVEMENTS
 COVER LETTER STRATEGY
@@ -145,7 +147,7 @@ KEYWORDS AND EVIDENCE TO EMPHASIZE
 LIKELY APPLICATION QUESTIONS
 FINAL BEFORE-SUBMITTING CHECKLIST
 
-Under CV IMPROVEMENTS, state exactly what should change in the existing summary, skills and achievement bullets without changing the document layout. Under each section give specific, actionable bullets. Include recommended answer points for likely questions, flag anything that must not be claimed, and finish with the most important action to take before applying. Do not invent facts.`;
+Start with exactly one line containing either VACANCY LANGUAGE: English or VACANCY LANGUAGE: German, based on the language used by the vacancy, then write the review in that detected language. Under CV IMPROVEMENTS, state exactly what should change in the existing summary, skills and achievement bullets without changing the document layout. Under each section give specific, actionable bullets. Include recommended answer points for likely questions, flag anything that must not be claimed, and finish with the most important action to take before applying. Do not invent facts.`;
 const applicationReviewCache = new Map<string, string>();
 
 function createId(prefix: string) {
@@ -160,6 +162,17 @@ function currentContent(document: GeneratedDocument | undefined) {
 function documentFileName(document: GeneratedDocument) {
   const base = document.title.trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "") || "tasko-document";
   return `${base}-v${document.currentVersion}.docx`;
+}
+
+function inferSourceLanguage(fileName: string, title = "") {
+  const value = `${fileName} ${title}`.toLowerCase();
+  if (/(?:^|[\s_.-])(de|deu|ger)(?:[\s_.-]|$)|deutsch|german/.test(value)) return "German";
+  if (/(?:^|[\s_.-])(en|eng)(?:[\s_.-]|$)|english/.test(value)) return "English";
+  return "";
+}
+
+function detectedReviewLanguage(review: string) {
+  return review.match(/VACANCY LANGUAGE:\s*(English|German)/i)?.[1]?.toLowerCase() === "german" ? "German" : review.match(/VACANCY LANGUAGE:\s*English/i) ? "English" : "";
 }
 
 async function readApiError(response: Response, fallback: string) {
@@ -190,6 +203,7 @@ function parseProfileSourceDocuments(profile: WorkspaceProfile): ProfileSourceDo
       id: "profile-main-resume",
       title: "Main profile CV",
       category: "CV / Resume",
+      language: inferSourceLanguage(profile.resume_file_name, "Main profile CV"),
       file_name: profile.resume_file_name,
       file_size: profile.resume_file_size,
       file_type: "application/octet-stream",
@@ -209,6 +223,7 @@ function parseProfileSourceDocuments(profile: WorkspaceProfile): ProfileSourceDo
         id: candidate.id,
         title: candidate.title?.trim() || candidate.file_name,
         category: candidate.category?.trim() || "Other",
+        language: candidate.language?.trim() || inferSourceLanguage(candidate.file_name, candidate.title ?? ""),
         file_name: candidate.file_name,
         file_size: candidate.file_size?.trim() || "",
         file_type: candidate.file_type?.trim() || "application/octet-stream",
@@ -244,6 +259,9 @@ export function ApplicationWorkspace({
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [selectedResumeSourceId, setSelectedResumeSourceId] = useState("");
   const [selectedCoverSourceId, setSelectedCoverSourceId] = useState("");
+  const [languageMode, setLanguageMode] = useState<"auto" | "English" | "German">("auto");
+  const [isResumeSourceManual, setIsResumeSourceManual] = useState(false);
+  const [isCoverSourceManual, setIsCoverSourceManual] = useState(false);
   const [temporarySources, setTemporarySources] = useState<ProfileSourceDocument[]>([]);
   const [generationType, setGenerationType] = useState<GeneratedDocument["type"] | "">("");
   const [isGeneratingPack, setIsGeneratingPack] = useState(false);
@@ -298,11 +316,30 @@ export function ApplicationWorkspace({
     () => profileSources.filter((source) => source.category === "Cover Letter" && source.file_name.toLowerCase().endsWith(".docx")),
     [profileSources],
   );
+  const vacancyLanguage = detectedReviewLanguage(applicationReview);
+  const effectiveLanguage = languageMode === "auto" ? vacancyLanguage : languageMode;
 
   useEffect(() => {
-    if (!selectedResumeSourceId && resumeSources[0]) setSelectedResumeSourceId(resumeSources[0].id);
-    if (!selectedCoverSourceId && coverSources[0]) setSelectedCoverSourceId(coverSources[0].id);
-  }, [coverSources, resumeSources, selectedCoverSourceId, selectedResumeSourceId]);
+    setLanguageMode("auto");
+    setIsResumeSourceManual(false);
+    setIsCoverSourceManual(false);
+    setSelectedResumeSourceId("");
+    setSelectedCoverSourceId("");
+    setApplicationReview("");
+    setApplicationReviewError("");
+  }, [application?.id]);
+
+  useEffect(() => {
+    if (!effectiveLanguage) return;
+    if (!isResumeSourceManual) {
+      const matchingResume = resumeSources.find((source) => source.language === effectiveLanguage);
+      setSelectedResumeSourceId(matchingResume?.id ?? "");
+    }
+    if (!isCoverSourceManual) {
+      const matchingCover = coverSources.find((source) => source.language === effectiveLanguage);
+      setSelectedCoverSourceId(matchingCover?.id ?? "");
+    }
+  }, [coverSources, effectiveLanguage, isCoverSourceManual, isResumeSourceManual, resumeSources]);
 
   useEffect(() => {
     if (!application) return;
@@ -399,9 +436,10 @@ export function ApplicationWorkspace({
         throw new Error("Wait for the pre-application improvement plan before generating documents");
       }
       const improvementPlan = applicationReview.slice(0, 7_000);
+      const targetLanguage = effectiveLanguage || selectedSource.language || "English";
       const prompt = isCoverLetter
-        ? `Rewrite the selected DOCX cover letter for this vacancy using only verified evidence from my profile and the source document. Follow the pre-application improvement plan below as mandatory guidance, especially its positioning, risks, and unsupported claims. Preserve truthful facts. Return only the complete letter text without Markdown or commentary, keeping a greeting, focused body paragraphs, and professional closing. Do not invent achievements or metrics.\n\nPRE-APPLICATION IMPROVEMENT PLAN:\n${improvementPlan}`
-        : `Tailor the selected DOCX resume to this vacancy while keeping its layout unchanged. Follow the pre-application improvement plan below as mandatory guidance: apply its recommended emphasis and fixes, and avoid every flagged unsupported claim. Return exactly one plain-text line for every non-empty body text block in the source DOCX, in the identical order and with the identical number of lines. Repeat contact details, section headings, dates, employers, education, and any line that should not change verbatim. Rewrite only existing summary, skill, and achievement lines where truthful evidence supports it. Do not add, remove, merge, split, or reorder lines. Do not use Markdown markers or commentary. Do not invent facts or metrics.\n\nPRE-APPLICATION IMPROVEMENT PLAN:\n${improvementPlan}`;
+        ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy using only verified evidence from my profile and the source document. Follow the pre-application improvement plan below as mandatory guidance, especially its positioning, risks, and unsupported claims. Preserve truthful facts. Return only the complete letter text without Markdown or commentary, keeping a greeting, focused body paragraphs, and professional closing. Do not invent achievements or metrics.\n\nPRE-APPLICATION IMPROVEMENT PLAN:\n${improvementPlan}`
+        : `Tailor the selected DOCX resume in ${targetLanguage} to this vacancy while keeping its layout unchanged. Follow the pre-application improvement plan below as mandatory guidance: apply its recommended emphasis and fixes, and avoid every flagged unsupported claim. Return exactly one plain-text line for every non-empty body text block in the source DOCX, in the identical order and with the identical number of lines. Repeat contact details, section headings, dates, employers, education, and any line that should not change verbatim. Rewrite only existing summary, skill, and achievement lines where truthful evidence supports it. Do not add, remove, merge, split, or reorder lines. Do not use Markdown markers or commentary. Do not invent facts or metrics.\n\nPRE-APPLICATION IMPROVEMENT PLAN:\n${improvementPlan}`;
       const content = await askAssistant(prompt, [selectedSource]);
       if (!content) throw new Error("AI returned an empty document");
 
@@ -490,6 +528,7 @@ export function ApplicationWorkspace({
         id: createId("workspace-source"),
         title: file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "),
         category,
+        language: effectiveLanguage || inferSourceLanguage(file.name) || "English",
         file_name: file.name,
         file_size: `${Math.max(1, Math.round(file.size / 1024))} KB`,
         file_type: file.type || "application/octet-stream",
@@ -499,8 +538,10 @@ export function ApplicationWorkspace({
       setTemporarySources((current) => [source, ...current]);
       if (category === "CV / Resume") {
         setSelectedResumeSourceId(source.id);
+        setIsResumeSourceManual(true);
       } else {
         setSelectedCoverSourceId(source.id);
+        setIsCoverSourceManual(true);
       }
     } catch (error) {
       setDocumentError(error instanceof Error ? error.message : "Source document reading failed");
@@ -577,7 +618,28 @@ export function ApplicationWorkspace({
                     <p className="mt-1 text-xs leading-5 text-muted">AI reviews the vacancy first. The document generator then follows this plan automatically.</p>
                   </div>
                 </div>
-                {applicationReviewError ? <Button type="button" variant="ghost" onClick={retryApplicationReview} className="h-9 shrink-0 rounded-md border border-border bg-white/[0.025] px-3 text-xs text-white hover:bg-white/[0.06]"><RefreshCw className="h-3.5 w-3.5" /> Retry review</Button> : null}
+                <div className="flex shrink-0 flex-wrap items-end gap-2">
+                  <label className="grid gap-1">
+                    <span className="text-[9px] font-black uppercase tracking-[0.1em] text-muted">Application language</span>
+                    <select
+                      value={languageMode}
+                      onChange={(event) => {
+                        setLanguageMode(event.target.value as "auto" | "English" | "German");
+                        setIsResumeSourceManual(false);
+                        setIsCoverSourceManual(false);
+                        setSelectedResumeSourceId("");
+                        setSelectedCoverSourceId("");
+                      }}
+                      className="h-9 rounded-md border border-border bg-[#151c24] px-2.5 text-xs font-bold text-white outline-none focus:border-accent/60"
+                    >
+                      <option value="auto">Auto detect</option>
+                      <option value="English">English</option>
+                      <option value="German">German</option>
+                    </select>
+                  </label>
+                  {languageMode === "auto" && vacancyLanguage ? <span className="mb-0.5 rounded-md border border-[#2f80ed]/35 bg-[#2f80ed]/10 px-2 py-1.5 text-[10px] font-bold text-[#8cc7ff]">Detected: {vacancyLanguage}</span> : null}
+                  {applicationReviewError ? <Button type="button" variant="ghost" onClick={retryApplicationReview} className="h-9 rounded-md border border-border bg-white/[0.025] px-3 text-xs text-white hover:bg-white/[0.06]"><RefreshCw className="h-3.5 w-3.5" /> Retry review</Button> : null}
+                </div>
               </div>
               <div className="p-4 sm:p-5">
                 <div className="job-scroll max-h-[460px] min-h-[180px] overflow-y-auto rounded-md border border-border bg-[#0c1219] p-4">
@@ -600,6 +662,7 @@ export function ApplicationWorkspace({
               </div>
 
               {documentError ? <div className="mt-3 rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-200">{documentError}</div> : null}
+              {effectiveLanguage && !resumeSources.some((source) => source.language === effectiveLanguage) ? <div className="mt-3 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-200">No {effectiveLanguage} CV DOCX is saved in Profile. Add one or choose another language.</div> : null}
 
               <div className="mt-4 grid gap-3 lg:grid-cols-2">
                 <DocumentCard
@@ -616,7 +679,10 @@ export function ApplicationWorkspace({
                       label="Source CV"
                       sources={resumeSources}
                       selectedId={selectedResumeSourceId}
-                      onChange={setSelectedResumeSourceId}
+                      onChange={(sourceId) => {
+                        setSelectedResumeSourceId(sourceId);
+                        setIsResumeSourceManual(Boolean(sourceId));
+                      }}
                       onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")}
                     />
                   )}
@@ -635,7 +701,10 @@ export function ApplicationWorkspace({
                       label="Source cover letter"
                       sources={coverSources}
                       selectedId={selectedCoverSourceId}
-                      onChange={setSelectedCoverSourceId}
+                      onChange={(sourceId) => {
+                        setSelectedCoverSourceId(sourceId);
+                        setIsCoverSourceManual(Boolean(sourceId));
+                      }}
                       onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")}
                     />
                   )}
@@ -791,7 +860,7 @@ function SourcePicker({
       </div>
       <select value={selectedId} onChange={(event) => onChange(event.target.value)} className="mt-2 h-8 w-full rounded-md border border-border bg-[#151c24] px-2 text-[11px] font-semibold text-white outline-none focus:border-accent/60">
         <option value="">Select DOCX source</option>
-        {sources.map((source) => <option key={source.id} value={source.id}>{source.title} · {source.file_name}</option>)}
+        {sources.map((source) => <option key={source.id} value={source.id}>{source.language ? `${source.language} · ` : ""}{source.title} · {source.file_name}</option>)}
       </select>
       <p className="mt-2 text-[9px] leading-4 text-muted">{sources.length ? "The selected DOCX is copied and keeps its layout, styles, images, header and footer." : "No DOCX source in Profile yet. Add one there or attach it for this application."}</p>
     </div>

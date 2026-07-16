@@ -335,6 +335,7 @@ type DocumentEntry = {
   id: string;
   title: string;
   category: string;
+  language: string;
   issuer: string;
   notes: string;
   file_name: string;
@@ -678,6 +679,7 @@ const defaultDocumentDraft: DocumentEntry = {
   id: "",
   title: "",
   category: "Other",
+  language: "",
   issuer: "",
   notes: "",
   file_name: "",
@@ -1251,6 +1253,7 @@ function normalizeDocumentEntry(entry: Partial<DocumentEntry>): DocumentEntry {
     id: entry.id || createClientId("document"),
     title: entry.title?.trim() ?? "",
     category: entry.category?.trim() || "Other",
+    language: entry.language?.trim() || inferDocumentLanguage(entry.file_name ?? "", entry.title ?? ""),
     issuer: entry.issuer?.trim() ?? "",
     notes: entry.notes?.trim() ?? "",
     file_name: entry.file_name?.trim() ?? "",
@@ -1259,6 +1262,13 @@ function normalizeDocumentEntry(entry: Partial<DocumentEntry>): DocumentEntry {
     uploaded_at: entry.uploaded_at?.trim() ?? "",
     data_url: entry.data_url ?? "",
   };
+}
+
+function inferDocumentLanguage(fileName: string, title = "") {
+  const value = `${fileName} ${title}`.toLowerCase();
+  if (/(?:^|[\s_.-])(de|deu|ger)(?:[\s_.-]|$)|deutsch|german/.test(value)) return "German";
+  if (/(?:^|[\s_.-])(en|eng)(?:[\s_.-]|$)|english/.test(value)) return "English";
+  return "";
 }
 
 function parseDocumentEntries(value: string): DocumentEntry[] {
@@ -4074,6 +4084,12 @@ export default function HomePage() {
       return;
     }
 
+    if (["CV / Resume", "Cover Letter"].includes(normalizedDocument.category) && !normalizedDocument.language) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage("Select the document language");
+      return;
+    }
+
     setProfileSaveStatus("loading");
     setProfileSaveMessage("");
 
@@ -4639,6 +4655,7 @@ export default function HomePage() {
         normalizeDocumentEntry({
           ...current,
           title: current.title || titleFromFile,
+          language: current.language || inferDocumentLanguage(file.name, titleFromFile),
           file_name: file.name,
           file_size: formatFileSize(file.size),
           file_type: file.type || "application/octet-stream",
@@ -8960,7 +8977,7 @@ function ResumePanel({ profile, onSaveResume }: { profile: CandidateProfile; onS
   return (
     <section className="panel p-4 2xl:p-5">
       <div className="flex items-center gap-3">
-        <h2 className="text-base font-bold 2xl:text-lg">Resume / CV</h2>
+        <h2 className="text-base font-bold 2xl:text-lg">Primary Resume / CV</h2>
       </div>
       {hasResume ? (
         <div className="mt-4 grid gap-3 rounded-md border border-border bg-white/[0.025] p-3 sm:grid-cols-[48px_minmax(0,1fr)_auto] sm:items-center">
@@ -8982,11 +8999,12 @@ function ResumePanel({ profile, onSaveResume }: { profile: CandidateProfile; onS
             onSaveResume={onSaveResume}
             className="h-9 px-3 text-xs font-semibold"
           />
+          <p className="sm:col-span-3 text-[11px] leading-4 text-muted">Add your second language version under Supporting Documents and label each CV as English or German.</p>
         </div>
       ) : (
         <div className="mt-4 rounded-md border border-dashed border-white/[0.16] bg-white/[0.025] p-3">
           <p className="text-sm font-bold text-white">No resume uploaded</p>
-          <p className="mt-1 text-xs leading-5 text-muted 2xl:text-[13px]">Attach the original DOCX resume. Tasko will use it as the fixed design for every tailored version.</p>
+          <p className="mt-1 text-xs leading-5 text-muted 2xl:text-[13px]">Attach the primary DOCX resume, then add the English or German alternative under Supporting Documents.</p>
           <ResumeUploadButton
             label="Attach resume"
             onSaveResume={onSaveResume}
@@ -9312,7 +9330,7 @@ function DocumentsPanel({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-base font-bold 2xl:text-lg">Supporting Documents</h2>
-          <p className="mt-1 text-xs font-medium text-muted 2xl:text-[13px]">CVs, cover letters and supporting files you can reuse when preparing applications.</p>
+          <p className="mt-1 text-xs font-medium text-muted 2xl:text-[13px]">Store separate English and German CVs, language-specific cover letters and other reusable files.</p>
         </div>
         {documentItems.length > 0 && (
           <button
@@ -9337,6 +9355,7 @@ function DocumentsPanel({
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="min-w-0 text-sm font-bold text-white 2xl:text-base">{item.title || item.file_name}</h3>
                   <span className="rounded bg-white/[0.06] px-2 py-0.5 text-[11px] font-bold text-muted">{item.category}</span>
+                  {["CV / Resume", "Cover Letter"].includes(item.category) && item.language ? <span className="rounded bg-[#2f80ed]/15 px-2 py-0.5 text-[11px] font-bold text-[#8cc7ff]">{item.language}</span> : null}
                 </div>
                 {item.issuer && (
                   <p className="mt-0.5 text-[13px] font-semibold text-[#d8dee8] 2xl:text-sm">{item.issuer}</p>
@@ -9383,7 +9402,7 @@ function DocumentsPanel({
         <EmptyProfileState
           className="mt-4"
           title="No application documents yet"
-          description="Add your source CV and cover letter DOCX files, plus certificates, recommendations or other reusable documents."
+          description="Add English and German CV DOCX files, language-specific cover letters, certificates and other reusable documents."
           action="Add document"
           onAction={onAddDocument}
         />
@@ -10467,6 +10486,22 @@ function DocumentEditorDialog({
                 ))}
               </select>
             </label>
+
+            {isGeneratedDocumentSource ? (
+              <label className="grid gap-2 md:col-span-2">
+                <span className="text-xs font-bold text-[#d8dee8]">Document language</span>
+                <select
+                  value={document.language}
+                  onChange={(event) => onChange("language", event.target.value)}
+                  className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                >
+                  <option value="">Select language</option>
+                  <option value="English">English</option>
+                  <option value="German">German</option>
+                </select>
+                <span className="text-[11px] leading-4 text-muted">Add separate English and German DOCX versions so Tasko can select the right one for each vacancy.</span>
+              </label>
+            ) : null}
 
             <label className="grid gap-2 md:col-span-2">
               <span className="text-xs font-bold text-[#d8dee8]">Issued by / source</span>
