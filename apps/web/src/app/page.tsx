@@ -8285,26 +8285,22 @@ function DashboardView({
     offer: "#58d532",
     rejected: "#d94d4d",
   };
+  let statusArcOffset = 0;
   const statusOverview = applicationStatuses.map((item) => {
     const count = applications.filter((application) => application.status === item.status).length;
+    const arcPercentage = applications.length > 0 ? (count / applications.length) * 100 : 0;
+    const arcOffset = statusArcOffset;
+    statusArcOffset += arcPercentage;
     return {
       ...item,
       count,
-      percentage: applications.length > 0 ? Math.round((count / applications.length) * 100) : 0,
+      percentage: Math.round(arcPercentage),
+      arcPercentage,
+      arcOffset,
       color: statusColors[item.status],
     };
   });
-  let overviewStart = 0;
-  const overviewSegments = statusOverview.flatMap((item) => {
-    if (item.percentage === 0) return [];
-    const end = overviewStart + item.percentage;
-    const segment = `${item.color} ${overviewStart}% ${end}%`;
-    overviewStart = end;
-    return [segment];
-  });
-  const overviewBackground = overviewSegments.length > 0
-    ? `conic-gradient(${overviewSegments.join(", ")})`
-    : "rgba(255,255,255,0.07)";
+  const visibleStatusCount = statusOverview.filter((item) => item.count > 0).length;
   const statCards = [
     {
       label: "Applications",
@@ -8515,15 +8511,51 @@ function DashboardView({
               <span className="rounded-md border border-border px-2 py-1 text-[11px] text-muted 2xl:text-xs">All time</span>
             </div>
             <div className="grid items-center gap-3 sm:grid-cols-[116px_minmax(0,1fr)] 2xl:grid-cols-[132px_minmax(0,1fr)] 2xl:gap-4">
-              <button type="button" onClick={() => onOpenApplications()} className="relative mx-auto h-[116px] w-[116px] rounded-full transition hover:scale-[1.02] 2xl:h-[132px] 2xl:w-[132px]" style={{ background: overviewBackground }}>
-                <span className="absolute inset-[28px] grid place-items-center rounded-full bg-[#131920] 2xl:inset-[32px]">
-                  <span className="text-center text-xl font-bold 2xl:text-2xl">{isLoading ? "—" : applications.length}<br /><span className="text-[11px] font-normal text-muted 2xl:text-xs">Total</span></span>
+              <button
+                type="button"
+                aria-label={`Open ${applications.length} applications`}
+                onClick={() => onOpenApplications()}
+                className="group relative mx-auto h-[116px] w-[116px] rounded-full transition duration-200 hover:scale-[1.025] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 2xl:h-[132px] 2xl:w-[132px]"
+              >
+                <span className="absolute inset-1 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.035),transparent_68%)] opacity-70 transition group-hover:opacity-100" />
+                <svg viewBox="0 0 120 120" className="absolute inset-0 h-full w-full -rotate-90 overflow-visible drop-shadow-[0_4px_10px_rgba(0,0,0,0.24)]" aria-hidden="true">
+                  <circle cx="60" cy="60" r="47" pathLength="100" fill="none" stroke="rgba(255,255,255,0.07)" strokeWidth="10" />
+                  {statusOverview.map((item) => {
+                    if (item.arcPercentage === 0) return null;
+                    const segmentLength = visibleStatusCount > 1
+                      ? Math.max(item.arcPercentage - 1.4, 0)
+                      : item.arcPercentage;
+                    return (
+                      <circle
+                        key={item.status}
+                        cx="60"
+                        cy="60"
+                        r="47"
+                        pathLength="100"
+                        fill="none"
+                        stroke={item.color}
+                        strokeWidth="10"
+                        strokeLinecap="round"
+                        strokeDasharray={`${segmentLength} ${100 - segmentLength}`}
+                        strokeDashoffset={-item.arcOffset}
+                        className="transition-[stroke-width,opacity] duration-200 group-hover:opacity-95 group-hover:[stroke-width:11]"
+                      />
+                    );
+                  })}
+                </svg>
+                <span className="absolute inset-[25px] grid place-items-center rounded-full border border-white/[0.06] bg-[#11171e]/95 shadow-[inset_0_1px_0_rgba(255,255,255,0.035),0_6px_18px_rgba(0,0,0,0.2)] 2xl:inset-[29px]">
+                  <span className="text-center">
+                    <span className="block text-[22px] font-bold leading-none tracking-tight text-white 2xl:text-[26px]">{isLoading ? "—" : applications.length}</span>
+                    <span className="mt-1.5 block text-[10px] font-medium uppercase tracking-[0.14em] text-muted 2xl:text-[11px]">Total</span>
+                  </span>
                 </span>
               </button>
               <div className="space-y-2 2xl:space-y-2.5">
                 {statusOverview.map((item) => (
                   <button key={item.status} type="button" onClick={() => onOpenApplications()} className="flex w-full items-center gap-2.5 rounded px-1 py-0.5 text-left text-[12px] hover:bg-white/[0.04] 2xl:gap-3 2xl:text-sm">
-                    <span className="h-2.5 w-2.5 rounded-full 2xl:h-3 2xl:w-3" style={{ backgroundColor: item.color }} />
+                    <span className="grid h-3 w-3 place-items-center rounded-full bg-white/[0.035] 2xl:h-3.5 2xl:w-3.5">
+                      <span className="h-1.5 w-1.5 rounded-full 2xl:h-2 2xl:w-2" style={{ backgroundColor: item.color, boxShadow: `0 0 8px ${item.color}66` }} />
+                    </span>
                     <span className="flex-1 text-muted">{item.label}</span>
                     <span className="text-[#cbd2dd]">{item.count} <span className="text-muted">({item.percentage}%)</span></span>
                   </button>
