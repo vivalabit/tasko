@@ -39,6 +39,17 @@ class AssistantApplicationContext(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class AssistantSourceDocument(BaseModel):
+    id: str = Field(default="", max_length=160)
+    title: str = Field(default="", max_length=240)
+    category: str = Field(default="", max_length=120)
+    file_name: str = Field(min_length=1, max_length=240, alias="fileName")
+    # A 10 MB binary upload expands to roughly 13.4 MB when encoded as a data URL.
+    data_url: str = Field(min_length=1, max_length=15_000_000, alias="dataUrl")
+
+    model_config = {"populate_by_name": True}
+
+
 class AssistantChatRequest(BaseModel):
     thread_id: str = Field(min_length=1, max_length=160, alias="threadId")
     message: str = Field(min_length=1, max_length=12_000)
@@ -46,6 +57,11 @@ class AssistantChatRequest(BaseModel):
     context_id: str = Field(default="", max_length=160, alias="contextId")
     job: AssistantJobContext | None = None
     application: AssistantApplicationContext | None = None
+    source_documents: list[AssistantSourceDocument] = Field(
+        default_factory=list,
+        max_length=3,
+        alias="sourceDocuments",
+    )
 
     model_config = {"populate_by_name": True}
 

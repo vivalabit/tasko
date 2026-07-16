@@ -18,6 +18,7 @@ from app.models.assistant import (
     AssistantActionPreview,
     AssistantApplicationContext,
     AssistantJobContext,
+    AssistantSourceDocument,
     CreateInterviewEventProposal,
     SaveDocumentProposal,
     UpdateApplicationNextStepProposal,
@@ -148,6 +149,7 @@ async def run_openclaw_assistant(
     timeout_seconds: int,
     model: str = "",
     history: dict[str, Any] | None = None,
+    source_documents: list[AssistantSourceDocument] | None = None,
     session_scope: str = "",
     max_prompt_chars: int = 32_000,
     max_attempts: int = 1,
@@ -162,6 +164,7 @@ async def run_openclaw_assistant(
         job=job,
         application=application,
         history=history,
+        source_documents=source_documents,
         max_prompt_chars=max_prompt_chars,
     )
     started_at = time.perf_counter()
@@ -332,6 +335,7 @@ def build_openclaw_assistant_prompt(
     job: AssistantJobContext | None,
     application: AssistantApplicationContext | None,
     history: dict[str, Any] | None = None,
+    source_documents: list[AssistantSourceDocument] | None = None,
     max_prompt_chars: int = 32_000,
 ) -> str:
     context_payload = {
@@ -350,6 +354,10 @@ def build_openclaw_assistant_prompt(
         )
     if history:
         context_payload["conversation_history"] = history
+    if source_documents:
+        context_payload["selected_source_documents"] = build_source_document_context(
+            source_documents
+        )
 
     user_message = message.strip()
     fixed_prompt = (
@@ -388,6 +396,34 @@ def build_profile_context(profile: ProfilePayload) -> dict[str, Any]:
             pass
 
     return profile_context
+
+
+def build_source_document_context(
+    source_documents: list[AssistantSourceDocument],
+) -> list[dict[str, str]]:
+    context: list[dict[str, str]] = []
+    remaining_chars = 16_000
+    for source in source_documents:
+        if remaining_chars <= 0:
+            break
+        try:
+            extracted_text = extract_resume_text(source.file_name, source.data_url).strip()
+        except Exception:
+            extracted_text = ""
+        if not extracted_text:
+            continue
+        text = extracted_text[: min(10_000, remaining_chars)]
+        remaining_chars -= len(text)
+        context.append(
+            {
+                "id": source.id,
+                "title": source.title,
+                "category": source.category,
+                "file_name": source.file_name,
+                "text": text,
+            }
+        )
+    return context
 
 
 def compact_conversation_history(

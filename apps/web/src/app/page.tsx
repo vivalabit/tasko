@@ -698,6 +698,8 @@ const defaultManualApplicationDraft: ManualApplicationDraft = {
 };
 
 const documentCategories = [
+  "CV / Resume",
+  "Cover Letter",
   "Diploma",
   "Certificate",
   "Recommendation",
@@ -9306,7 +9308,7 @@ function DocumentsPanel({
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-base font-bold 2xl:text-lg">Supporting Documents</h2>
-          <p className="mt-1 text-xs font-medium text-muted 2xl:text-[13px]">Personal files you choose to reuse across applications.</p>
+          <p className="mt-1 text-xs font-medium text-muted 2xl:text-[13px]">CVs, cover letters and supporting files you can reuse when preparing applications.</p>
         </div>
         {documentItems.length > 0 && (
           <button
@@ -9376,8 +9378,8 @@ function DocumentsPanel({
       ) : (
         <EmptyProfileState
           className="mt-4"
-          title="No supporting documents yet"
-          description="Add diplomas, certificates, recommendations, permits, transcripts, portfolio PDFs, or other reusable files."
+          title="No application documents yet"
+          description="Add your source CV and cover letter DOCX files, plus certificates, recommendations or other reusable documents."
           action="Add document"
           onAction={onAddDocument}
         />
@@ -10443,7 +10445,7 @@ function DocumentEditorDialog({
               <input
                 value={document.title}
                 onChange={(event) => onChange("title", event.target.value)}
-                placeholder="Swiss work permit, AWS certificate..."
+                placeholder="Main CV, English cover letter, Swiss work permit..."
                 className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
               />
             </label>
