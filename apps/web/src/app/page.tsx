@@ -66,6 +66,7 @@ import {
   type AssistantDocumentAttachment,
   type AssistantLaunch,
 } from "@/components/assistant-view";
+import { ApplicationWorkspace } from "@/components/application-workspace";
 import { cn } from "@/lib/utils";
 
 type AiMatchMetadata = {
@@ -139,7 +140,7 @@ type AiMatchJobStatus = {
   error?: string | null;
 };
 
-type ApplicationStatus = "applied" | "interview" | "assessment" | "offer" | "rejected";
+type ApplicationStatus = "draft" | "applied" | "interview" | "assessment" | "offer" | "rejected";
 type ApplicationEventType = "screening" | "interview" | "assessment" | "follow_up" | "offer_deadline";
 type ApplicationEventStatus = "scheduled" | "completed" | "canceled";
 type ApplicationEventOutcome = "positive" | "negative" | "neutral";
@@ -478,10 +479,11 @@ const jobs: Job[] = [
 ];
 
 const tabs = ["Overview", "Company", "AI Match", "Reviews", "Similar Jobs"];
-type View = "Dashboard" | "Jobs" | "Applications" | "Calendar" | "Assistant" | "Profile" | "Settings" | "Logs";
+type View = "Dashboard" | "Jobs" | "ApplicationWorkspace" | "Applications" | "Calendar" | "Assistant" | "Profile" | "Settings" | "Logs";
 type ParserSearchStatus = "idle" | "loading" | "ready" | "error";
 
 const applicationStatuses: Array<{ status: ApplicationStatus; label: string }> = [
+  { status: "draft", label: "Preparing" },
   { status: "applied", label: "Applied" },
   { status: "interview", label: "Interview" },
   { status: "assessment", label: "Assessment" },
@@ -490,6 +492,7 @@ const applicationStatuses: Array<{ status: ApplicationStatus; label: string }> =
 ];
 
 const applicationStatusStyles: Record<ApplicationStatus, string> = {
+  draft: "border-[#9f7aea]/40 bg-[#9f7aea]/14 text-[#c4a7ff]",
   applied: "border-accent/35 bg-accent/12 text-accent",
   interview: "border-success/35 bg-success/12 text-success",
   assessment: "border-[#2f80ed]/40 bg-[#2f80ed]/14 text-[#8cc7ff]",
@@ -2302,13 +2305,13 @@ function normalizeStoredApplicationEvents(value: unknown) {
   });
 }
 
-function createApplicationFromJob(job: Job): TrackedApplication {
+function createApplicationFromJob(job: Job, status: ApplicationStatus = "applied"): TrackedApplication {
   const appliedAt = new Date().toISOString();
 
   return {
     id: `application-${job.id}`,
     job,
-    status: "applied",
+    status,
     appliedAt,
     nextStep: "",
     notes: "",
@@ -3198,6 +3201,7 @@ export default function HomePage() {
     const viewHash: Record<View, string> = {
       Dashboard: "#dashboard",
       Jobs: "#jobs",
+      ApplicationWorkspace: "#application-workspace",
       Applications: "#applications",
       Calendar: "#calendar",
       Assistant: "#assistant",
@@ -3278,6 +3282,23 @@ export default function HomePage() {
     }
 
     changeView("Applications");
+  }
+
+  function prepareJobApplication(job: Job) {
+    const existingApplication = applications.find((item) => item.job.id === job.id);
+    if (existingApplication) {
+      setSelectedApplicationId(existingApplication.id);
+    } else {
+      const application = createApplicationFromJob(job, "draft");
+      setApplications((currentApplications) => [application, ...currentApplications]);
+      setSelectedApplicationId(application.id);
+    }
+    changeView("ApplicationWorkspace");
+  }
+
+  function openApplicationWorkspace(applicationId: string) {
+    setSelectedApplicationId(applicationId);
+    changeView("ApplicationWorkspace");
   }
 
   function addManualApplication(draft: ManualApplicationDraft) {
@@ -4988,6 +5009,22 @@ export default function HomePage() {
             onOpenAssistant={(prompt, contextKind, contextId) => openAssistant(prompt, contextKind, contextId)}
             onOpenProfile={() => changeView("Profile")}
           />
+        ) : activeView === "ApplicationWorkspace" ? (
+          <ApplicationWorkspace
+            application={selectedApplication}
+            profile={profile}
+            onBack={() => changeView("Jobs")}
+            onOpenAssistant={(prompt, applicationId) => openAssistant(prompt, "application", applicationId)}
+            onDocumentAttached={attachGeneratedDocumentToApplication}
+            onMarkApplied={(applicationId) => {
+              updateApplicationStatus(applicationId, "applied");
+              appendAppLog({
+                level: "success",
+                area: "Applications",
+                message: "Application marked as applied",
+              });
+            }}
+          />
         ) : activeView === "Applications" ? (
           <ApplicationsView
             applications={applications}
@@ -4999,6 +5036,7 @@ export default function HomePage() {
             onOpenJobs={() => changeView("Jobs")}
             onOpenCalendar={() => changeView("Calendar")}
             onOpenAssistant={(prompt, applicationId) => openAssistant(prompt, "application", applicationId)}
+            onPrepareApplication={openApplicationWorkspace}
             onAddManualApplication={addManualApplication}
             onChangeStatus={updateApplicationStatus}
             onChangeNotes={updateApplicationNotes}
@@ -5357,15 +5395,11 @@ export default function HomePage() {
                   </Button>
                   <Button
                     variant="ghost"
-                    aria-disabled={!getJobApplyUrl(selectedJob)}
                     className="h-10 rounded-md border border-[#ff6a14] bg-accent px-3 text-xs font-bold text-white shadow-[0_8px_20px_rgba(255,90,0,0.18)] hover:border-[#ff7a26] hover:bg-[#ff6a14] xl:text-[13px] 2xl:h-11 2xl:text-sm"
-                    onClick={() => {
-                      const applyUrl = getJobApplyUrl(selectedJob);
-                      if (applyUrl) window.open(applyUrl, "_blank", "noopener,noreferrer");
-                    }}
+                    onClick={() => prepareJobApplication(selectedJob)}
                   >
-                    <ExternalLink className="h-4 w-4 2xl:h-5 2xl:w-5" />
-                    Apply to Job
+                    <FileText className="h-4 w-4 2xl:h-5 2xl:w-5" />
+                    {selectedJobApplication ? "Open application" : "Prepare application"}
                   </Button>
                 </div>
               </div>
@@ -6392,6 +6426,7 @@ function ApplicationsView({
   onOpenJobs,
   onOpenCalendar,
   onOpenAssistant,
+  onPrepareApplication,
   onAddManualApplication,
   onChangeStatus,
   onChangeNotes,
@@ -6409,6 +6444,7 @@ function ApplicationsView({
   onOpenJobs: () => void;
   onOpenCalendar: () => void;
   onOpenAssistant: (prompt: string, applicationId: string) => void;
+  onPrepareApplication: (applicationId: string) => void;
   onAddManualApplication: (draft: ManualApplicationDraft) => void;
   onChangeStatus: (applicationId: string, status: ApplicationStatus) => void;
   onChangeNotes: (applicationId: string, notes: string) => void;
@@ -6433,7 +6469,7 @@ function ApplicationsView({
       ...counts,
       [application.status]: counts[application.status] + 1,
     }),
-    { applied: 0, interview: 0, assessment: 0, offer: 0, rejected: 0 } satisfies Record<ApplicationStatus, number>,
+    { draft: 0, applied: 0, interview: 0, assessment: 0, offer: 0, rejected: 0 } satisfies Record<ApplicationStatus, number>,
   );
   const activeCount = statusCounts.interview + statusCounts.assessment + statusCounts.offer;
   const responseRate = applications.length > 0 ? Math.round((activeCount / applications.length) * 100) : 0;
@@ -6479,7 +6515,11 @@ function ApplicationsView({
   const isEditingEvent = Boolean(eventDraft?.id);
   const timelineItems: ApplicationTimelineItem[] = visibleSelectedApplication
     ? [
-        { label: "Applied", date: formatApplicationDate(visibleSelectedApplication.appliedAt), state: "done" },
+        {
+          label: visibleSelectedApplication.status === "draft" ? "Application created" : "Applied",
+          date: formatApplicationDate(visibleSelectedApplication.appliedAt),
+          state: visibleSelectedApplication.status === "draft" ? "current" : "done",
+        },
         ...visibleApplicationEvents.map((event) => {
           const isNextEvent = nextApplicationEvent?.id === event.id;
           const state: ApplicationTimelineItem["state"] =
@@ -6924,6 +6964,14 @@ function ApplicationsView({
                     </div>
                   </div>
                   <div className="relative flex shrink-0 items-center gap-2">
+                    <Button
+                      type="button"
+                      onClick={() => onPrepareApplication(visibleSelectedApplication.id)}
+                      className="h-8 rounded-md bg-accent px-3 text-[10px] font-bold text-white hover:bg-[#ff6a14] 2xl:h-9 2xl:text-xs"
+                    >
+                      <FileText className="h-3.5 w-3.5" />
+                      Prepare
+                    </Button>
                     <button
                       type="button"
                       aria-label="Open AI info"
@@ -8279,6 +8327,7 @@ function DashboardView({
     : null;
   const offers = applications.filter((application) => application.status === "offer").length;
   const statusColors: Record<ApplicationStatus, string> = {
+    draft: "#9f7aea",
     applied: "#ff5a00",
     interview: "#ff9f1a",
     assessment: "#2f80ed",
@@ -11089,7 +11138,7 @@ function AppSidebar({
             }}
             className={cn(
               "app-sidebar-nav-item group flex h-10 w-full items-center gap-2.5 rounded-md px-3 text-left text-[14px] text-[#d9dee7] transition 2xl:h-11 2xl:gap-3 2xl:px-4 2xl:text-[15px]",
-              item.view === activeView
+              item.view === activeView || (activeView === "ApplicationWorkspace" && item.view === "Applications")
                 ? "border border-white/[0.12] bg-white/10 text-white shadow-[inset_4px_0_0_#ff5a00]"
                 : item.view
                   ? "hover:bg-white/[0.055] hover:text-white"

@@ -1,4 +1,5 @@
 from collections.abc import Generator
+import base64
 from io import BytesIO
 
 from docx import Document
@@ -129,3 +130,91 @@ def test_document_attachment_requires_existing_application() -> None:
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Application not found"
+
+
+def test_cover_letter_template_preserves_visual_structure() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        with testing_session_local() as db:
+            yield db
+
+    with testing_session_local() as db:
+        db.add(
+            StoredApplicationRecord(
+                id="application-template",
+                data={"id": "application-template", "status": "draft"},
+            )
+        )
+        db.commit()
+
+    template = Document()
+    template.sections[0].header.paragraphs[0].text = "EDUARD · SOFTWARE ENGINEER"
+    template.add_paragraph("Dear Hiring Team,")
+    body = template.add_paragraph("Original reusable body paragraph.")
+    body.style = template.styles["Normal"]
+    template.add_paragraph("Kind regards,")
+    template.add_paragraph("Eduard")
+    template.sections[0].footer.paragraphs[0].text = "Private application"
+    template_output = BytesIO()
+    template.save(template_output)
+    data_url = "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," + base64.b64encode(
+        template_output.getvalue()
+    ).decode()
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+
+    try:
+        uploaded = client.post(
+            "/documents/templates",
+            json={
+                "type": "cover_letter",
+                "name": "My cover letter",
+                "fileName": "cover-letter.docx",
+                "dataUrl": data_url,
+            },
+        )
+        template_id = uploaded.json()["id"]
+        listed = client.get("/documents/templates/library")
+        created = client.post(
+            "/documents",
+            json={
+                "type": "cover_letter",
+                "title": "Generated cover letter",
+                "content": (
+                    "Dear Acme Hiring Team,\n\n"
+                    "My first tailored paragraph.\n\n"
+                    "My second tailored paragraph.\n\n"
+                    "Kind regards,\n\nEduard"
+                ),
+                "jobId": "job-acme",
+                "applicationId": "application-template",
+                "templateId": template_id,
+            },
+        )
+        downloaded = client.get(f"/documents/{created.json()['id']}/download")
+    finally:
+        app.dependency_overrides.clear()
+
+    rendered = Document(BytesIO(downloaded.content))
+    body_text = "\n".join(paragraph.text for paragraph in rendered.paragraphs)
+    header_text = rendered.sections[0].header.paragraphs[0].text
+    footer_text = rendered.sections[0].footer.paragraphs[0].text
+
+    assert uploaded.status_code == 201
+    assert listed.status_code == 200
+    assert listed.json()[0]["fileName"] == "cover-letter.docx"
+    assert created.status_code == 201
+    assert downloaded.status_code == 200
+    assert header_text == "EDUARD · SOFTWARE ENGINEER"
+    assert footer_text == "Private application"
+    assert "My first tailored paragraph." in body_text
+    assert "My second tailored paragraph." in body_text
+    assert "Original reusable body paragraph." not in body_text

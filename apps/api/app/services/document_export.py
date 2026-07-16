@@ -1,4 +1,5 @@
 import re
+from copy import deepcopy
 from io import BytesIO
 
 from docx import Document
@@ -31,6 +32,134 @@ def build_document_docx(
     output = BytesIO()
     document.save(output)
     return output.getvalue()
+
+
+def build_document_from_template(*, template_content: bytes, content: str) -> bytes:
+    """Replace editable cover-letter text while preserving the uploaded DOCX package."""
+    document = Document(BytesIO(template_content))
+    paragraphs = document.paragraphs
+    generated = normalized_content_paragraphs(content)
+    if not generated:
+        raise ValueError("Generated document content is empty")
+
+    marker_index = next(
+        (
+            index
+            for index, paragraph in enumerate(paragraphs)
+            if "{{cover_letter_body}}" in paragraph.text.lower()
+            or "{{content}}" in paragraph.text.lower()
+        ),
+        None,
+    )
+    if marker_index is not None:
+        replace_paragraph_elements(
+            paragraphs[marker_index : marker_index + 1],
+            generated,
+        )
+    else:
+        greeting_index = next(
+            (
+                index
+                for index, paragraph in enumerate(paragraphs)
+                if re.match(r"^\s*(?:dear|hello|hi|to\b)", paragraph.text, re.IGNORECASE)
+            ),
+            None,
+        )
+        closing_index = next(
+            (
+                index
+                for index, paragraph in enumerate(paragraphs)
+                if greeting_index is not None
+                and index > greeting_index
+                and re.match(
+                    r"^\s*(?:sincerely|best|kind regards|warm regards|regards|thank you)",
+                    paragraph.text,
+                    re.IGNORECASE,
+                )
+            ),
+            None,
+        )
+        if greeting_index is None or closing_index is None or closing_index <= greeting_index:
+            raise ValueError(
+                "Template needs {{cover_letter_body}} or recognizable greeting and closing paragraphs"
+            )
+
+        generated_greeting, generated_body, generated_closing = split_generated_letter(generated)
+        if generated_greeting:
+            set_paragraph_element_text(paragraphs[greeting_index]._p, generated_greeting)
+        body_paragraphs = paragraphs[greeting_index + 1 : closing_index]
+        if not body_paragraphs:
+            body_paragraphs = [paragraphs[greeting_index]]
+        replace_paragraph_elements(body_paragraphs, generated_body or generated)
+        if generated_closing:
+            set_paragraph_element_text(paragraphs[closing_index]._p, generated_closing)
+
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def normalized_content_paragraphs(content: str) -> list[str]:
+    lines = [line.strip() for line in content.replace("\r\n", "\n").split("\n")]
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if not line:
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+            continue
+        cleaned = re.sub(r"^#{1,3}\s+", "", line)
+        current.append(cleaned)
+    if current:
+        paragraphs.append(" ".join(current))
+    return paragraphs
+
+
+def split_generated_letter(paragraphs: list[str]) -> tuple[str, list[str], str]:
+    greeting = paragraphs[0] if re.match(
+        r"^(?:dear|hello|hi|to\b)", paragraphs[0], re.IGNORECASE
+    ) else ""
+    closing_index = next(
+        (
+            index
+            for index, paragraph in enumerate(paragraphs)
+            if re.match(
+                r"^(?:sincerely|best|kind regards|warm regards|regards|thank you)",
+                paragraph,
+                re.IGNORECASE,
+            )
+        ),
+        None,
+    )
+    body_start = 1 if greeting else 0
+    body_end = closing_index if closing_index is not None else len(paragraphs)
+    closing = paragraphs[closing_index] if closing_index is not None else ""
+    return greeting, paragraphs[body_start:body_end], closing
+
+
+def replace_paragraph_elements(paragraphs, replacement_texts: list[str]) -> None:
+    if not paragraphs:
+        raise ValueError("Template has no editable body paragraphs")
+    prototype = paragraphs[0]._p
+    parent = prototype.getparent()
+    insert_at = parent.index(prototype)
+    elements = [paragraph._p for paragraph in paragraphs]
+    for element in elements:
+        parent.remove(element)
+    for offset, replacement in enumerate(replacement_texts):
+        clone = deepcopy(prototype)
+        set_paragraph_element_text(clone, replacement)
+        parent.insert(insert_at + offset, clone)
+
+
+def set_paragraph_element_text(element, text: str) -> None:
+    text_nodes = element.xpath(".//w:t")
+    if not text_nodes:
+        raise ValueError("Editable template paragraph has no text run")
+    text_nodes[0].text = text
+    for node in text_nodes[1:]:
+        node.text = ""
 
 
 def configure_document(document: Document) -> None:
