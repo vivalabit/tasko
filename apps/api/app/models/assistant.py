@@ -11,6 +11,9 @@ from app.core.database import Base
 class AssistantAiMatchContext(BaseModel):
     reasons: list[str] = Field(default_factory=list, max_length=8)
     gaps: list[str] = Field(default_factory=list, max_length=8)
+    application_guide: dict[str, Any] | None = Field(default=None, alias="applicationGuide")
+
+    model_config = {"populate_by_name": True}
 
 
 class AssistantJobContext(BaseModel):

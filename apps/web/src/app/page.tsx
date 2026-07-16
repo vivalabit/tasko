@@ -78,6 +78,48 @@ type AiMatchMetadata = {
   breakdown: Record<string, number>;
   reasons: string[];
   gaps: string[];
+  applicationGuide?: {
+    language: "English" | "German";
+    positioning: string;
+    readiness?: "ready" | "needs_confirmation" | "weak_fit";
+    roleMission?: string;
+    hiringPriorities?: string[];
+    mustHave?: string[];
+    niceToHave?: string[];
+    hardConstraints?: string[];
+    evidenceMatrix?: Array<{
+      requirement: string;
+      importance: "required" | "preferred";
+      status: "verified" | "transferable" | "needs_confirmation" | "missing";
+      evidence: string;
+      action: string;
+    }>;
+    clarificationQuestions?: Array<{
+      id: string;
+      requirement: string;
+      question: string;
+      why: string;
+      claimIfConfirmed: string;
+      blocking: boolean;
+    }>;
+    resumePlan?: {
+      targetHeadline: string;
+      summaryFocus: string;
+      evidenceToLead: string[];
+      bulletStrategy: string[];
+    };
+    coverLetterPlan?: {
+      openingAngle: string;
+      proofPoints: string[];
+      motivationAngle: string;
+    };
+    cvImprovements: string[];
+    coverLetterStrategy: string[];
+    risks: string[];
+    keywords: string[];
+    applicationQuestions: string[];
+    finalChecklist: string[];
+  };
   explanation?: string;
   rawExplanation?: string;
   heuristicScore?: number;
@@ -540,6 +582,7 @@ const appLogsStorageKey = "tasko.appLogs.v1";
 const parserSearchConfigsLocalUrl = "/parser-search-configs.local.json";
 const legacyMovedFromJobsNote = "Moved from Jobs after applying.";
 const maxStoredAppLogs = 300;
+const maxActiveImportedJobs = 10;
 
 const assistantPrompts = {
   analyzeJob: "Analyze this vacancy against my profile. Summarize the strongest evidence, gaps, risks, and whether I should apply.",
@@ -558,7 +601,7 @@ const defaultParserSearchForm: ParserSearchForm = {
   experienceLevel: "Any",
   jobType: "Any",
   datePosted: "Any time",
-  resultsLimit: "100",
+  resultsLimit: "10",
   country: "Any",
   deduplicate: true,
   searchName: "",
@@ -2487,6 +2530,12 @@ function mergeJobs(importedJobs: Job[], currentJobs: Job[]) {
   return [...importedJobs, ...currentJobs.filter((job) => !importedIds.has(job.id))];
 }
 
+function keepFreshestImportedJobs(jobs: Job[]) {
+  return [...jobs]
+    .sort((a, b) => getJobPostedTime(b) - getJobPostedTime(a))
+    .slice(0, maxActiveImportedJobs);
+}
+
 function hasActiveJobFilters(filters: JobFilters) {
   return Object.values(filters).some((value) => value !== "Any");
 }
@@ -3061,10 +3110,10 @@ export default function HomePage() {
 
     try {
       const rawImportedJobs = window.localStorage.getItem(importedJobsStorageKey);
-      const importedJobs = normalizeStoredJobs(rawImportedJobs ? JSON.parse(rawImportedJobs) : []);
+      const importedJobs = keepFreshestImportedJobs(normalizeStoredJobs(rawImportedJobs ? JSON.parse(rawImportedJobs) : []));
       if (importedJobs.length > 0) {
         window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(importedJobs));
-        setJobList((currentJobs) => mergeJobs(importedJobs, currentJobs));
+        setJobList((currentJobs) => [...importedJobs, ...currentJobs.filter((job) => !isImportedJob(job))]);
         setSelectedJobId((currentId) => currentId || importedJobs[0].id);
       }
     } catch {
@@ -3081,10 +3130,10 @@ export default function HomePage() {
         if (!response.ok) return;
 
         const storedJobs = (await response.json()) as Array<{ id: string; data: unknown }>;
-        const importedJobs = normalizeStoredJobs(storedJobs.map((job) => job.data)).filter(isImportedJob);
-        if (importedJobs.length === 0) return;
-
-        setJobList((currentJobs) => mergeJobs(importedJobs, currentJobs));
+        const importedJobs = keepFreshestImportedJobs(
+          normalizeStoredJobs(storedJobs.map((job) => job.data)).filter(isImportedJob),
+        );
+        setJobList((currentJobs) => [...importedJobs, ...currentJobs.filter((job) => !isImportedJob(job))]);
         window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(importedJobs));
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -3299,6 +3348,7 @@ export default function HomePage() {
   function prepareJobApplication(job: Job) {
     const existingApplication = applications.find((item) => item.job.id === job.id);
     if (existingApplication) {
+      updateApplicationJob(existingApplication.id, job);
       setSelectedApplicationId(existingApplication.id);
     } else {
       const application = createApplicationFromJob(job, "draft");
@@ -4744,6 +4794,12 @@ export default function HomePage() {
     const matchedJobs = normalizeStoredJobs(status.updatedJobs.map((job) => job.data));
     if (matchedJobs.length === 0) return;
 
+    const matchedJobsById = new Map(matchedJobs.map((job) => [job.id, job]));
+    setApplications((currentApplications) => currentApplications.map((application) => {
+      const matchedJob = matchedJobsById.get(application.job.id);
+      return matchedJob ? { ...application, job: matchedJob } : application;
+    }));
+
     setJobList((currentJobs) => {
       const nextJobs = mergeJobs(matchedJobs, currentJobs);
       window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(nextJobs.filter(isImportedJob)));
@@ -4899,7 +4955,7 @@ export default function HomePage() {
       await wait(snapshotPollDelayMs);
 
       const snapshotResponse = await fetch(
-        `${apiBaseUrl}/parsers/linkedin/snapshots/${encodeURIComponent(snapshotId)}?results_limit=${Number.parseInt(parserSearchForm.resultsLimit, 10) || 100}&deduplicate=${parserSearchForm.deduplicate}`,
+        `${apiBaseUrl}/parsers/linkedin/snapshots/${encodeURIComponent(snapshotId)}?results_limit=${Number.parseInt(parserSearchForm.resultsLimit, 10) || 10}&deduplicate=${parserSearchForm.deduplicate}`,
       );
       const snapshotData = (await snapshotResponse.json()) as ParserApiResponse & { detail?: string };
 
@@ -4932,7 +4988,7 @@ export default function HomePage() {
         `Keywords: ${parserSearchForm.keywords || "Any"}`,
         `Location: ${parserSearchForm.location || parserSearchForm.country || "Any"}`,
         `Remote: ${parserSearchForm.remote}`,
-        `Limit: ${parserSearchForm.resultsLimit || "100"}`,
+        `Limit: ${parserSearchForm.resultsLimit || "10"}`,
       ].join("\n"),
     });
 
@@ -4947,7 +5003,7 @@ export default function HomePage() {
           experience_level: parserSearchForm.experienceLevel,
           job_type: parserSearchForm.jobType,
           date_posted: parserSearchForm.datePosted,
-          results_limit: Number.parseInt(parserSearchForm.resultsLimit, 10) || 100,
+          results_limit: Number.parseInt(parserSearchForm.resultsLimit, 10) || 10,
           country: parserSearchForm.country,
           deduplicate: parserSearchForm.deduplicate,
           search_name: parserSearchForm.searchName,

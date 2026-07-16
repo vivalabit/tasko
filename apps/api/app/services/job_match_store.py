@@ -19,6 +19,7 @@ FEEDBACK_LABELS = {
     "bad_match": "User marked this as a bad match",
     "not_interested": "User marked this as not interesting",
 }
+APPLICATION_GUIDE_STORAGE_KEY = "_applicationGuide"
 
 
 def hydrate_job_data(
@@ -182,6 +183,9 @@ def should_insert_match_record(
 
 def build_match_record(job_id: str, profile_hash: str, ai_match: dict[str, Any]) -> JobMatchRecord:
     normalized = normalize_ai_match(ai_match)
+    stored_breakdown = dict(normalized["breakdown"])
+    if normalized.get("applicationGuide"):
+        stored_breakdown[APPLICATION_GUIDE_STORAGE_KEY] = normalized["applicationGuide"]
     return JobMatchRecord(
         id=uuid4().hex,
         job_id=job_id,
@@ -191,7 +195,7 @@ def build_match_record(job_id: str, profile_hash: str, ai_match: dict[str, Any])
         score=normalized["score"],
         source=normalized["source"],
         confidence=normalized["confidence"],
-        breakdown=normalized["breakdown"],
+        breakdown=stored_breakdown,
         reasons=normalized["reasons"],
         gaps=normalized["gaps"],
         heuristic_score=normalized["heuristicScore"],
@@ -221,24 +225,30 @@ def normalize_ai_match(
         "heuristicScore": clamp_int(ai_match.get("heuristicScore"), score),
         "updatedAt": updated_at,
     }
+    if isinstance(ai_match.get("applicationGuide"), dict):
+        normalized["applicationGuide"] = ai_match["applicationGuide"]
     if ai_match.get("openclawError"):
         normalized["openclawError"] = str(ai_match["openclawError"])[:240]
     return normalized
 
 
 def match_record_to_ai_match(record: JobMatchRecord) -> dict[str, Any]:
+    breakdown = dict(record.breakdown) if isinstance(record.breakdown, dict) else {}
+    application_guide = breakdown.pop(APPLICATION_GUIDE_STORAGE_KEY, None)
     ai_match = {
         "version": record.matcher_version,
         "cacheKey": record.cache_key,
         "source": record.source,
         "score": record.score,
         "confidence": record.confidence,
-        "breakdown": record.breakdown,
+        "breakdown": breakdown,
         "reasons": record.reasons,
         "gaps": record.gaps,
         "heuristicScore": record.heuristic_score,
         "updatedAt": serialize_datetime(record.created_at),
     }
+    if isinstance(application_guide, dict):
+        ai_match["applicationGuide"] = application_guide
     if record.openclaw_error:
         ai_match["openclawError"] = record.openclaw_error
     return ai_match

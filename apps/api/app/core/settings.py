@@ -18,8 +18,8 @@ class Settings(BaseSettings):
     openclaw_resume_import_timeout_seconds: int = 120
     openclaw_ai_match_enabled: bool = True
     openclaw_ai_match_thinking: str = "low"
-    openclaw_ai_match_timeout_seconds: int = 90
-    openclaw_ai_match_max_jobs: int = 20
+    openclaw_ai_match_timeout_seconds: int = 120
+    openclaw_ai_match_max_jobs: int = 3
     openclaw_assistant_enabled: bool = True
     openclaw_assistant_agent_id: str = "tasko-assistant"
     openclaw_assistant_model: str = "openai/gpt-5.6-terra"

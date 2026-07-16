@@ -1,11 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   ArrowLeft,
   Bot,
   Check,
+  CheckCircle2,
   ChevronRight,
+  CircleDot,
   Download,
   ExternalLink,
   FileCheck2,
@@ -13,10 +16,12 @@ import {
   LoaderCircle,
   LockKeyhole,
   Mail,
+  MessageSquareText,
   RefreshCw,
   Rocket,
   ShieldCheck,
   Sparkles,
+  Target,
   Upload,
 } from "lucide-react";
 
@@ -36,7 +41,55 @@ type WorkspaceJob = {
   skills: string[];
   applyUrl?: string;
   sourceUrl?: string;
-  aiMatch?: { reasons: string[]; gaps: string[] };
+  aiMatch?: {
+    reasons: string[];
+    gaps: string[];
+    updatedAt?: string;
+    applicationGuide?: ApplicationGuide;
+  };
+};
+
+type ApplicationGuide = {
+  language: "English" | "German";
+  positioning: string;
+  readiness?: "ready" | "needs_confirmation" | "weak_fit";
+  roleMission?: string;
+  hiringPriorities?: string[];
+  mustHave?: string[];
+  niceToHave?: string[];
+  hardConstraints?: string[];
+  evidenceMatrix?: Array<{
+    requirement: string;
+    importance: "required" | "preferred";
+    status: "verified" | "transferable" | "needs_confirmation" | "missing";
+    evidence: string;
+    action: string;
+  }>;
+  clarificationQuestions?: Array<{
+    id: string;
+    requirement: string;
+    question: string;
+    why: string;
+    claimIfConfirmed: string;
+    blocking: boolean;
+  }>;
+  resumePlan?: {
+    targetHeadline: string;
+    summaryFocus: string;
+    evidenceToLead: string[];
+    bulletStrategy: string[];
+  };
+  coverLetterPlan?: {
+    openingAngle: string;
+    proofPoints: string[];
+    motivationAngle: string;
+  };
+  cvImprovements: string[];
+  coverLetterStrategy: string[];
+  risks: string[];
+  keywords: string[];
+  applicationQuestions: string[];
+  finalChecklist: string[];
 };
 
 type WorkspaceApplicationDocument = {
@@ -137,19 +190,6 @@ type ApplicationWorkspaceProps = {
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const docxContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-const preApplicationReviewPrompt = `Create a complete pre-application review for this vacancy using only verified profile and vacancy evidence. Return concise plain text with these exact sections:
-VACANCY LANGUAGE: English or German
-BEST POSITIONING
-CV IMPROVEMENTS
-COVER LETTER STRATEGY
-GAPS AND RISKS
-KEYWORDS AND EVIDENCE TO EMPHASIZE
-LIKELY APPLICATION QUESTIONS
-FINAL BEFORE-SUBMITTING CHECKLIST
-
-Start with exactly one line containing either VACANCY LANGUAGE: English or VACANCY LANGUAGE: German, based on the language used by the vacancy, then write the review in that detected language. Under CV IMPROVEMENTS, state exactly what should change in the existing summary, skills and achievement bullets without changing the document layout. Under each section give specific, actionable bullets. Include recommended answer points for likely questions, flag anything that must not be claimed, and finish with the most important action to take before applying. Do not invent facts.`;
-const applicationReviewCache = new Map<string, string>();
-
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -171,8 +211,42 @@ function inferSourceLanguage(fileName: string, title = "") {
   return "";
 }
 
-function detectedReviewLanguage(review: string) {
-  return review.match(/VACANCY LANGUAGE:\s*(English|German)/i)?.[1]?.toLowerCase() === "german" ? "German" : review.match(/VACANCY LANGUAGE:\s*English/i) ? "English" : "";
+function detectLegacyJobLanguage(job: WorkspaceJob) {
+  const text = [job.title, job.overview, ...job.requirements, ...job.responsibilities].join(" ").toLowerCase();
+  const germanMarkers = [" der ", " die ", " das ", " und ", " mit ", " für ", " wir ", " sie ", "aufgaben", "anforderungen", "kenntnisse", "bewerbung"];
+  const englishMarkers = [" the ", " and ", " with ", " for ", " we ", " you ", "responsibilities", "requirements", "skills", "application"];
+  const padded = ` ${text} `;
+  const germanScore = germanMarkers.reduce((score, marker) => score + padded.split(marker).length - 1, 0);
+  const englishScore = englishMarkers.reduce((score, marker) => score + padded.split(marker).length - 1, 0);
+  return germanScore > englishScore ? "German" : "English";
+}
+
+function reviewSection(title: string, values: string[]) {
+  return values.length ? `${title}\n${values.map((value) => `• ${value}`).join("\n")}` : "";
+}
+
+function buildSavedApplicationReview(job: WorkspaceJob) {
+  const guide = job.aiMatch?.applicationGuide;
+  if (!guide) return "";
+  const language = guide?.language || detectLegacyJobLanguage(job);
+  const reasons = job.aiMatch?.reasons ?? [];
+  const gaps = job.aiMatch?.gaps ?? [];
+  const sections = [
+    `VACANCY LANGUAGE: ${language}`,
+    reviewSection("ROLE MISSION", guide.roleMission ? [guide.roleMission] : []),
+    reviewSection("BEST POSITIONING", [guide?.positioning || reasons[0] || `Emphasize verified experience that is directly relevant to ${job.title}.`]),
+    reviewSection("HIRING PRIORITIES", guide.hiringPriorities ?? []),
+    reviewSection("MUST HAVE", guide.mustHave ?? []),
+    reviewSection("NICE TO HAVE", guide.niceToHave ?? []),
+    reviewSection("HARD CONSTRAINTS", guide.hardConstraints ?? []),
+    reviewSection("CV IMPROVEMENTS", guide?.cvImprovements?.length ? guide.cvImprovements : gaps.length ? gaps : reasons),
+    reviewSection("COVER LETTER STRATEGY", guide?.coverLetterStrategy?.length ? guide.coverLetterStrategy : reasons),
+    reviewSection("GAPS AND RISKS", guide?.risks?.length ? guide.risks : gaps),
+    reviewSection("KEYWORDS AND EVIDENCE TO EMPHASIZE", guide?.keywords?.length ? guide.keywords : job.skills.slice(0, 8)),
+    reviewSection("LIKELY APPLICATION QUESTIONS", guide?.applicationQuestions ?? []),
+    reviewSection("FINAL BEFORE-SUBMITTING CHECKLIST", guide?.finalChecklist?.length ? guide.finalChecklist : ["Verify every claim against the source CV.", "Confirm the selected documents and language before submitting."]),
+  ];
+  return sections.filter(Boolean).join("\n\n");
 }
 
 async function readApiError(response: Response, fallback: string) {
@@ -247,6 +321,13 @@ function assistantSourcePayload(source: ProfileSourceDocument) {
   };
 }
 
+function evidenceStatusMeta(status: NonNullable<ApplicationGuide["evidenceMatrix"]>[number]["status"]) {
+  if (status === "verified") return { label: "Verified", className: "border-success/35 bg-success/10 text-success" };
+  if (status === "transferable") return { label: "Transferable", className: "border-[#2f80ed]/35 bg-[#2f80ed]/10 text-[#8cc7ff]" };
+  if (status === "missing") return { label: "Missing", className: "border-red-400/35 bg-red-500/10 text-red-200" };
+  return { label: "Confirm", className: "border-amber-400/35 bg-amber-400/10 text-amber-200" };
+}
+
 export function ApplicationWorkspace({
   application,
   profile,
@@ -266,14 +347,10 @@ export function ApplicationWorkspace({
   const [generationType, setGenerationType] = useState<GeneratedDocument["type"] | "">("");
   const [isGeneratingPack, setIsGeneratingPack] = useState(false);
   const [documentError, setDocumentError] = useState("");
-  const [applicationReview, setApplicationReview] = useState("");
-  const [applicationReviewError, setApplicationReviewError] = useState("");
-  const [isLoadingApplicationReview, setIsLoadingApplicationReview] = useState(false);
-  const [reviewRefreshToken, setReviewRefreshToken] = useState(0);
+  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({});
   const [advice, setAdvice] = useState("");
   const [advicePrompt, setAdvicePrompt] = useState("");
   const [isLoadingAdvice, setIsLoadingAdvice] = useState(false);
-  const automaticReviewKeyRef = useRef("");
 
   useEffect(() => {
     if (!application) return;
@@ -316,7 +393,16 @@ export function ApplicationWorkspace({
     () => profileSources.filter((source) => source.category === "Cover Letter" && source.file_name.toLowerCase().endsWith(".docx")),
     [profileSources],
   );
-  const vacancyLanguage = detectedReviewLanguage(applicationReview);
+  const applicationReview = useMemo(
+    () => application ? buildSavedApplicationReview(application.job) : "",
+    [application],
+  );
+  const applicationGuide = application?.job.aiMatch?.applicationGuide;
+  const clarificationQuestions = applicationGuide?.clarificationQuestions ?? [];
+  const unansweredBlockingQuestions = clarificationQuestions.filter(
+    (question) => question.blocking && !clarificationAnswers[question.id]?.trim(),
+  );
+  const vacancyLanguage = application?.job.aiMatch?.applicationGuide?.language || (application ? detectLegacyJobLanguage(application.job) : "");
   const effectiveLanguage = languageMode === "auto" ? vacancyLanguage : languageMode;
 
   useEffect(() => {
@@ -325,8 +411,17 @@ export function ApplicationWorkspace({
     setIsCoverSourceManual(false);
     setSelectedResumeSourceId("");
     setSelectedCoverSourceId("");
-    setApplicationReview("");
-    setApplicationReviewError("");
+    if (!application) {
+      setClarificationAnswers({});
+      return;
+    }
+    try {
+      const stored = window.localStorage.getItem(`tasko.application-confirmations.${application.id}`);
+      const parsed = stored ? JSON.parse(stored) as unknown : null;
+      setClarificationAnswers(parsed && typeof parsed === "object" ? parsed as Record<string, string> : {});
+    } catch {
+      setClarificationAnswers({});
+    }
   }, [application?.id]);
 
   useEffect(() => {
@@ -340,38 +435,6 @@ export function ApplicationWorkspace({
       setSelectedCoverSourceId(matchingCover?.id ?? "");
     }
   }, [coverSources, effectiveLanguage, isCoverSourceManual, isResumeSourceManual, resumeSources]);
-
-  useEffect(() => {
-    if (!application) return;
-    const reviewKey = `${application.id}:${application.job.id}`;
-    if (automaticReviewKeyRef.current === reviewKey) return;
-    automaticReviewKeyRef.current = reviewKey;
-    setApplicationReviewError("");
-
-    const cachedReview = applicationReviewCache.get(reviewKey);
-    if (cachedReview) {
-      setApplicationReview(cachedReview);
-      setIsLoadingApplicationReview(false);
-      return;
-    }
-
-    setApplicationReview("");
-    setIsLoadingApplicationReview(true);
-    void askAssistant(preApplicationReviewPrompt)
-      .then((review) => {
-        if (automaticReviewKeyRef.current !== reviewKey) return;
-        const nextReview = review || "AI returned an empty pre-application review.";
-        applicationReviewCache.set(reviewKey, nextReview);
-        setApplicationReview(nextReview);
-      })
-      .catch((error) => {
-        if (automaticReviewKeyRef.current !== reviewKey) return;
-        setApplicationReviewError(error instanceof Error ? error.message : "Pre-application review failed");
-      })
-      .finally(() => {
-        if (automaticReviewKeyRef.current === reviewKey) setIsLoadingApplicationReview(false);
-      });
-  }, [application?.id, application?.job.id, reviewRefreshToken]);
 
   if (!application) {
     return (
@@ -390,12 +453,23 @@ export function ApplicationWorkspace({
   const profileReady = Boolean(profile.name && (profile.experience || profile.resume_file_name));
   const checklist = [
     { label: "Candidate profile", ready: profileReady },
+    { label: "Vacancy analysis", ready: Boolean(applicationGuide) },
+    { label: "Required confirmations", ready: unansweredBlockingQuestions.length === 0 },
     { label: "Tailored CV", ready: Boolean(latestResume) },
     { label: "Cover letter", ready: Boolean(latestCoverLetter) },
     { label: "Application link", ready: Boolean(jobUrl) },
   ];
   const readyCount = checklist.filter((item) => item.ready).length;
   const progress = Math.round((readyCount / checklist.length) * 100);
+
+  function updateClarificationAnswer(questionId: string, value: string) {
+    const nextAnswers = { ...clarificationAnswers, [questionId]: value };
+    setClarificationAnswers(nextAnswers);
+    window.localStorage.setItem(
+      `tasko.application-confirmations.${activeApplication.id}`,
+      JSON.stringify(nextAnswers),
+    );
+  }
 
   async function askAssistant(message: string, sources: ProfileSourceDocument[] = []) {
     if (!message.trim()) return "";
@@ -435,11 +509,25 @@ export function ApplicationWorkspace({
       if (!applicationReview) {
         throw new Error("Wait for the pre-application improvement plan before generating documents");
       }
-      const improvementPlan = applicationReview.slice(0, 7_000);
+      if (unansweredBlockingQuestions.length > 0) {
+        throw new Error("Answer the required confirmation questions before generating documents");
+      }
+      const improvementPlan = JSON.stringify(
+        {
+          analysis: applicationGuide,
+          candidateConfirmations: clarificationQuestions.map((question) => ({
+            requirement: question.requirement,
+            question: question.question,
+            answer: clarificationAnswers[question.id]?.trim() || "Not answered — do not use the proposed claim",
+          })),
+        },
+        null,
+        2,
+      ).slice(0, 12_000);
       const targetLanguage = effectiveLanguage || selectedSource.language || "English";
       const prompt = isCoverLetter
-        ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy using only verified evidence from my profile and the source document. Follow the pre-application improvement plan below as mandatory guidance, especially its positioning, risks, and unsupported claims. Preserve truthful facts. Return only the complete letter text without Markdown or commentary, keeping a greeting, focused body paragraphs, and professional closing. Do not invent achievements or metrics.\n\nPRE-APPLICATION IMPROVEMENT PLAN:\n${improvementPlan}`
-        : `Tailor the selected DOCX resume in ${targetLanguage} to this vacancy while keeping its layout unchanged. Follow the pre-application improvement plan below as mandatory guidance: apply its recommended emphasis and fixes, and avoid every flagged unsupported claim. Return exactly one plain-text line for every non-empty body text block in the source DOCX, in the identical order and with the identical number of lines. Repeat contact details, section headings, dates, employers, education, and any line that should not change verbatim. Rewrite only existing summary, skill, and achievement lines where truthful evidence supports it. Do not add, remove, merge, split, or reorder lines. Do not use Markdown markers or commentary. Do not invent facts or metrics.\n\nPRE-APPLICATION IMPROVEMENT PLAN:\n${improvementPlan}`;
+        ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy using only verified evidence from my profile, the source document, and explicit candidate confirmations below. Follow the saved vacancy analysis as mandatory guidance, especially its positioning, evidence matrix, risks, and unsupported claims. An unanswered question is not evidence. A negative answer means the skill must be omitted. Preserve truthful facts. Return only the complete letter text without Markdown or commentary, keeping a greeting, focused body paragraphs, and professional closing. Do not invent achievements or metrics.\n\nSAVED ANALYSIS AND CANDIDATE CONFIRMATIONS:\n${improvementPlan}`
+        : `Tailor the selected DOCX resume in ${targetLanguage} to this vacancy while keeping its layout unchanged. Use only verified profile/source evidence and explicit candidate confirmations below. Follow the saved vacancy analysis as mandatory guidance: apply its resume plan and evidence emphasis, and avoid every unsupported claim. An unanswered question is not evidence. A negative answer means the skill must be omitted. Return exactly one plain-text line for every non-empty body text block in the source DOCX, in the identical order and with the identical number of lines. Repeat contact details, section headings, dates, employers, education, and any line that should not change verbatim. Rewrite only existing summary, skill, and achievement lines where truthful evidence supports it. Do not add, remove, merge, split, or reorder lines. Do not use Markdown markers or commentary. Do not invent facts or metrics.\n\nSAVED ANALYSIS AND CANDIDATE CONFIRMATIONS:\n${improvementPlan}`;
       const content = await askAssistant(prompt, [selectedSource]);
       if (!content) throw new Error("AI returned an empty document");
 
@@ -560,13 +648,6 @@ export function ApplicationWorkspace({
     }
   }
 
-  function retryApplicationReview() {
-    const reviewKey = `${activeApplication.id}:${activeApplication.job.id}`;
-    applicationReviewCache.delete(reviewKey);
-    automaticReviewKeyRef.current = "";
-    setReviewRefreshToken((current) => current + 1);
-  }
-
   return (
     <section className="job-scroll min-w-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4 2xl:px-5 2xl:py-4">
       <div className="mx-auto max-w-[1280px]">
@@ -615,7 +696,7 @@ export function ApplicationWorkspace({
                   <div>
                     <p className="text-[10px] font-black uppercase tracking-[0.12em] text-accent">Step 1 · Improve before generating</p>
                     <h2 className="mt-1 text-lg font-bold text-white">What to improve in your CV and application</h2>
-                    <p className="mt-1 text-xs leading-5 text-muted">AI reviews the vacancy first. The document generator then follows this plan automatically.</p>
+                    <p className="mt-1 text-xs leading-5 text-muted">This plan comes from the saved AI Match. The document generator follows it without analyzing the vacancy again.</p>
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-wrap items-end gap-2">
@@ -638,13 +719,84 @@ export function ApplicationWorkspace({
                     </select>
                   </label>
                   {languageMode === "auto" && vacancyLanguage ? <span className="mb-0.5 rounded-md border border-[#2f80ed]/35 bg-[#2f80ed]/10 px-2 py-1.5 text-[10px] font-bold text-[#8cc7ff]">Detected: {vacancyLanguage}</span> : null}
-                  {applicationReviewError ? <Button type="button" variant="ghost" onClick={retryApplicationReview} className="h-9 rounded-md border border-border bg-white/[0.025] px-3 text-xs text-white hover:bg-white/[0.06]"><RefreshCw className="h-3.5 w-3.5" /> Retry review</Button> : null}
                 </div>
               </div>
               <div className="p-4 sm:p-5">
-                <div className="job-scroll max-h-[460px] min-h-[180px] overflow-y-auto rounded-md border border-border bg-[#0c1219] p-4">
-                  {isLoadingApplicationReview ? <div className="flex items-center gap-2 text-xs text-muted"><LoaderCircle className="h-4 w-4 animate-spin text-accent" /> Analyzing the vacancy and preparing CV improvements…</div> : applicationReviewError ? <div className="text-xs leading-5 text-red-200"><p className="font-bold">The improvement plan could not be generated.</p><p className="mt-1">{applicationReviewError}</p></div> : applicationReview ? <p className="whitespace-pre-wrap text-xs leading-5 text-[#dfe4ec]">{applicationReview}</p> : <div className="py-6 text-center"><Sparkles className="mx-auto h-5 w-5 text-muted" /><p className="mt-2 text-[11px] text-muted">The improvement plan will appear here before document generation.</p></div>}
-                </div>
+                {applicationGuide ? (
+                  <div className="space-y-3">
+                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(260px,0.75fr)]">
+                      <article className="rounded-md border border-accent/25 bg-accent/[0.055] p-4">
+                        <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em] text-accent"><Target className="h-4 w-4" /> Core mission</div>
+                        <p className="mt-2 text-sm font-bold leading-6 text-white">{applicationGuide.roleMission || activeApplication.job.overview || `Succeed as ${activeApplication.job.title}.`}</p>
+                        <p className="mt-3 border-t border-accent/15 pt-3 text-xs leading-5 text-[#dfe4ec]"><span className="font-bold text-white">Positioning:</span> {applicationGuide.positioning}</p>
+                      </article>
+                      <article className="rounded-md border border-border bg-[#0c1219] p-4">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="text-[10px] font-black uppercase tracking-[0.1em] text-muted">Analysis readiness</p>
+                          <span className={cn("rounded border px-2 py-1 text-[9px] font-black uppercase", applicationGuide.readiness === "ready" ? "border-success/35 bg-success/10 text-success" : applicationGuide.readiness === "weak_fit" ? "border-red-400/35 bg-red-500/10 text-red-200" : "border-amber-400/35 bg-amber-400/10 text-amber-200")}>{(applicationGuide.readiness ?? "needs_confirmation").replace("_", " ")}</span>
+                        </div>
+                        <p className="mt-3 text-[11px] leading-5 text-muted">{applicationGuide.hiringPriorities?.length ? applicationGuide.hiringPriorities[0] : "Review the evidence map and confirm any uncertain requirements."}</p>
+                        <div className="mt-3 flex flex-wrap gap-1.5">
+                          {(applicationGuide.keywords ?? []).map((keyword) => <span key={keyword} className="rounded border border-border bg-white/[0.035] px-2 py-1 text-[10px] font-bold text-[#d8dee8]">{keyword}</span>)}
+                        </div>
+                      </article>
+                    </div>
+
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      {[
+                        { label: "Hiring priorities", values: applicationGuide.hiringPriorities, tone: "text-accent" },
+                        { label: "Must have", values: applicationGuide.mustHave, tone: "text-white" },
+                        { label: "Nice to have", values: applicationGuide.niceToHave, tone: "text-[#8cc7ff]" },
+                        { label: "Hard constraints", values: applicationGuide.hardConstraints, tone: "text-amber-200" },
+                      ].map((group) => (
+                        <article key={group.label} className="rounded-md border border-border bg-white/[0.02] p-3">
+                          <h3 className={cn("text-[10px] font-black uppercase tracking-[0.1em]", group.tone)}>{group.label}</h3>
+                          {group.values?.length ? <ul className="mt-2 space-y-1.5 text-[11px] leading-4 text-muted">{group.values.map((value) => <li key={value} className="flex gap-2"><CircleDot className="mt-0.5 h-3 w-3 shrink-0" />{value}</li>)}</ul> : <p className="mt-2 text-[10px] text-muted">None identified</p>}
+                        </article>
+                      ))}
+                    </div>
+
+                    {applicationGuide.evidenceMatrix?.length ? (
+                      <section className="overflow-hidden rounded-md border border-border bg-[#0c1219]">
+                        <div className="border-b border-border px-4 py-3"><h3 className="text-sm font-bold text-white">Requirement → candidate evidence</h3><p className="mt-1 text-[10px] text-muted">Every important vacancy signal is linked to proof, a transferable skill, a question, or an explicit gap.</p></div>
+                        <div className="divide-y divide-border">
+                          {applicationGuide.evidenceMatrix.map((item) => {
+                            const meta = evidenceStatusMeta(item.status);
+                            return <article key={`${item.requirement}-${item.status}`} className="grid gap-2 px-4 py-3 md:grid-cols-[minmax(150px,0.8fr)_minmax(0,1.2fr)_auto] md:items-start">
+                              <div><p className="text-xs font-bold text-white">{item.requirement}</p><p className="mt-1 text-[9px] font-black uppercase text-muted">{item.importance}</p></div>
+                              <div><p className="text-[11px] leading-4 text-[#d8dee8]">{item.evidence || "No verified evidence found in the profile."}</p>{item.action ? <p className="mt-1.5 text-[10px] leading-4 text-muted"><span className="font-bold text-white">Action:</span> {item.action}</p> : null}</div>
+                              <span className={cn("rounded border px-2 py-1 text-[9px] font-black uppercase", meta.className)}>{meta.label}</span>
+                            </article>;
+                          })}
+                        </div>
+                      </section>
+                    ) : null}
+
+                    {clarificationQuestions.length ? (
+                      <section className="rounded-md border border-amber-400/25 bg-amber-400/[0.045] p-4">
+                        <div className="flex items-start gap-3"><MessageSquareText className="mt-0.5 h-5 w-5 shrink-0 text-amber-200" /><div><h3 className="text-sm font-bold text-white">Confirm important missing evidence</h3><p className="mt-1 text-[10px] leading-4 text-muted">Answer with a concrete true example, or write “No”. Proposed claims are never used until you confirm them.</p></div></div>
+                        <div className="mt-3 grid gap-3">
+                          {clarificationQuestions.map((question) => (
+                            <label key={question.id} className="block rounded-md border border-border bg-[#0c1219] p-3">
+                              <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-bold text-white">{question.question}</span>{question.blocking ? <span className="rounded border border-amber-400/30 px-1.5 py-0.5 text-[8px] font-black uppercase text-amber-200">Required</span> : null}</span>
+                              {question.why ? <span className="mt-1 block text-[10px] leading-4 text-muted">Why: {question.why}</span> : null}
+                              {question.claimIfConfirmed ? <span className="mt-1 block text-[10px] leading-4 text-[#b9c2cf]">If confirmed, AI may write: “{question.claimIfConfirmed}”</span> : null}
+                              <textarea value={clarificationAnswers[question.id] ?? ""} onChange={(event) => updateClarificationAnswer(question.id, event.target.value)} rows={2} placeholder="Describe what you actually did, tools/features used, and result — or write No" className="mt-2 w-full resize-y rounded-md border border-border bg-[#151c24] px-3 py-2 text-xs leading-5 text-white outline-none placeholder:text-muted/60 focus:border-amber-400/50" />
+                            </label>
+                          ))}
+                        </div>
+                      </section>
+                    ) : <div className="flex items-center gap-2 rounded-md border border-success/25 bg-success/[0.045] px-3 py-2 text-[11px] text-[#dfe4ec]"><CheckCircle2 className="h-4 w-4 text-success" /> No high-impact candidate confirmations are required.</div>}
+
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      <article className="rounded-md border border-border bg-white/[0.02] p-4"><h3 className="text-sm font-bold text-white">CV strategy</h3><p className="mt-2 text-xs leading-5 text-[#dfe4ec]">{applicationGuide.resumePlan?.summaryFocus || applicationGuide.cvImprovements?.[0]}</p>{applicationGuide.resumePlan?.targetHeadline ? <p className="mt-2 text-[10px] text-muted"><span className="font-bold text-white">Target headline:</span> {applicationGuide.resumePlan.targetHeadline}</p> : null}<ul className="mt-2 space-y-1.5 text-[11px] leading-4 text-muted">{[...(applicationGuide.resumePlan?.evidenceToLead ?? []), ...(applicationGuide.resumePlan?.bulletStrategy ?? []), ...(applicationGuide.cvImprovements ?? [])].slice(0, 6).map((item) => <li key={item} className="flex gap-2"><Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />{item}</li>)}</ul></article>
+                      <article className="rounded-md border border-border bg-white/[0.02] p-4"><h3 className="text-sm font-bold text-white">Cover letter strategy</h3><p className="mt-2 text-xs leading-5 text-[#dfe4ec]">{applicationGuide.coverLetterPlan?.openingAngle || applicationGuide.coverLetterStrategy?.[0]}</p>{applicationGuide.coverLetterPlan?.motivationAngle ? <p className="mt-2 text-[10px] leading-4 text-muted"><span className="font-bold text-white">Motivation:</span> {applicationGuide.coverLetterPlan.motivationAngle}</p> : null}<ul className="mt-2 space-y-1.5 text-[11px] leading-4 text-muted">{[...(applicationGuide.coverLetterPlan?.proofPoints ?? []), ...(applicationGuide.coverLetterStrategy ?? [])].slice(0, 5).map((item) => <li key={item} className="flex gap-2"><Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />{item}</li>)}</ul></article>
+                    </div>
+
+                    {(applicationGuide.risks ?? []).length ? <div className="rounded-md border border-red-400/25 bg-red-500/[0.045] p-3"><h3 className="flex items-center gap-2 text-xs font-bold text-red-100"><AlertTriangle className="h-4 w-4" /> Do not claim without evidence</h3><ul className="mt-2 space-y-1 text-[10px] leading-4 text-red-100/80">{applicationGuide.risks.map((risk) => <li key={risk}>• {risk}</li>)}</ul></div> : null}
+                  </div>
+                ) : <div className="rounded-md border border-border bg-[#0c1219] py-10 text-center"><Sparkles className="mx-auto h-5 w-5 text-muted" /><p className="mt-2 text-[11px] text-muted">Run AI Match for this vacancy to create the evidence map and document plan.</p></div>}
+                <p className="mt-2 text-[10px] leading-4 text-muted">To refresh this plan, return to Jobs and use Rerun AI Match. That remains the single vacancy analysis.</p>
               </div>
             </section>
 
@@ -655,7 +807,7 @@ export function ApplicationWorkspace({
                   <h2 className="mt-1 text-lg font-bold text-white">Documents tailored to this vacancy</h2>
                   <p className="mt-1 text-xs leading-5 text-muted">Choose DOCX originals, then AI changes their text without replacing the design.</p>
                 </div>
-                <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType) || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || isLoadingApplicationReview} className="h-10 shrink-0 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-4 text-xs font-bold text-white shadow-[0_10px_28px_rgba(255,90,0,0.2)] disabled:opacity-45">
+                <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType) || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || unansweredBlockingQuestions.length > 0} className="h-10 shrink-0 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-4 text-xs font-bold text-white shadow-[0_10px_28px_rgba(255,90,0,0.2)] disabled:opacity-45">
                   {isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
                   {isGeneratingPack ? "Generating pack…" : "Generate application pack"}
                 </Button>
@@ -672,8 +824,8 @@ export function ApplicationWorkspace({
                   document={latestResume}
                   isGenerating={generationType === "tailored_resume"}
                   onGenerate={() => generateDocument("tailored_resume")}
-                  canGenerate={Boolean(selectedResumeSourceId && applicationReview && !isLoadingApplicationReview)}
-                  disabledLabel={!selectedResumeSourceId ? "Select DOCX" : isLoadingApplicationReview ? "Reviewing…" : "Review required"}
+                  canGenerate={Boolean(selectedResumeSourceId && applicationReview && unansweredBlockingQuestions.length === 0)}
+                  disabledLabel={!selectedResumeSourceId ? "Select DOCX" : !applicationReview ? "AI Match required" : "Answer required questions"}
                   sourceControl={(
                     <SourcePicker
                       label="Source CV"
@@ -694,8 +846,8 @@ export function ApplicationWorkspace({
                   document={latestCoverLetter}
                   isGenerating={generationType === "cover_letter"}
                   onGenerate={() => generateDocument("cover_letter")}
-                  canGenerate={Boolean(selectedCoverSourceId && applicationReview && !isLoadingApplicationReview)}
-                  disabledLabel={!selectedCoverSourceId ? "Select DOCX" : isLoadingApplicationReview ? "Reviewing…" : "Review required"}
+                  canGenerate={Boolean(selectedCoverSourceId && applicationReview && unansweredBlockingQuestions.length === 0)}
+                  disabledLabel={!selectedCoverSourceId ? "Select DOCX" : !applicationReview ? "AI Match required" : "Answer required questions"}
                   sourceControl={(
                     <SourcePicker
                       label="Source cover letter"

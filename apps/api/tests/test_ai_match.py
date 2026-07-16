@@ -56,6 +56,52 @@ def install_openclaw_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
                     },
                     "reasons": ["OpenClaw matched this role"] if is_relevant else ["OpenClaw found weak overlap"],
                     "gaps": ["No major gaps detected from available data"] if is_relevant else ["Role is not aligned"],
+                    "applicationGuide": {
+                        "language": "English",
+                        "positioning": "Lead with verified machine learning experience.",
+                        "readiness": "needs_confirmation",
+                        "roleMission": "Build reliable machine learning systems for the product.",
+                        "hiringPriorities": ["Ship production-ready ML features."],
+                        "mustHave": ["Python", "Machine Learning"],
+                        "niceToHave": ["PyTorch"],
+                        "hardConstraints": [],
+                        "evidenceMatrix": [
+                            {
+                                "requirement": "Python",
+                                "importance": "required",
+                                "status": "verified",
+                                "evidence": "Python is listed in the candidate profile.",
+                                "action": "Lead with the strongest Python project.",
+                            }
+                        ],
+                        "clarificationQuestions": [
+                            {
+                                "id": "production-ml",
+                                "requirement": "Production ML",
+                                "question": "Which ML model did you deploy to production?",
+                                "why": "This is a core responsibility.",
+                                "claimIfConfirmed": "Deployed an ML model to production.",
+                                "blocking": True,
+                            }
+                        ],
+                        "resumePlan": {
+                            "targetHeadline": "Machine Learning Engineer",
+                            "summaryFocus": "Verified ML delivery experience.",
+                            "evidenceToLead": ["Python project evidence"],
+                            "bulletStrategy": ["Lead with the strongest verified ML result."],
+                        },
+                        "coverLetterPlan": {
+                            "openingAngle": "Connect verified ML work to the product mission.",
+                            "proofPoints": ["Python project evidence"],
+                            "motivationAngle": "Focus on the role's technical mission.",
+                        },
+                        "cvImprovements": ["Move relevant Python evidence into the summary."],
+                        "coverLetterStrategy": ["Connect verified project evidence to the role."],
+                        "risks": ["Do not claim tools absent from the profile."],
+                        "keywords": ["Python", "Machine Learning"],
+                        "applicationQuestions": ["Describe a relevant ML project using verified facts."],
+                        "finalChecklist": ["Verify every claim against the source CV."],
+                    },
                 }
             )
         return matches
@@ -208,6 +254,12 @@ def test_openclaw_prompt_treats_score_as_expert_judgment() -> None:
     assert "score as your expert judgment from 0 to 100" in prompt
     assert "not an arithmetic sum of breakdown values" in prompt
     assert "breakdownMaxScores" in prompt
+    assert '"applicationGuide"' in prompt
+    assert '"language":"English|German"' in prompt
+    assert '"evidenceMatrix"' in prompt
+    assert '"clarificationQuestions"' in prompt
+    assert "if a data role requires Excel" in prompt
+    assert "reuse directly when tailoring the candidate's CV and cover letter" in prompt
     assert '"weights"' not in prompt
 
 
@@ -623,7 +675,16 @@ def test_ai_match_endpoint_updates_and_persists_job_scores(monkeypatch: pytest.M
         assert payload["match"] != 50
         assert payload["aiMatch"]["source"] == "openclaw"
         assert payload["aiMatch"]["cacheKey"]
+        assert payload["aiMatch"]["applicationGuide"]["language"] == "English"
+        assert payload["aiMatch"]["applicationGuide"]["cvImprovements"]
+        assert payload["aiMatch"]["applicationGuide"]["roleMission"]
+        assert payload["aiMatch"]["applicationGuide"]["evidenceMatrix"][0]["status"] == "verified"
+        assert payload["aiMatch"]["applicationGuide"]["clarificationQuestions"][0]["blocking"] is True
         assert read_response.json()[0]["data"]["aiMatch"]["score"] == payload["match"]
+        assert (
+            read_response.json()[0]["data"]["aiMatch"]["applicationGuide"]
+            == payload["aiMatch"]["applicationGuide"]
+        )
 
         feedback_response = client.post(
             f"/jobs/{job['id']}/match-feedback",
@@ -657,6 +718,7 @@ def test_ai_match_endpoint_updates_and_persists_job_scores(monkeypatch: pytest.M
             assert rerun_payload["match"] in {record.score for record in match_records}
             assert all(record.source == "openclaw" for record in match_records)
             assert all(record.breakdown for record in match_records)
+            assert all("_applicationGuide" in record.breakdown for record in match_records)
     finally:
         app.dependency_overrides.clear()
 
@@ -820,7 +882,8 @@ def test_ai_match_run_endpoint_updates_status_and_persists_job_scores(monkeypatc
         )
 
         assert run_response.status_code == 202
-        assert run_response.json()["status"] in {"queued", "running"}
+        # The background worker may finish before TestClient returns when the scorer is mocked.
+        assert run_response.json()["status"] in {"queued", "running", "completed"}
 
         status_payload = {}
         for _ in range(20):

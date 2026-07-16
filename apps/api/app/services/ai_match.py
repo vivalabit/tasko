@@ -17,9 +17,23 @@ from app.services.resume_import import (
     summarize_openclaw_error,
 )
 
-MATCHER_VERSION = "ai-match-v1"
+MATCHER_VERSION = "ai-match-v3"
 MAX_REASON_COUNT = 3
 MAX_GAP_COUNT = 3
+APPLICATION_GUIDE_LIST_LIMITS = {
+    "hiringPriorities": 4,
+    "mustHave": 6,
+    "niceToHave": 5,
+    "hardConstraints": 4,
+    "cvImprovements": 4,
+    "coverLetterStrategy": 3,
+    "risks": 3,
+    "keywords": 8,
+    "applicationQuestions": 3,
+    "finalChecklist": 4,
+}
+MAX_EVIDENCE_MATRIX_COUNT = 8
+MAX_CLARIFICATION_QUESTION_COUNT = 3
 JOB_ADDED_AT_FIELDS = ("addedAt", "importedAt", "createdAt", "created_at")
 
 WEIGHTS = {
@@ -251,7 +265,7 @@ def build_job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
         "salary_currency": parse_job_salary_currency(job),
         "experience": experience.strip(),
         "department": str(job.get("department") or "").strip(),
-        "overview": overview.strip()[:1200],
+        "overview": overview.strip()[:4000],
         "requirements": requirements[:16],
         "responsibilities": responsibilities[:12],
         "skills": skills[:40],
@@ -352,7 +366,39 @@ def build_openclaw_ai_match_prompt(profile_snapshot: dict[str, Any], jobs: list[
         '{"matches":[{"id":"job id","score":0,"confidence":"low|medium|high",'
         '"breakdown":{"role_fit":0,"skills_fit":0,"experience_fit":0,"preferences_fit":0,'
         '"constraints_fit":0,"industry_fit":0,"evidence_fit":0},'
-        '"reasons":["max 3 short reasons"],"gaps":["max 3 short gaps"]}]}\n'
+        '"reasons":["max 3 short reasons"],"gaps":["max 3 short gaps"],'
+        '"applicationGuide":{"language":"English|German","positioning":"one short sentence",'
+        '"readiness":"ready|needs_confirmation|weak_fit",'
+        '"roleMission":"one sentence explaining what problem this hire must solve",'
+        '"hiringPriorities":["max 4 ranked outcomes"],'
+        '"mustHave":["max 6 mandatory requirements"],"niceToHave":["max 5 preferred requirements"],'
+        '"hardConstraints":["max 4 location, language, authorization, education or schedule constraints"],'
+        '"evidenceMatrix":[{"requirement":"short requirement","importance":"required|preferred",'
+        '"status":"verified|transferable|needs_confirmation|missing",'
+        '"evidence":"exact candidate evidence or empty string","action":"honest application action"}],'
+        '"clarificationQuestions":[{"id":"stable short id","requirement":"skill or requirement",'
+        '"question":"specific question asking for a real example","why":"why the answer changes the application",'
+        '"claimIfConfirmed":"exact claim that may be used only after confirmation","blocking":true}],'
+        '"resumePlan":{"targetHeadline":"truthful target headline","summaryFocus":"one sentence",'
+        '"evidenceToLead":["max 4 verified proof points"],"bulletStrategy":["max 4 concrete rewrites"]},'
+        '"coverLetterPlan":{"openingAngle":"specific opening angle","proofPoints":["max 3 verified proof points"],'
+        '"motivationAngle":"company or role-specific motivation without invented facts"},'
+        '"cvImprovements":["max 4 specific changes"],'
+        '"coverLetterStrategy":["max 3 specific points"],"risks":["max 3 risks or unsupported claims"],'
+        '"keywords":["max 8 short vacancy terms supported by candidate evidence"],'
+        '"applicationQuestions":["max 3 likely questions with truthful answer points"],'
+        '"finalChecklist":["max 4 concrete checks"]}}]}\n'
+        "First identify the vacancy's core mission and separate mandatory requirements from preferences "
+        "and hard constraints. Then map each important requirement to exact candidate evidence. "
+        "Use needs_confirmation only when the requirement matters and the candidate plausibly may have "
+        "the skill, but the provided evidence is insufficient. For example, if a data role requires Excel "
+        "and the profile mentions reporting but not Excel, ask which concrete Excel features were used. "
+        "Ask at most three high-impact clarification questions; never ask for facts already present. "
+        "Detect whether each vacancy is written primarily in English or German. Write every applicationGuide "
+        "value in that vacancy language. Make all advice specific enough to reuse directly when tailoring the candidate's CV and "
+        "cover letter. Creativity is allowed in positioning and wording, never in facts. Never suggest an "
+        "unsupported claim, metric, skill, certification, title, or experience. Keywords must either be "
+        "supported or explicitly marked needs_confirmation in evidenceMatrix.\n"
         f"Input JSON:\n{payload}"
     )
 
@@ -396,13 +442,21 @@ def normalize_openclaw_result(result: dict[str, Any], current_job: dict[str, Any
     breakdown = result["breakdown"]
     normalized_breakdown = {key: clamp_round(breakdown[key]) for key in WEIGHTS}
 
+    reasons = normalize_string_list(result.get("reasons"), MAX_REASON_COUNT)
+    gaps = normalize_string_list(result.get("gaps"), MAX_GAP_COUNT)
     return {
         "score": clamp_round(result["score"]),
         "source": "openclaw",
         "confidence": normalize_confidence(result.get("confidence", fallback.get("confidence", "medium"))),
         "breakdown": normalized_breakdown,
-        "reasons": normalize_string_list(result.get("reasons"), MAX_REASON_COUNT),
-        "gaps": normalize_string_list(result.get("gaps"), MAX_GAP_COUNT),
+        "reasons": reasons,
+        "gaps": gaps,
+        "applicationGuide": normalize_application_guide(
+            result.get("applicationGuide"),
+            current_job=current_job,
+            reasons=reasons,
+            gaps=gaps,
+        ),
         "heuristicScore": clamp_round(fallback.get("heuristicScore", current_job.get("match", 0))),
     }
 
@@ -444,10 +498,224 @@ def apply_match_result(
         "breakdown": result.get("breakdown", {}),
         "reasons": normalize_string_list(result.get("reasons"), MAX_REASON_COUNT),
         "gaps": normalize_string_list(result.get("gaps"), MAX_GAP_COUNT),
+        "applicationGuide": normalize_application_guide(
+            result.get("applicationGuide"),
+            current_job=job,
+            reasons=normalize_string_list(result.get("reasons"), MAX_REASON_COUNT),
+            gaps=normalize_string_list(result.get("gaps"), MAX_GAP_COUNT),
+        ),
         "heuristicScore": clamp_round(result.get("heuristicScore", score)),
         "updatedAt": updated_at,
     }
     return next_job
+
+
+def normalize_application_guide(
+    value: Any,
+    *,
+    current_job: dict[str, Any] | None = None,
+    reasons: list[str] | None = None,
+    gaps: list[str] | None = None,
+) -> dict[str, Any]:
+    guide = value if isinstance(value, dict) else {}
+    language = str(guide.get("language") or "").strip().lower()
+    if language in {"german", "de", "deutsch"}:
+        normalized_language = "German"
+    elif language in {"english", "en", "englisch"}:
+        normalized_language = "English"
+    else:
+        normalized_language = detect_job_language(current_job or {})
+    positioning = normalize_guide_text(guide.get("positioning"), 300)
+    normalized_reasons = normalize_string_list(reasons, MAX_REASON_COUNT)
+    normalized_gaps = normalize_string_list(gaps, MAX_GAP_COUNT)
+    if not positioning:
+        positioning = (
+            normalized_reasons[0]
+            if normalized_reasons
+            else "Align verified experience with the vacancy's strongest requirements."
+        )
+
+    normalized: dict[str, Any] = {
+        "language": normalized_language,
+        "positioning": positioning,
+        "readiness": normalize_guide_choice(
+            guide.get("readiness"),
+            {"ready", "needs_confirmation", "weak_fit"},
+            "needs_confirmation" if guide.get("clarificationQuestions") else "ready",
+        ),
+        "roleMission": normalize_guide_text(guide.get("roleMission"), 500)
+        or fallback_role_mission(current_job or {}),
+    }
+    for key, limit in APPLICATION_GUIDE_LIST_LIMITS.items():
+        normalized[key] = normalize_string_list(guide.get(key), limit)
+
+    if not normalized["cvImprovements"]:
+        normalized["cvImprovements"] = normalized_gaps or normalized_reasons
+    if not normalized["coverLetterStrategy"]:
+        normalized["coverLetterStrategy"] = normalized_reasons
+    if not normalized["risks"]:
+        normalized["risks"] = normalized_gaps
+    if not normalized["keywords"]:
+        normalized["keywords"] = normalize_list((current_job or {}).get("skills", []))[:8]
+    if not normalized["finalChecklist"]:
+        normalized["finalChecklist"] = [
+            "Verify every claim against the source CV.",
+            "Confirm the selected documents and application language before submitting.",
+        ]
+    normalized["evidenceMatrix"] = normalize_evidence_matrix(guide.get("evidenceMatrix"))
+    normalized["clarificationQuestions"] = normalize_clarification_questions(
+        guide.get("clarificationQuestions")
+    )
+    normalized["resumePlan"] = normalize_resume_plan(guide.get("resumePlan"))
+    normalized["coverLetterPlan"] = normalize_cover_letter_plan(guide.get("coverLetterPlan"))
+    if normalized["clarificationQuestions"] and normalized["readiness"] == "ready":
+        normalized["readiness"] = "needs_confirmation"
+    return normalized
+
+
+def normalize_guide_text(value: Any, limit: int = 300) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def normalize_guide_choice(value: Any, allowed: set[str], default: str) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in allowed else default
+
+
+def normalize_evidence_matrix(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        requirement = normalize_guide_text(item.get("requirement"), 240)
+        if not requirement:
+            continue
+        normalized.append(
+            {
+                "requirement": requirement,
+                "importance": normalize_guide_choice(
+                    item.get("importance"), {"required", "preferred"}, "required"
+                ),
+                "status": normalize_guide_choice(
+                    item.get("status"),
+                    {"verified", "transferable", "needs_confirmation", "missing"},
+                    "needs_confirmation",
+                ),
+                "evidence": normalize_guide_text(item.get("evidence"), 500),
+                "action": normalize_guide_text(item.get("action"), 400),
+            }
+        )
+        if len(normalized) >= MAX_EVIDENCE_MATRIX_COUNT:
+            break
+    return normalized
+
+
+def normalize_clarification_questions(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            continue
+        question = normalize_guide_text(item.get("question"), 500)
+        if not question:
+            continue
+        raw_id = re.sub(
+            r"[^a-z0-9_-]+", "-", str(item.get("id") or "").strip().lower()
+        ).strip("-")
+        normalized.append(
+            {
+                "id": (raw_id or f"question-{index + 1}")[:80],
+                "requirement": normalize_guide_text(item.get("requirement"), 200),
+                "question": question,
+                "why": normalize_guide_text(item.get("why"), 400),
+                "claimIfConfirmed": normalize_guide_text(item.get("claimIfConfirmed"), 500),
+                "blocking": bool(item.get("blocking")),
+            }
+        )
+        if len(normalized) >= MAX_CLARIFICATION_QUESTION_COUNT:
+            break
+    return normalized
+
+
+def normalize_resume_plan(value: Any) -> dict[str, Any]:
+    plan = value if isinstance(value, dict) else {}
+    return {
+        "targetHeadline": normalize_guide_text(plan.get("targetHeadline"), 240),
+        "summaryFocus": normalize_guide_text(plan.get("summaryFocus"), 500),
+        "evidenceToLead": normalize_string_list(plan.get("evidenceToLead"), 4),
+        "bulletStrategy": normalize_string_list(plan.get("bulletStrategy"), 4),
+    }
+
+
+def normalize_cover_letter_plan(value: Any) -> dict[str, Any]:
+    plan = value if isinstance(value, dict) else {}
+    return {
+        "openingAngle": normalize_guide_text(plan.get("openingAngle"), 500),
+        "proofPoints": normalize_string_list(plan.get("proofPoints"), 3),
+        "motivationAngle": normalize_guide_text(plan.get("motivationAngle"), 500),
+    }
+
+
+def fallback_role_mission(job: dict[str, Any]) -> str:
+    overview = normalize_guide_text(job.get("overview"), 500)
+    if overview:
+        return overview
+    title = normalize_guide_text(job.get("title"), 160) or "this role"
+    company = normalize_guide_text(job.get("company"), 160)
+    return f"Succeed as {title}{f' at {company}' if company else ''}."
+
+
+def detect_job_language(job: dict[str, Any]) -> str:
+    text = " ".join(
+        [
+            str(job.get("title") or ""),
+            str(job.get("overview") or ""),
+            *normalize_list(job.get("requirements", [])),
+            *normalize_list(job.get("responsibilities", [])),
+        ]
+    ).lower()
+    german_markers = (
+        " der ",
+        " die ",
+        " das ",
+        " und ",
+        " oder ",
+        " mit ",
+        " für ",
+        " bei ",
+        " wir ",
+        " sie ",
+        " deine ",
+        " ihr ",
+        " aufgaben",
+        "anforderungen",
+        "erfahrung",
+        "kenntnisse",
+        "bewerbung",
+        "deutsch",
+    )
+    english_markers = (
+        " the ",
+        " and ",
+        " or ",
+        " with ",
+        " for ",
+        " we ",
+        " you ",
+        " your ",
+        "responsibilities",
+        "requirements",
+        "experience",
+        "skills",
+        "application",
+    )
+    padded = f" {text} "
+    german_score = sum(padded.count(marker) for marker in german_markers)
+    english_score = sum(padded.count(marker) for marker in english_markers)
+    return "German" if german_score > english_score else "English"
 
 
 def build_cache_key(profile_snapshot: dict[str, Any], job_snapshot: dict[str, Any]) -> str:
