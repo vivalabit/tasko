@@ -4068,6 +4068,12 @@ export default function HomePage() {
       return;
     }
 
+    if (["CV / Resume", "Cover Letter"].includes(normalizedDocument.category) && !normalizedDocument.file_name.toLowerCase().endsWith(".docx")) {
+      setProfileSaveStatus("error");
+      setProfileSaveMessage("CV and cover letter sources must be DOCX files");
+      return;
+    }
+
     setProfileSaveStatus("loading");
     setProfileSaveMessage("");
 
@@ -4597,6 +4603,11 @@ export default function HomePage() {
   }
 
   function attachDocumentFile(file: File) {
+    const isGeneratedDocumentSource = ["CV / Resume", "Cover Letter"].includes(documentDraft.category);
+    if (isGeneratedDocumentSource && !file.name.toLowerCase().endsWith(".docx")) {
+      window.alert("CV and cover letter sources must be DOCX files so their design can be preserved.");
+      return;
+    }
     const allowedTypes = new Set([
       "application/pdf",
       "application/msword",
@@ -4642,16 +4653,8 @@ export default function HomePage() {
   }
 
   async function saveResumeFile(file: File) {
-    const allowedTypes = new Set([
-      "application/pdf",
-      "application/msword",
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    ]);
-    const allowedExtensions = [".pdf", ".doc", ".docx"];
-    const hasAllowedExtension = allowedExtensions.some((extension) => file.name.toLowerCase().endsWith(extension));
-
-    if (!allowedTypes.has(file.type) && !hasAllowedExtension) {
-      window.alert("Upload a PDF, DOC, or DOCX resume.");
+    if (!file.name.toLowerCase().endsWith(".docx")) {
+      window.alert("Upload a DOCX resume so Tasko can preserve its design during generation.");
       return;
     }
 
@@ -8936,7 +8939,7 @@ function ResumeUploadButton({
       {label}
       <input
         type="file"
-        accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         className="hidden"
         onChange={(event) => {
           const file = event.target.files?.[0];
@@ -8952,6 +8955,7 @@ function ResumeUploadButton({
 
 function ResumePanel({ profile, onSaveResume }: { profile: CandidateProfile; onSaveResume: (file: File) => void }) {
   const hasResume = hasProfileValue(profile.resume_file_name);
+  const hasDocxResume = profile.resume_file_name.toLowerCase().endsWith(".docx");
 
   return (
     <section className="panel p-4 2xl:p-5">
@@ -8961,12 +8965,12 @@ function ResumePanel({ profile, onSaveResume }: { profile: CandidateProfile; onS
       {hasResume ? (
         <div className="mt-4 grid gap-3 rounded-md border border-border bg-white/[0.025] p-3 sm:grid-cols-[48px_minmax(0,1fr)_auto] sm:items-center">
           <div className="grid h-12 w-12 place-items-center rounded-md bg-[#ef4444] text-xs font-black text-white">
-            {profile.resume_file_name.toLowerCase().endsWith(".pdf") ? "PDF" : "DOC"}
+            {hasDocxResume ? "DOCX" : "FILE"}
           </div>
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <p className="truncate text-sm font-bold text-white">{profile.resume_file_name}</p>
-              <span className="rounded bg-success/18 px-2 py-0.5 text-[11px] font-bold text-success">Attached</span>
+              <span className={cn("rounded px-2 py-0.5 text-[11px] font-bold", hasDocxResume ? "bg-success/18 text-success" : "bg-amber-400/15 text-amber-300")}>{hasDocxResume ? "Ready for generation" : "Replace with DOCX"}</span>
             </div>
             <p className="mt-1 text-xs font-medium text-muted">
               {profile.resume_updated_at ? `Updated ${formatProfileDate(profile.resume_updated_at)}` : "Attached"}
@@ -8974,7 +8978,7 @@ function ResumePanel({ profile, onSaveResume }: { profile: CandidateProfile; onS
             </p>
           </div>
           <ResumeUploadButton
-            label="Replace"
+            label={hasDocxResume ? "Replace" : "Replace with DOCX"}
             onSaveResume={onSaveResume}
             className="h-9 px-3 text-xs font-semibold"
           />
@@ -8982,7 +8986,7 @@ function ResumePanel({ profile, onSaveResume }: { profile: CandidateProfile; onS
       ) : (
         <div className="mt-4 rounded-md border border-dashed border-white/[0.16] bg-white/[0.025] p-3">
           <p className="text-sm font-bold text-white">No resume uploaded</p>
-          <p className="mt-1 text-xs leading-5 text-muted 2xl:text-[13px]">Attach a PDF, DOC, or DOCX resume. Maximum file size is 5MB.</p>
+          <p className="mt-1 text-xs leading-5 text-muted 2xl:text-[13px]">Attach the original DOCX resume. Tasko will use it as the fixed design for every tailored version.</p>
           <ResumeUploadButton
             label="Attach resume"
             onSaveResume={onSaveResume}
@@ -10418,6 +10422,7 @@ function DocumentEditorDialog({
   onClose: () => void;
   onSave: () => void;
 }) {
+  const isGeneratedDocumentSource = ["CV / Resume", "Cover Letter"].includes(document.category);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
       <div className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[720px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] sm:p-5">
@@ -10478,7 +10483,7 @@ function DocumentEditorDialog({
                 <div className="min-w-0">
                   <p className="text-sm font-bold text-white">Attached file</p>
                   <p className="mt-1 truncate text-xs text-muted">
-                    {document.file_name ? `${document.file_name}${document.file_size ? ` • ${document.file_size}` : ""}` : "PDF, DOC, DOCX, PNG, JPG, or WebP under 5MB"}
+                    {document.file_name ? `${document.file_name}${document.file_size ? ` • ${document.file_size}` : ""}` : isGeneratedDocumentSource ? "DOCX under 5MB — its design will be preserved" : "PDF, DOC, DOCX, PNG, JPG, or WebP under 5MB"}
                   </p>
                 </div>
                 <label className="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-md border border-border bg-white/[0.035] px-3 text-xs font-semibold text-[#e6ebf3] transition hover:bg-white/[0.07]">
@@ -10486,7 +10491,7 @@ function DocumentEditorDialog({
                   {document.file_name ? "Replace file" : "Attach file"}
                   <input
                     type="file"
-                    accept=".pdf,.doc,.docx,.png,.jpg,.jpeg,.webp,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg,image/webp"
+                    accept={isGeneratedDocumentSource ? ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" : ".pdf,.doc,.docx,.png,.jpg,.jpeg,.webp,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg,image/webp"}
                     className="hidden"
                     onChange={(event) => {
                       const file = event.target.files?.[0];

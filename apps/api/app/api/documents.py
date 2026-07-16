@@ -101,6 +101,7 @@ def create_document(
                 rendered_content = build_document_from_template(
                     template_content=template.content,
                     content=request.content,
+                    document_type=request.type,
                 )
             except ValueError as exc:
                 raise HTTPException(
@@ -172,6 +173,7 @@ def update_document(
                         rendered_content = build_document_from_template(
                             template_content=template.content,
                             content=request.content,
+                            document_type=record.type,
                         )
                     except ValueError as exc:
                         raise HTTPException(

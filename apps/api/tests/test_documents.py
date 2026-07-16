@@ -1,6 +1,7 @@
 from collections.abc import Generator
 import base64
 from io import BytesIO
+import zipfile
 
 from docx import Document
 from fastapi.testclient import TestClient
@@ -218,3 +219,97 @@ def test_cover_letter_template_preserves_visual_structure() -> None:
     assert "My first tailored paragraph." in body_text
     assert "My second tailored paragraph." in body_text
     assert "Original reusable body paragraph." not in body_text
+
+
+def test_resume_template_rewrites_blocks_without_rebuilding_design() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        with testing_session_local() as db:
+            yield db
+
+    with testing_session_local() as db:
+        db.add(
+            StoredApplicationRecord(
+                id="application-resume-template",
+                data={"id": "application-resume-template", "status": "draft"},
+            )
+        )
+        db.commit()
+
+    template = Document()
+    template.sections[0].header.paragraphs[0].text = "EDUARD · CONTACT"
+    name = template.add_paragraph("Eduard Ishchenko")
+    name.style = template.styles["Heading 1"]
+    template.add_paragraph("Original professional summary")
+    table = template.add_table(rows=1, cols=2)
+    table.style = "Table Grid"
+    table.cell(0, 0).text = "Python"
+    table.cell(0, 1).text = "Original achievement"
+    template.sections[0].footer.paragraphs[0].text = "Resume footer"
+    template_output = BytesIO()
+    template.save(template_output)
+    data_url = "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," + base64.b64encode(
+        template_output.getvalue()
+    ).decode()
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        uploaded = client.post(
+            "/documents/templates",
+            json={
+                "type": "tailored_resume",
+                "name": "Main CV",
+                "fileName": "resume.docx",
+                "dataUrl": data_url,
+            },
+        )
+        created = client.post(
+            "/documents",
+            json={
+                "type": "tailored_resume",
+                "title": "Tailored resume",
+                "content": (
+                    "Eduard Ishchenko\n"
+                    "Backend engineer focused on FastAPI\n"
+                    "Python\n"
+                    "Built a verified production service"
+                ),
+                "applicationId": "application-resume-template",
+                "templateId": uploaded.json()["id"],
+            },
+        )
+        downloaded = client.get(f"/documents/{created.json()['id']}/download")
+    finally:
+        app.dependency_overrides.clear()
+
+    rendered = Document(BytesIO(downloaded.content))
+    with zipfile.ZipFile(BytesIO(template_output.getvalue())) as source_package:
+        with zipfile.ZipFile(BytesIO(downloaded.content)) as rendered_package:
+            for preserved_part in (
+                "word/styles.xml",
+                "word/header1.xml",
+                "word/footer1.xml",
+            ):
+                assert rendered_package.read(preserved_part) == source_package.read(preserved_part)
+            assert rendered_package.read("word/document.xml") != source_package.read(
+                "word/document.xml"
+            )
+
+    assert uploaded.status_code == 201
+    assert created.status_code == 201
+    assert downloaded.status_code == 200
+    assert rendered.sections[0].header.paragraphs[0].text == "EDUARD · CONTACT"
+    assert rendered.sections[0].footer.paragraphs[0].text == "Resume footer"
+    assert rendered.paragraphs[0].style.name == "Heading 1"
+    assert rendered.paragraphs[1].text == "Backend engineer focused on FastAPI"
+    assert rendered.tables[0].style.name == "Table Grid"
+    assert rendered.tables[0].cell(0, 0).text == "Python"
+    assert rendered.tables[0].cell(0, 1).text == "Built a verified production service"

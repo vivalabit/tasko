@@ -26,6 +26,8 @@ from app.models.assistant import (
 )
 from app.models.profile import ProfilePayload
 from app.services.resume_import import (
+    decode_resume_data_url,
+    extract_docx_body_text,
     extract_json_objects,
     extract_openclaw_text_payloads,
     extract_resume_text,
@@ -407,7 +409,14 @@ def build_source_document_context(
         if remaining_chars <= 0:
             break
         try:
-            extracted_text = extract_resume_text(source.file_name, source.data_url).strip()
+            if source.file_name.lower().endswith(".docx"):
+                _, binary_content = decode_resume_data_url(source.data_url)
+                extracted_text = extract_docx_body_text(binary_content).strip()
+            else:
+                extracted_text = extract_resume_text(
+                    source.file_name,
+                    source.data_url,
+                ).strip()
         except Exception:
             extracted_text = ""
         if not extracted_text:

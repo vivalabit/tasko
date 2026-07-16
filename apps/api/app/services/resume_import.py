@@ -269,16 +269,42 @@ def extract_docx_text(content: bytes) -> str:
             ]
             parts: list[str] = []
             for name in names:
-                root = ElementTree.fromstring(archive.read(name))
-                text_nodes = [
-                    node.text or ""
-                    for node in root.iter()
-                    if node.tag.endswith("}t") or node.tag == "t"
-                ]
-                parts.append(" ".join(text_nodes))
+                lines = extract_docx_part_lines(archive.read(name))
+                if lines:
+                    parts.append("\n".join(lines))
             return "\n".join(parts)
     except (ElementTree.ParseError, KeyError, OSError, zipfile.BadZipFile):
         return ""
+
+
+def extract_docx_body_text(content: bytes) -> str:
+    try:
+        with zipfile.ZipFile(BytesIO(content)) as archive:
+            return "\n".join(extract_docx_part_lines(archive.read("word/document.xml")))
+    except (ElementTree.ParseError, KeyError, OSError, zipfile.BadZipFile):
+        return ""
+
+
+def extract_docx_part_lines(content: bytes) -> list[str]:
+    root = ElementTree.fromstring(content)
+    lines: list[str] = []
+    for paragraph in root.iter():
+        if not (paragraph.tag.endswith("}p") or paragraph.tag == "p"):
+            continue
+        text = "".join(iter_paragraph_text(paragraph)).strip()
+        if text:
+            lines.append(text)
+    return lines
+
+
+def iter_paragraph_text(element):
+    for child in element:
+        if child.tag.endswith("}p") or child.tag == "p":
+            continue
+        if child.tag.endswith("}t") or child.tag == "t":
+            yield child.text or ""
+        else:
+            yield from iter_paragraph_text(child)
 
 
 def extract_pdf_text(content: bytes) -> str:

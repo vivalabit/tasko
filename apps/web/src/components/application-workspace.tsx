@@ -231,13 +231,11 @@ export function ApplicationWorkspace({
 }: ApplicationWorkspaceProps) {
   const [documents, setDocuments] = useState<GeneratedDocument[]>([]);
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
-  const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [selectedResumeSourceId, setSelectedResumeSourceId] = useState("");
   const [selectedCoverSourceId, setSelectedCoverSourceId] = useState("");
   const [temporarySources, setTemporarySources] = useState<ProfileSourceDocument[]>([]);
   const [generationType, setGenerationType] = useState<GeneratedDocument["type"] | "">("");
   const [isGeneratingPack, setIsGeneratingPack] = useState(false);
-  const [isUploadingTemplate, setIsUploadingTemplate] = useState(false);
   const [documentError, setDocumentError] = useState("");
   const [advice, setAdvice] = useState("");
   const [advicePrompt, setAdvicePrompt] = useState("");
@@ -272,29 +270,22 @@ export function ApplicationWorkspace({
     () => documents.find((document) => document.type === "cover_letter"),
     [documents],
   );
-  const coverTemplates = useMemo(
-    () => templates.filter((template) => template.type === "cover_letter"),
-    [templates],
-  );
   const profileSources = useMemo(
     () => [...temporarySources, ...parseProfileSourceDocuments(profile)],
     [profile, temporarySources],
   );
   const resumeSources = useMemo(
-    () => profileSources.filter((source) => source.category === "CV / Resume"),
+    () => profileSources.filter((source) => source.category === "CV / Resume" && source.file_name.toLowerCase().endsWith(".docx")),
     [profileSources],
   );
   const coverSources = useMemo(
-    () => profileSources.filter((source) => source.category === "Cover Letter"),
+    () => profileSources.filter((source) => source.category === "Cover Letter" && source.file_name.toLowerCase().endsWith(".docx")),
     [profileSources],
   );
 
   useEffect(() => {
     if (!selectedResumeSourceId && resumeSources[0]) setSelectedResumeSourceId(resumeSources[0].id);
-    if (!selectedCoverSourceId && coverSources[0]) {
-      setSelectedCoverSourceId(coverSources[0].id);
-      if (coverSources[0].file_name.toLowerCase().endsWith(".docx")) setSelectedTemplateId("__source__");
-    }
+    if (!selectedCoverSourceId && coverSources[0]) setSelectedCoverSourceId(coverSources[0].id);
   }, [coverSources, resumeSources, selectedCoverSourceId, selectedResumeSourceId]);
 
   if (!application) {
@@ -353,16 +344,16 @@ export function ApplicationWorkspace({
       const isCoverLetter = type === "cover_letter";
       const selectedSourceId = isCoverLetter ? selectedCoverSourceId : selectedResumeSourceId;
       const selectedSource = profileSources.find((source) => source.id === selectedSourceId);
+      if (!selectedSource || !selectedSource.file_name.toLowerCase().endsWith(".docx")) {
+        throw new Error(`Select a DOCX ${isCoverLetter ? "cover letter" : "CV"} before generating`);
+      }
       const prompt = isCoverLetter
-        ? "Write the final concise cover letter for this vacancy using only verified evidence from my profile and the selected source document. Use the source letter as writing material and preserve its truthful facts, but tailor the wording to this vacancy. Return only the letter text, without Markdown or commentary. Start with a greeting, use 2-4 focused body paragraphs, and finish with a professional closing. Do not invent achievements or metrics."
-        : "Create the final complete tailored resume for this vacancy using only verified evidence from my profile and the selected source CV. Treat the selected CV as primary source material, preserve its truthful facts, and tailor emphasis and wording to this vacancy. Return only the resume content with clear section headings and concise achievement bullets. Do not add commentary and do not invent achievements or metrics.";
-      const content = await askAssistant(prompt, selectedSource ? [selectedSource] : []);
+        ? "Rewrite the selected DOCX cover letter for this vacancy using only verified evidence from my profile and the source document. Preserve its truthful facts. Return only the complete letter text without Markdown or commentary, keeping a greeting, focused body paragraphs, and professional closing. Do not invent achievements or metrics."
+        : "Tailor the selected DOCX resume to this vacancy while keeping its layout unchanged. Return exactly one plain-text line for every non-empty body text block in the source DOCX, in the identical order and with the identical number of lines. Repeat contact details, section headings, dates, employers, education, and any line that should not change verbatim. Rewrite only existing summary, skill, and achievement lines where truthful evidence supports it. Do not add, remove, merge, split, or reorder lines. Do not use Markdown markers or commentary. Do not invent facts or metrics.";
+      const content = await askAssistant(prompt, [selectedSource]);
       if (!content) throw new Error("AI returned an empty document");
 
-      let coverTemplateId = isCoverLetter ? selectedTemplateId : "";
-      if (isCoverLetter && selectedTemplateId === "__source__" && selectedSource) {
-        coverTemplateId = await ensureSourceTemplate(selectedSource);
-      }
+      const templateId = await ensureSourceTemplate(selectedSource, type);
 
       const title = `${isCoverLetter ? "Cover letter" : "Tailored CV"} · ${activeApplication.job.title} · ${activeApplication.job.company}`;
       const response = await fetch(`${apiBaseUrl}/documents`, {
@@ -374,7 +365,7 @@ export function ApplicationWorkspace({
           content,
           jobId: activeApplication.job.id,
           applicationId: activeApplication.id,
-          ...(isCoverLetter && coverTemplateId ? { templateId: coverTemplateId } : {}),
+          templateId,
         }),
       });
       if (!response.ok) throw new Error(await readApiError(response, "Document save failed"));
@@ -404,61 +395,21 @@ export function ApplicationWorkspace({
     setIsGeneratingPack(false);
   }
 
-  async function uploadTemplate(file: File | undefined) {
-    if (!file) return;
-    if (!file.name.toLowerCase().endsWith(".docx")) {
-      setDocumentError("Cover letter template must be a .docx file");
-      return;
-    }
-    if (file.size > 10_000_000) {
-      setDocumentError("Cover letter template must be under 10 MB");
-      return;
-    }
-    setIsUploadingTemplate(true);
-    setDocumentError("");
-    try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("Template reading failed"));
-        reader.onerror = () => reject(new Error("Template reading failed"));
-        reader.readAsDataURL(file);
-      });
-      const response = await fetch(`${apiBaseUrl}/documents/templates`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "cover_letter",
-          name: file.name.replace(/\.docx$/i, "").replace(/[_-]+/g, " "),
-          fileName: file.name,
-          dataUrl,
-        }),
-      });
-      if (!response.ok) throw new Error(await readApiError(response, "Template upload failed"));
-      const uploaded = await response.json() as DocumentTemplate;
-      setTemplates((current) => [uploaded, ...current]);
-      setSelectedTemplateId(uploaded.id);
-    } catch (error) {
-      setDocumentError(error instanceof Error ? error.message : "Template upload failed");
-    } finally {
-      setIsUploadingTemplate(false);
-    }
-  }
-
-  async function ensureSourceTemplate(source: ProfileSourceDocument) {
-    if (!source.file_name.toLowerCase().endsWith(".docx")) return "";
-    const existing = templates.find((template) => template.fileName === source.file_name);
+  async function ensureSourceTemplate(source: ProfileSourceDocument, type: GeneratedDocument["type"]) {
+    const templateName = `${source.title} · ${source.uploaded_at || source.id}`.slice(0, 240);
+    const existing = templates.find((template) => template.type === type && template.fileName === source.file_name && template.name === templateName);
     if (existing) return existing.id;
     const response = await fetch(`${apiBaseUrl}/documents/templates`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        type: "cover_letter",
-        name: source.title,
+        type,
+        name: templateName,
         fileName: source.file_name,
         dataUrl: source.data_url,
       }),
     });
-    if (!response.ok) throw new Error(await readApiError(response, "Profile cover letter could not be used as a Word template"));
+    if (!response.ok) throw new Error(await readApiError(response, "Selected DOCX could not be used as a Word template"));
     const uploaded = await response.json() as DocumentTemplate;
     setTemplates((current) => [uploaded, ...current]);
     return uploaded.id;
@@ -467,8 +418,8 @@ export function ApplicationWorkspace({
   async function attachWorkspaceSource(file: File | undefined, category: "CV / Resume" | "Cover Letter") {
     if (!file) return;
     const lowerName = file.name.toLowerCase();
-    if (![".pdf", ".doc", ".docx"].some((extension) => lowerName.endsWith(extension))) {
-      setDocumentError("Source document must be a PDF, DOC, or DOCX file");
+    if (!lowerName.endsWith(".docx")) {
+      setDocumentError("CV and cover letter sources must be DOCX files so their design can be preserved");
       return;
     }
     if (file.size > 10_000_000) {
@@ -498,7 +449,6 @@ export function ApplicationWorkspace({
         setSelectedResumeSourceId(source.id);
       } else {
         setSelectedCoverSourceId(source.id);
-        if (lowerName.endsWith(".docx")) setSelectedTemplateId("__source__");
       }
     } catch (error) {
       setDocumentError(error instanceof Error ? error.message : "Source document reading failed");
@@ -563,9 +513,9 @@ export function ApplicationWorkspace({
                 <div>
                   <p className="text-[10px] font-black uppercase tracking-[0.12em] text-accent">Application pack</p>
                   <h2 className="mt-1 text-lg font-bold text-white">Documents tailored to this vacancy</h2>
-                  <p className="mt-1 text-xs leading-5 text-muted">Generate both documents together, then review and download each version.</p>
+                  <p className="mt-1 text-xs leading-5 text-muted">Choose DOCX originals, then AI changes their text without replacing the design.</p>
                 </div>
-                <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType)} className="h-10 shrink-0 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-4 text-xs font-bold text-white shadow-[0_10px_28px_rgba(255,90,0,0.2)]">
+                <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType) || !selectedResumeSourceId || !selectedCoverSourceId} className="h-10 shrink-0 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-4 text-xs font-bold text-white shadow-[0_10px_28px_rgba(255,90,0,0.2)] disabled:opacity-45">
                   {isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
                   {isGeneratingPack ? "Generating pack…" : "Generate application pack"}
                 </Button>
@@ -577,10 +527,11 @@ export function ApplicationWorkspace({
                 <DocumentCard
                   icon={FileText}
                   label="Tailored CV"
-                  description="Reorders and rewrites verified experience for this role."
+                  description="Rewrites existing text blocks while keeping the DOCX structure and design."
                   document={latestResume}
                   isGenerating={generationType === "tailored_resume"}
                   onGenerate={() => generateDocument("tailored_resume")}
+                  canGenerate={Boolean(selectedResumeSourceId)}
                   sourceControl={(
                     <SourcePicker
                       label="Source CV"
@@ -594,43 +545,19 @@ export function ApplicationWorkspace({
                 <DocumentCard
                   icon={Mail}
                   label="Cover letter"
-                  description="Uses the vacancy and your evidence in your chosen Word layout."
+                  description="Tailors the letter inside the selected DOCX without replacing its layout."
                   document={latestCoverLetter}
                   isGenerating={generationType === "cover_letter"}
                   onGenerate={() => generateDocument("cover_letter")}
+                  canGenerate={Boolean(selectedCoverSourceId)}
                   sourceControl={(
                     <SourcePicker
                       label="Source cover letter"
                       sources={coverSources}
                       selectedId={selectedCoverSourceId}
-                      onChange={(sourceId) => {
-                        setSelectedCoverSourceId(sourceId);
-                        const source = profileSources.find((item) => item.id === sourceId);
-                        if (source?.file_name.toLowerCase().endsWith(".docx")) {
-                          setSelectedTemplateId("__source__");
-                        } else if (selectedTemplateId === "__source__") {
-                          setSelectedTemplateId("");
-                        }
-                      }}
+                      onChange={setSelectedCoverSourceId}
                       onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")}
                     />
-                  )}
-                  templateControl={(
-                    <div className="mt-3 rounded-md border border-border bg-black/10 p-2.5">
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="text-[10px] font-bold uppercase tracking-wide text-muted">Word template</p>
-                        <label className="inline-flex cursor-pointer items-center gap-1 text-[10px] font-bold text-accent hover:text-white">
-                          {isUploadingTemplate ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />} Upload .docx
-                          <input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="hidden" disabled={isUploadingTemplate} onChange={(event) => { void uploadTemplate(event.target.files?.[0]); event.currentTarget.value = ""; }} />
-                        </label>
-                      </div>
-                      <select value={selectedTemplateId} onChange={(event) => setSelectedTemplateId(event.target.value)} className="mt-2 h-8 w-full rounded-md border border-border bg-[#151c24] px-2 text-[11px] font-semibold text-white outline-none focus:border-accent/60">
-                        <option value="">Tasko default style</option>
-                        {profileSources.find((source) => source.id === selectedCoverSourceId)?.file_name.toLowerCase().endsWith(".docx") ? <option value="__source__">Use selected source layout</option> : null}
-                        {coverTemplates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}
-                      </select>
-                      <p className="mt-2 text-[9px] leading-4 text-muted">Formatting, header, footer and images stay in the original DOCX. Use a normal greeting/closing or a {"{{cover_letter_body}}"} marker.</p>
-                    </div>
                   )}
                 />
               </div>
@@ -719,8 +646,8 @@ function DocumentCard({
   document,
   isGenerating,
   onGenerate,
+  canGenerate,
   sourceControl,
-  templateControl,
 }: {
   icon: typeof FileText;
   label: string;
@@ -728,8 +655,8 @@ function DocumentCard({
   document: GeneratedDocument | undefined;
   isGenerating: boolean;
   onGenerate: () => void;
+  canGenerate: boolean;
   sourceControl?: React.ReactNode;
-  templateControl?: React.ReactNode;
 }) {
   const content = currentContent(document);
   return (
@@ -739,12 +666,11 @@ function DocumentCard({
         <div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><h3 className="text-sm font-bold text-white">{label}</h3>{document ? <span className="inline-flex items-center gap-1 rounded border border-success/35 bg-success/10 px-1.5 py-0.5 text-[9px] font-bold text-success"><FileCheck2 className="h-3 w-3" /> Ready · v{document.currentVersion}</span> : <span className="rounded border border-border px-1.5 py-0.5 text-[9px] font-bold text-muted">Not generated</span>}</div><p className="mt-1 text-[10px] leading-4 text-muted">{description}</p></div>
       </div>
       {sourceControl}
-      {templateControl}
       <div className="mt-3 min-h-[180px] flex-1 overflow-hidden rounded-md border border-border bg-[#f6f4ef] p-4 text-[#20242a] shadow-inner">
         {isGenerating ? <div className="grid h-full min-h-[150px] place-items-center text-center"><div><LoaderCircle className="mx-auto h-5 w-5 animate-spin text-[#ff5a00]" /><p className="mt-2 text-[11px] font-semibold text-[#646b74]">Writing an evidence-based version…</p></div></div> : content ? <p className="line-clamp-[10] whitespace-pre-wrap font-serif text-[10px] leading-[1.55]">{content}</p> : <div className="grid h-full min-h-[150px] place-items-center text-center"><div><Icon className="mx-auto h-6 w-6 text-[#a4a8ad]" /><p className="mt-2 text-[11px] font-semibold text-[#767c84]">Your document preview will appear here.</p></div></div>}
       </div>
       <div className="mt-3 flex gap-2">
-        <Button type="button" disabled={isGenerating} onClick={onGenerate} className="h-9 flex-1 rounded-md bg-accent px-3 text-[11px] font-bold text-white hover:bg-[#ff6a14]">{isGenerating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : document ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}{isGenerating ? "Generating…" : document ? "Regenerate" : "Generate"}</Button>
+        <Button type="button" disabled={isGenerating || !canGenerate} onClick={onGenerate} className="h-9 flex-1 rounded-md bg-accent px-3 text-[11px] font-bold text-white hover:bg-[#ff6a14] disabled:opacity-45">{isGenerating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : document ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}{isGenerating ? "Generating…" : !canGenerate ? "Select DOCX" : document ? "Regenerate" : "Generate"}</Button>
         {document ? <a href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download`} download={documentFileName(document)} className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border px-3 text-[11px] font-bold text-[#e6ebf3] transition hover:bg-white/[0.06]"><Download className="h-3.5 w-3.5" /> DOCX</a> : null}
       </div>
     </article>
@@ -772,7 +698,7 @@ function SourcePicker({
           <Upload className="h-3.5 w-3.5" /> Attach for this application
           <input
             type="file"
-            accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             className="hidden"
             onChange={(event) => {
               onAttach(event.target.files?.[0]);
@@ -782,10 +708,10 @@ function SourcePicker({
         </label>
       </div>
       <select value={selectedId} onChange={(event) => onChange(event.target.value)} className="mt-2 h-8 w-full rounded-md border border-border bg-[#151c24] px-2 text-[11px] font-semibold text-white outline-none focus:border-accent/60">
-        <option value="">Use structured profile only</option>
+        <option value="">Select DOCX source</option>
         {sources.map((source) => <option key={source.id} value={source.id}>{source.title} · {source.file_name}</option>)}
       </select>
-      <p className="mt-2 text-[9px] leading-4 text-muted">{sources.length ? "Choose a reusable source from Profile or attach a one-off file." : "No matching source in Profile yet. Add one there or attach it here."}</p>
+      <p className="mt-2 text-[9px] leading-4 text-muted">{sources.length ? "The selected DOCX is copied and keeps its layout, styles, images, header and footer." : "No DOCX source in Profile yet. Add one there or attach it for this application."}</p>
     </div>
   );
 }

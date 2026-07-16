@@ -1,4 +1,5 @@
 import re
+import zipfile
 from copy import deepcopy
 from io import BytesIO
 
@@ -8,6 +9,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
+from lxml import etree
 
 
 BODY_FONT = "Calibri"
@@ -34,9 +36,50 @@ def build_document_docx(
     return output.getvalue()
 
 
-def build_document_from_template(*, template_content: bytes, content: str) -> bytes:
-    """Replace editable cover-letter text while preserving the uploaded DOCX package."""
+def build_document_from_template(
+    *,
+    template_content: bytes,
+    content: str,
+    document_type: str,
+) -> bytes:
+    """Replace text inside a copied DOCX while retaining its visual structure."""
+    if document_type == "tailored_resume":
+        return build_resume_from_template_package(template_content, content)
+
     document = Document(BytesIO(template_content))
+    replace_cover_letter_text(document, content)
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def build_resume_from_template_package(template_content: bytes, content: str) -> bytes:
+    """Patch only document.xml so every other DOCX package part remains untouched."""
+    with zipfile.ZipFile(BytesIO(template_content)) as source:
+        document_xml = source.read("word/document.xml")
+        root = etree.fromstring(document_xml)
+        body = root.find(qn("w:body"))
+        if body is None:
+            raise ValueError("Resume template has no document body")
+        replace_resume_text(body, content)
+        rendered_xml = etree.tostring(
+            root,
+            encoding="UTF-8",
+            xml_declaration=True,
+            standalone=True,
+        )
+
+        output = BytesIO()
+        with zipfile.ZipFile(output, "w") as target:
+            for item in source.infolist():
+                target.writestr(
+                    item,
+                    rendered_xml if item.filename == "word/document.xml" else source.read(item.filename),
+                )
+    return output.getvalue()
+
+
+def replace_cover_letter_text(document: Document, content: str) -> None:
     paragraphs = document.paragraphs
     generated = normalized_content_paragraphs(content)
     if not generated:
@@ -94,9 +137,39 @@ def build_document_from_template(*, template_content: bytes, content: str) -> by
         if generated_closing:
             set_paragraph_element_text(paragraphs[closing_index]._p, generated_closing)
 
-    output = BytesIO()
-    document.save(output)
-    return output.getvalue()
+
+
+def replace_resume_text(body, content: str) -> None:
+    generated = normalized_content_lines(content)
+    if not generated:
+        raise ValueError("Generated resume content is empty")
+
+    body_paragraphs = [
+        element
+        for element in body.iter(qn("w:p"))
+        if paragraph_element_text(element).strip()
+    ]
+    marker = next(
+        (
+            element
+            for element in body_paragraphs
+            if "{{resume_body}}" in paragraph_element_text(element).lower()
+            or "{{content}}" in paragraph_element_text(element).lower()
+        ),
+        None,
+    )
+    if marker is not None:
+        replace_paragraph_elements([marker], generated)
+        return
+
+    if len(generated) != len(body_paragraphs):
+        raise ValueError(
+            "Generated resume must keep the DOCX structure: "
+            f"expected {len(body_paragraphs)} non-empty text blocks, received {len(generated)}"
+        )
+
+    for paragraph, replacement in zip(body_paragraphs, generated, strict=True):
+        set_paragraph_element_text(paragraph, replacement)
 
 
 def normalized_content_paragraphs(content: str) -> list[str]:
@@ -114,6 +187,14 @@ def normalized_content_paragraphs(content: str) -> list[str]:
     if current:
         paragraphs.append(" ".join(current))
     return paragraphs
+
+
+def normalized_content_lines(content: str) -> list[str]:
+    return [
+        re.sub(r"^#{1,3}\s+", "", line.strip())
+        for line in content.replace("\r\n", "\n").split("\n")
+        if line.strip()
+    ]
 
 
 def split_generated_letter(paragraphs: list[str]) -> tuple[str, list[str], str]:
@@ -141,10 +222,10 @@ def split_generated_letter(paragraphs: list[str]) -> tuple[str, list[str], str]:
 def replace_paragraph_elements(paragraphs, replacement_texts: list[str]) -> None:
     if not paragraphs:
         raise ValueError("Template has no editable body paragraphs")
-    prototype = paragraphs[0]._p
+    elements = [getattr(paragraph, "_p", paragraph) for paragraph in paragraphs]
+    prototype = elements[0]
     parent = prototype.getparent()
     insert_at = parent.index(prototype)
-    elements = [paragraph._p for paragraph in paragraphs]
     for element in elements:
         parent.remove(element)
     for offset, replacement in enumerate(replacement_texts):
@@ -154,12 +235,29 @@ def replace_paragraph_elements(paragraphs, replacement_texts: list[str]) -> None
 
 
 def set_paragraph_element_text(element, text: str) -> None:
-    text_nodes = element.xpath(".//w:t")
+    text_nodes = paragraph_text_nodes(element)
     if not text_nodes:
         raise ValueError("Editable template paragraph has no text run")
+    if "".join(node.text or "" for node in text_nodes) == text:
+        return
     text_nodes[0].text = text
     for node in text_nodes[1:]:
         node.text = ""
+
+
+def paragraph_element_text(element) -> str:
+    return "".join(node.text or "" for node in paragraph_text_nodes(element))
+
+
+def paragraph_text_nodes(element) -> list:
+    nodes = []
+    for node in element.iter(qn("w:t")):
+        ancestor = node.getparent()
+        while ancestor is not None and ancestor.tag != qn("w:p"):
+            ancestor = ancestor.getparent()
+        if ancestor is element:
+            nodes.append(node)
+    return nodes
 
 
 def configure_document(document: Document) -> None:
