@@ -1570,53 +1570,6 @@ function getProfileCompletion(profile: CandidateProfile) {
   return Math.round((completedFields.length / completionItems.length) * 100);
 }
 
-const stats = [
-  {
-    label: "Applications",
-    value: "24",
-    note: "Total applied",
-    delta: "20%",
-    icon: FileText,
-    color: "orange",
-    chart: "M0,42 C22,42 26,36 42,38 C58,40 62,28 78,32 C95,36 101,18 120,24 C137,30 144,16 160,20 C178,25 187,11 205,17 C221,22 231,5 250,10",
-  },
-  {
-    label: "Interviews",
-    value: "5",
-    note: "Upcoming",
-    delta: "25%",
-    icon: CalendarDays,
-    color: "orange",
-    chart: "M0,42 C24,43 33,36 49,39 C66,42 75,33 92,35 C112,38 121,17 138,18 C157,19 158,36 178,34 C196,31 203,12 221,13 C236,14 238,24 250,21",
-  },
-  {
-    label: "Offers",
-    value: "2",
-    note: "Received",
-    delta: "100%",
-    icon: BriefcaseBusiness,
-    color: "green",
-    chart: "M0,42 C19,42 24,31 40,34 C59,37 66,32 82,38 C101,45 110,23 130,28 C150,32 160,25 178,30 C196,35 200,4 216,13 C232,22 238,31 250,24",
-  },
-  {
-    label: "Match Score",
-    value: "78%",
-    note: "Average",
-    delta: "12%",
-    icon: Target,
-    color: "orange",
-    progress: true,
-  },
-];
-
-const overview = [
-  { label: "Applied", value: "12 (50%)", color: "bg-[#ff5a00]" },
-  { label: "Interview", value: "5 (21%)", color: "bg-[#ff9f1a]" },
-  { label: "Assessment", value: "3 (13%)", color: "bg-[#2f80ed]" },
-  { label: "Offer", value: "2 (8%)", color: "bg-[#4a9d35]" },
-  { label: "Rejected", value: "2 (8%)", color: "bg-[#d94d4d]" },
-];
-
 function getViewFromHash(): View {
   if (typeof window === "undefined") {
     return "Dashboard";
@@ -3254,6 +3207,26 @@ export default function HomePage() {
       Logs: "#logs",
     };
     window.history.replaceState(null, "", viewHash[view]);
+  }
+
+  function openJobFromDashboard(jobId: string) {
+    setQuery("");
+    setJobFilters(defaultJobFilters);
+    setShowSavedJobs(false);
+    setShowArchivedJobs(false);
+    setSelectedJobId(jobId);
+    setActiveTab("Overview");
+    changeView("Jobs");
+  }
+
+  function startJobSearchFromDashboard() {
+    setIsParserDialogOpen(true);
+    changeView("Jobs");
+  }
+
+  function openApplicationFromDashboard(applicationId?: string) {
+    if (applicationId) setSelectedApplicationId(applicationId);
+    changeView("Applications");
   }
 
   function openAssistant(prompt = "", contextKind: AssistantLaunch["contextKind"] = "profile", contextId = "") {
@@ -5000,7 +4973,22 @@ export default function HomePage() {
         <AppSidebar activeView={activeView} onChangeView={changeView} profile={profile} showLogs={uiSettings.showLogs} />
 
         {activeView === "Dashboard" ? (
-          <DashboardView onOpenJobs={() => changeView("Jobs")} onOpenAssistant={() => openAssistant()} />
+          <DashboardView
+            profile={profile}
+            jobs={availableJobs.filter((job) => !job.archived)}
+            applications={applications}
+            events={applicationEvents}
+            savedJobIds={savedJobs}
+            isLoading={!isProfileLoaded || !areApplicationsLoaded || !areApplicationEventsLoaded || !areSavedJobsLoaded}
+            onStartSearch={startJobSearchFromDashboard}
+            onOpenJobs={() => changeView("Jobs")}
+            onOpenJob={openJobFromDashboard}
+            onToggleSavedJob={toggleSaved}
+            onOpenApplications={openApplicationFromDashboard}
+            onOpenCalendar={() => changeView("Calendar")}
+            onOpenAssistant={(prompt, contextKind, contextId) => openAssistant(prompt, contextKind, contextId)}
+            onOpenProfile={() => changeView("Profile")}
+          />
         ) : activeView === "Applications" ? (
           <ApplicationsView
             applications={applications}
@@ -8220,20 +8208,158 @@ function LogsView({ logs, onClear }: { logs: AppLogEntry[]; onClear: () => void 
   );
 }
 
-function DashboardView({ onOpenJobs, onOpenAssistant }: { onOpenJobs: () => void; onOpenAssistant: () => void }) {
+function DashboardView({
+  profile,
+  jobs,
+  applications,
+  events,
+  savedJobIds,
+  isLoading,
+  onStartSearch,
+  onOpenJobs,
+  onOpenJob,
+  onToggleSavedJob,
+  onOpenApplications,
+  onOpenCalendar,
+  onOpenAssistant,
+  onOpenProfile,
+}: {
+  profile: CandidateProfile;
+  jobs: Job[];
+  applications: TrackedApplication[];
+  events: ApplicationEvent[];
+  savedJobIds: string[];
+  isLoading: boolean;
+  onStartSearch: () => void;
+  onOpenJobs: () => void;
+  onOpenJob: (jobId: string) => void;
+  onToggleSavedJob: (jobId: string) => void;
+  onOpenApplications: (applicationId?: string) => void;
+  onOpenCalendar: () => void;
+  onOpenAssistant: (prompt?: string, contextKind?: AssistantLaunch["contextKind"], contextId?: string) => void;
+  onOpenProfile: () => void;
+}) {
+  const now = Date.now();
+  const firstName = profile.name.trim().split(/\s+/)[0] ?? "";
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  const profileCompletion = getProfileCompletion(profile);
+  const scoredJobs = jobs.filter(hasDisplayableMatch);
+  const averageMatch = scoredJobs.length > 0
+    ? Math.round(scoredJobs.reduce((total, job) => total + getDisplayMatch(job), 0) / scoredJobs.length)
+    : 0;
+  const recommendedJobs = [...jobs]
+    .sort((left, right) => getDisplayMatch(right) - getDisplayMatch(left) || getJobPostedTime(right) - getJobPostedTime(left))
+    .slice(0, 3);
+  const upcomingEvents = sortApplicationEvents(events.filter((event) => (
+    event.status === "scheduled" && new Date(event.startsAt).getTime() >= now
+  )));
+  const upcomingInterviews = upcomingEvents.filter((event) => event.type === "interview" || event.type === "screening");
+  const nextEvent = upcomingEvents[0] ?? null;
+  const nextEventApplication = nextEvent
+    ? applications.find((application) => application.id === nextEvent.applicationId) ?? null
+    : null;
+  const offers = applications.filter((application) => application.status === "offer").length;
+  const statusColors: Record<ApplicationStatus, string> = {
+    applied: "#ff5a00",
+    interview: "#ff9f1a",
+    assessment: "#2f80ed",
+    offer: "#58d532",
+    rejected: "#d94d4d",
+  };
+  const statusOverview = applicationStatuses.map((item) => {
+    const count = applications.filter((application) => application.status === item.status).length;
+    return {
+      ...item,
+      count,
+      percentage: applications.length > 0 ? Math.round((count / applications.length) * 100) : 0,
+      color: statusColors[item.status],
+    };
+  });
+  let overviewStart = 0;
+  const overviewSegments = statusOverview.flatMap((item) => {
+    if (item.percentage === 0) return [];
+    const end = overviewStart + item.percentage;
+    const segment = `${item.color} ${overviewStart}% ${end}%`;
+    overviewStart = end;
+    return [segment];
+  });
+  const overviewBackground = overviewSegments.length > 0
+    ? `conic-gradient(${overviewSegments.join(", ")})`
+    : "rgba(255,255,255,0.07)";
+  const statCards = [
+    {
+      label: "Applications",
+      value: applications.length.toString(),
+      note: applications.length === 1 ? "Tracked application" : "Tracked applications",
+      icon: FileText,
+      tone: "orange",
+      onClick: () => onOpenApplications(),
+    },
+    {
+      label: "Interviews",
+      value: upcomingInterviews.length.toString(),
+      note: upcomingInterviews.length === 1 ? "Upcoming interview" : "Upcoming interviews",
+      icon: CalendarDays,
+      tone: "blue",
+      onClick: onOpenCalendar,
+    },
+    {
+      label: "Offers",
+      value: offers.toString(),
+      note: offers === 1 ? "Offer received" : "Offers received",
+      icon: BriefcaseBusiness,
+      tone: "green",
+      onClick: () => onOpenApplications(),
+    },
+    {
+      label: "Match Score",
+      value: scoredJobs.length > 0 ? `${averageMatch}%` : "—",
+      note: scoredJobs.length > 0 ? `Average across ${scoredJobs.length} scored job${scoredJobs.length === 1 ? "" : "s"}` : "No scored jobs yet",
+      icon: Target,
+      tone: "orange",
+      onClick: onOpenJobs,
+    },
+  ];
+
+  useEffect(() => {
+    const openSearch = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        onStartSearch();
+      }
+    };
+    window.addEventListener("keydown", openSearch);
+    return () => window.removeEventListener("keydown", openSearch);
+  }, [onStartSearch]);
+
+  function openNextAssistantAction() {
+    if (nextEvent && nextEventApplication && (nextEvent.type === "interview" || nextEvent.type === "screening")) {
+      onOpenAssistant(assistantPrompts.prepareInterview, "application", nextEventApplication.id);
+      return;
+    }
+    if (profileCompletion < 70) {
+      onOpenAssistant(assistantPrompts.improveProfile, "profile");
+      return;
+    }
+    onOpenAssistant("Review my current job search pipeline and give me the three highest-impact next actions.", "profile");
+  }
+
   return (
-    <section className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden px-3 py-3 sm:px-4 xl:px-4 2xl:px-5 2xl:py-4">
+    <section className="job-scroll flex h-screen min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 xl:overflow-hidden xl:px-4 2xl:px-5 2xl:py-4">
       <header className="mb-3 flex shrink-0 flex-col gap-3 md:flex-row md:items-start md:justify-between 2xl:mb-4 2xl:gap-4">
         <div>
           <h1 className="text-[24px] font-bold leading-tight tracking-normal text-white sm:text-[27px] 2xl:text-[31px]">
-            Good morning!
+            {greeting}{firstName ? `, ${firstName}` : ""}!
           </h1>
-          <p className="mt-1 text-[13px] text-muted 2xl:mt-1.5 2xl:text-base">Let's find the right opportunity for you today.</p>
+          <p className="mt-1 text-[13px] text-muted 2xl:mt-1.5 2xl:text-base">
+            {applications.length > 0 ? "Here’s the current state of your job search." : "Let’s find the right opportunity for you today."}
+          </p>
         </div>
         <Button
           size="lg"
           className="h-10 w-full justify-center rounded-md bg-gradient-to-r from-[#ff5a00] to-[#dd3d00] text-[13px] md:w-auto 2xl:h-11 2xl:text-sm"
-          onClick={onOpenJobs}
+          onClick={onStartSearch}
         >
           <Plus className="h-4 w-4 2xl:h-5 2xl:w-5" />
           New Search
@@ -8244,162 +8370,188 @@ function DashboardView({ onOpenJobs, onOpenAssistant }: { onOpenJobs: () => void
       </header>
 
       <div className="grid shrink-0 gap-2.5 sm:grid-cols-2 xl:grid-cols-4 2xl:gap-3">
-        {stats.map((stat) => (
-          <article key={stat.label} className="panel min-h-[118px] p-3 2xl:min-h-[142px] 2xl:p-4">
-            <div className="mb-2 flex items-start gap-2.5 2xl:gap-3">
-              <div
-                className={cn(
-                  "grid h-9 w-9 shrink-0 place-items-center rounded-md 2xl:h-11 2xl:w-11",
-                  stat.color === "green" ? "bg-success/20 text-success" : "bg-accent/20 text-accent",
-                )}
-              >
+        {statCards.map((stat) => (
+          <button
+            key={stat.label}
+            type="button"
+            onClick={stat.onClick}
+            className="panel group min-h-[108px] p-3 text-left transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.035] 2xl:min-h-[126px] 2xl:p-4"
+          >
+            <div className="flex items-start gap-2.5 2xl:gap-3">
+              <div className={cn(
+                "grid h-9 w-9 shrink-0 place-items-center rounded-md 2xl:h-11 2xl:w-11",
+                stat.tone === "green" ? "bg-success/20 text-success" : stat.tone === "blue" ? "bg-[#2f80ed]/20 text-[#79b9ff]" : "bg-accent/20 text-accent",
+              )}>
                 <stat.icon className="h-5 w-5 2xl:h-6 2xl:w-6" />
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-xs text-[#d6dbe4] 2xl:text-sm">{stat.label}</p>
-                <p className="mt-0.5 text-[24px] font-bold leading-none 2xl:mt-1 2xl:text-[28px]">{stat.value}</p>
-                <p className="mt-0.5 text-xs text-muted 2xl:mt-1 2xl:text-sm">{stat.note}</p>
+                <p className="mt-1 text-[24px] font-bold leading-none 2xl:text-[28px]">{isLoading ? "—" : stat.value}</p>
+                <p className="mt-1.5 line-clamp-2 text-xs text-muted 2xl:text-sm">{isLoading ? "Loading…" : stat.note}</p>
               </div>
-              <MoreHorizontal className="h-4 w-4 text-muted" />
+              <ChevronRight className="h-4 w-4 text-muted transition group-hover:translate-x-0.5 group-hover:text-white" />
             </div>
-            {stat.progress ? (
-              <div className="mt-4 h-2 rounded-full bg-white/[0.06] 2xl:mt-5">
-                <div className="h-full w-[78%] rounded-full bg-gradient-to-r from-[#ff5a00] to-[#ff7a1a]" />
+            {stat.label === "Match Score" ? (
+              <div className="mt-3 h-1.5 rounded-full bg-white/[0.06]">
+                <div className="h-full rounded-full bg-gradient-to-r from-[#ff5a00] to-[#ff9f1a] transition-[width]" style={{ width: `${averageMatch}%` }} />
               </div>
-            ) : (
-              <svg viewBox="0 0 250 54" className="h-8 w-full 2xl:h-10" aria-hidden="true">
-                <path d={stat.chart} fill="none" stroke={stat.color === "green" ? "#58d532" : "#ff5a00"} strokeWidth="2.4" />
-                <path d={`${stat.chart} L250,54 L0,54 Z`} fill={stat.color === "green" ? "rgba(88,213,50,0.10)" : "rgba(255,90,0,0.10)"} />
-              </svg>
-            )}
-            <p className="mt-2 text-xs text-muted 2xl:mt-3 2xl:text-sm">
-              <span className="mr-2 font-bold text-success">up {stat.delta}</span>vs last 30 days
-            </p>
-          </article>
+            ) : null}
+          </button>
         ))}
       </div>
 
-      <div className="mt-2.5 grid min-h-0 flex-1 gap-2.5 xl:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.95fr)] 2xl:mt-3 2xl:gap-3">
-        <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_92px] gap-2.5 2xl:grid-rows-[minmax(0,1fr)_100px] 2xl:gap-3">
-          <section className="panel flex min-h-0 flex-col overflow-hidden p-3 2xl:p-4">
+      <div className="mt-2.5 grid shrink-0 gap-2.5 xl:min-h-0 xl:flex-1 xl:shrink xl:grid-cols-[minmax(0,1.45fr)_minmax(300px,0.95fr)] 2xl:mt-3 2xl:gap-3">
+        <div className="grid min-h-0 gap-2.5 xl:grid-rows-[minmax(0,1fr)_116px] 2xl:grid-rows-[minmax(0,1fr)_126px] 2xl:gap-3">
+          <section className="panel flex min-h-[230px] flex-col overflow-hidden p-3 2xl:p-4">
             <div className="mb-2.5 flex items-center justify-between 2xl:mb-3">
               <div className="flex items-center gap-2.5 2xl:gap-3">
                 <Star className="h-4 w-4 text-accent 2xl:h-5 2xl:w-5" />
                 <h2 className="text-base font-bold 2xl:text-lg">Recommended Jobs</h2>
               </div>
-              <button className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-accent 2xl:gap-2 2xl:text-sm" onClick={onOpenJobs}>
+              <button type="button" className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-accent hover:text-[#ff7a35] 2xl:gap-2 2xl:text-sm" onClick={onOpenJobs}>
                 View all jobs <ChevronRight className="h-4 w-4" />
               </button>
             </div>
-            <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-border">
-              {jobs.map((job) => (
-                <button
-                  key={job.id}
-                  className="grid min-h-[56px] w-full grid-cols-[46px_minmax(0,1fr)_86px_24px] items-center gap-2.5 border-b border-border px-3 py-2 text-left last:border-0 2xl:min-h-[64px] 2xl:grid-cols-[58px_minmax(0,1fr)_104px_28px] 2xl:gap-3"
-                  onClick={onOpenJobs}
-                >
-                  <JobRoleIcon job={job} />
-                  <div className="min-w-0">
-                    <h3 className="truncate text-sm font-semibold 2xl:text-base">{job.title}</h3>
-                    <p className="text-xs text-muted">{job.company}</p>
-                    <div className="mt-1 flex gap-2">
-                      <span className="tag">Remote</span>
-                      <span className="tag">Full-time</span>
+            {recommendedJobs.length > 0 ? (
+              <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-border">
+                {recommendedJobs.map((job) => {
+                  const isSaved = savedJobIds.includes(job.id);
+                  return (
+                    <div key={job.id} className="grid min-h-[58px] grid-cols-[minmax(0,1fr)_36px] items-center border-b border-border last:border-0 hover:bg-white/[0.025]">
+                      <button
+                        type="button"
+                        className="grid min-w-0 grid-cols-[42px_minmax(0,1fr)_88px] items-center gap-2.5 px-3 py-2 text-left 2xl:grid-cols-[50px_minmax(0,1fr)_108px] 2xl:gap-3"
+                        onClick={() => onOpenJob(job.id)}
+                      >
+                        <JobRoleIcon job={job} />
+                        <div className="min-w-0">
+                          <h3 className="truncate text-sm font-semibold 2xl:text-base">{job.title}</h3>
+                          <p className="truncate text-xs text-muted">{job.company} · {job.location}</p>
+                          <div className="mt-1 flex gap-1.5">
+                            <span className="tag max-w-[96px] truncate">{job.type}</span>
+                          </div>
+                        </div>
+                        <div className="hidden text-left sm:block">
+                          <p className={cn("text-xs font-semibold 2xl:text-sm", hasDisplayableMatch(job) ? "text-success" : "text-muted")}>{formatMatchValue(job)}{hasDisplayableMatch(job) ? " match" : ""}</p>
+                          <p className="mt-0.5 truncate text-[11px] text-muted 2xl:mt-1 2xl:text-xs">{formatJobPosted(job.posted)}</p>
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={isSaved ? `Remove ${job.title} from saved jobs` : `Save ${job.title}`}
+                        title={isSaved ? "Remove from saved" : "Save job"}
+                        onClick={() => onToggleSavedJob(job.id)}
+                        className="grid h-9 w-9 place-items-center rounded-md text-muted transition hover:bg-white/[0.06] hover:text-accent"
+                      >
+                        <Bookmark className={cn("h-[18px] w-[18px]", isSaved && "fill-accent text-accent")} />
+                      </button>
                     </div>
-                  </div>
-                  <div className="hidden text-left sm:block">
-                    <p className="text-xs font-semibold text-success 2xl:text-sm">{job.match}% match</p>
-                    <p className="mt-0.5 text-xs text-muted 2xl:mt-1">{formatJobPosted(job.posted)}</p>
-                  </div>
-                  <Bookmark className="h-[18px] w-[18px] text-muted 2xl:h-5 2xl:w-5" />
-                </button>
-              ))}
-            </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <button type="button" onClick={onOpenJobs} className="grid min-h-0 flex-1 place-items-center rounded-md border border-dashed border-border px-4 text-center hover:border-accent/40 hover:bg-accent/[0.025]">
+                <span>
+                  <BriefcaseBusiness className="mx-auto h-7 w-7 text-muted" />
+                  <span className="mt-2 block text-sm font-bold text-white">No jobs to recommend yet</span>
+                  <span className="mt-1 block text-xs text-muted">Start a search to add vacancies.</span>
+                </span>
+              </button>
+            )}
           </section>
 
           <section className="panel p-2.5 2xl:p-3">
             <div className="mb-2 flex items-center justify-between">
               <div className="flex items-center gap-2.5 2xl:gap-3">
                 <Calendar className="h-4 w-4 text-muted" />
-                <h2 className="text-sm font-bold 2xl:text-base">Upcoming Interviews</h2>
+                <h2 className="text-sm font-bold 2xl:text-base">Next Event</h2>
               </div>
-              <a className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-accent 2xl:gap-2 2xl:text-sm" href="#">
-                View all <ChevronRight className="h-4 w-4" />
-              </a>
+              <button type="button" className="inline-flex items-center gap-1.5 text-[13px] font-semibold text-accent hover:text-[#ff7a35] 2xl:gap-2 2xl:text-sm" onClick={onOpenCalendar}>
+                View calendar <ChevronRight className="h-4 w-4" />
+              </button>
             </div>
-            <div className="grid gap-2 rounded-md border border-border px-3 py-2 sm:grid-cols-[42px_1fr_120px_auto_18px] sm:items-center 2xl:grid-cols-[48px_1fr_132px_auto_18px]">
-              <div className="text-center">
-                <p className="text-[11px] font-bold uppercase text-accent 2xl:text-xs">May</p>
-                <p className="text-lg font-bold leading-tight 2xl:text-xl">24</p>
-                <p className="text-[11px] text-accent 2xl:text-xs">Fri</p>
-              </div>
-              <div className="flex items-center gap-2.5 2xl:gap-3">
-                <div className="grid h-8 w-8 place-items-center rounded-full bg-white text-lg font-bold text-[#4285f4] 2xl:h-9 2xl:w-9 2xl:text-xl">G</div>
-                <div>
-                  <p className="text-sm font-semibold">Google</p>
-                  <p className="text-xs text-muted">Senior Product Designer</p>
+            {nextEvent ? (
+              <button
+                type="button"
+                onClick={() => nextEventApplication ? onOpenApplications(nextEventApplication.id) : onOpenCalendar()}
+                className="grid w-full gap-2 rounded-md border border-border px-3 py-2 text-left transition hover:border-white/20 hover:bg-white/[0.025] sm:grid-cols-[48px_minmax(0,1fr)_150px_auto] sm:items-center"
+              >
+                <div className="text-center">
+                  <p className="text-[10px] font-bold uppercase text-accent">{new Date(nextEvent.startsAt).toLocaleDateString(undefined, { month: "short" })}</p>
+                  <p className="text-lg font-bold leading-tight">{new Date(nextEvent.startsAt).getDate()}</p>
                 </div>
-              </div>
-              <div className="space-y-1 text-[11px] text-muted 2xl:text-xs">
-                <p className="flex items-center gap-1.5 2xl:gap-2"><Calendar className="h-3.5 w-3.5 2xl:h-4 2xl:w-4" /> May 24, 2024</p>
-                <p className="flex items-center gap-1.5 2xl:gap-2"><CircleDot className="h-3.5 w-3.5 2xl:h-4 2xl:w-4" /> 10:00 AM</p>
-              </div>
-              <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]">Video Interview</Button>
-              <MoreHorizontal className="hidden h-5 w-5 text-muted sm:block" />
-            </div>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold">{nextEvent.title}</p>
+                  <p className="truncate text-xs text-muted">{nextEventApplication ? `${nextEventApplication.job.company} · ${nextEventApplication.job.title}` : getApplicationEventTypeLabel(nextEvent.type)}</p>
+                </div>
+                <div className="space-y-1 text-[11px] text-muted 2xl:text-xs">
+                  <p className="flex items-center gap-1.5"><Calendar className="h-3.5 w-3.5" /> {formatApplicationEventDate(nextEvent.startsAt)}</p>
+                  <p className="flex items-center gap-1.5"><CircleDot className="h-3.5 w-3.5" /> {formatApplicationEventTime(nextEvent.startsAt)}</p>
+                </div>
+                <span className="rounded-md border border-border px-2 py-1 text-[10px] font-bold text-[#cbd2dd]">{getApplicationEventTypeLabel(nextEvent.type)}</span>
+              </button>
+            ) : (
+              <button type="button" onClick={onOpenCalendar} className="flex w-full items-center justify-between rounded-md border border-dashed border-border px-3 py-3 text-left text-xs text-muted hover:border-accent/40 hover:text-white">
+                No upcoming events. Add one in Calendar.
+                <Plus className="h-4 w-4" />
+              </button>
+            )}
           </section>
         </div>
 
-        <aside className="grid min-h-0 grid-rows-[minmax(0,1fr)_158px] gap-2.5 2xl:grid-rows-[minmax(0,1fr)_172px] 2xl:gap-3">
+        <aside className="grid min-h-0 gap-2.5 xl:grid-rows-[minmax(0,1fr)_178px] 2xl:grid-rows-[minmax(0,1fr)_190px] 2xl:gap-3">
           <section className="panel p-3 2xl:p-4">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-base font-bold 2xl:text-lg">Application Overview</h2>
-              <Button variant="ghost" size="sm" className="h-7 border border-border px-2 text-[11px] 2xl:text-xs">Last 30 days</Button>
+              <span className="rounded-md border border-border px-2 py-1 text-[11px] text-muted 2xl:text-xs">All time</span>
             </div>
-            <div className="grid items-center gap-3 sm:grid-cols-[124px_1fr] 2xl:grid-cols-[150px_minmax(0,1fr)] 2xl:gap-4">
-              <div className="overview-ring relative mx-auto h-[118px] w-[118px] rounded-full 2xl:h-[138px] 2xl:w-[138px]">
-                <div className="absolute inset-[30px] grid place-items-center rounded-full bg-[#131920] 2xl:inset-[34px]">
-                  <p className="text-center text-xl font-bold 2xl:text-2xl">24<br /><span className="text-[11px] font-normal text-muted 2xl:text-xs">Total</span></p>
-                </div>
-              </div>
-              <div className="space-y-2.5 2xl:space-y-3">
-                {overview.map((item) => (
-                  <div key={item.label} className="flex items-center gap-2.5 text-[13px] 2xl:gap-3 2xl:text-sm">
-                    <span className={cn("h-3 w-3 rounded-full 2xl:h-3.5 2xl:w-3.5", item.color)} />
+            <div className="grid items-center gap-3 sm:grid-cols-[116px_minmax(0,1fr)] 2xl:grid-cols-[132px_minmax(0,1fr)] 2xl:gap-4">
+              <button type="button" onClick={() => onOpenApplications()} className="relative mx-auto h-[116px] w-[116px] rounded-full transition hover:scale-[1.02] 2xl:h-[132px] 2xl:w-[132px]" style={{ background: overviewBackground }}>
+                <span className="absolute inset-[28px] grid place-items-center rounded-full bg-[#131920] 2xl:inset-[32px]">
+                  <span className="text-center text-xl font-bold 2xl:text-2xl">{isLoading ? "—" : applications.length}<br /><span className="text-[11px] font-normal text-muted 2xl:text-xs">Total</span></span>
+                </span>
+              </button>
+              <div className="space-y-2 2xl:space-y-2.5">
+                {statusOverview.map((item) => (
+                  <button key={item.status} type="button" onClick={() => onOpenApplications()} className="flex w-full items-center gap-2.5 rounded px-1 py-0.5 text-left text-[12px] hover:bg-white/[0.04] 2xl:gap-3 2xl:text-sm">
+                    <span className="h-2.5 w-2.5 rounded-full 2xl:h-3 2xl:w-3" style={{ backgroundColor: item.color }} />
                     <span className="flex-1 text-muted">{item.label}</span>
-                    <span className="text-[#cbd2dd]">{item.value}</span>
-                  </div>
+                    <span className="text-[#cbd2dd]">{item.count} <span className="text-muted">({item.percentage}%)</span></span>
+                  </button>
                 ))}
               </div>
             </div>
-            <a className="mt-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-accent 2xl:gap-2 2xl:text-sm" href="#">
-              View full report <ChevronRight className="h-4 w-4" />
-            </a>
+            <button type="button" className="mt-3 inline-flex items-center gap-1.5 text-[13px] font-semibold text-accent hover:text-[#ff7a35] 2xl:gap-2 2xl:text-sm" onClick={() => onOpenApplications()}>
+              Open applications <ChevronRight className="h-4 w-4" />
+            </button>
           </section>
 
           <section className="panel p-2.5 2xl:p-3">
             <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-sm font-bold 2xl:text-base">AI Assistant</h2>
-              <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]" onClick={onOpenAssistant}>New Chat</Button>
+              <h2 className="text-sm font-bold 2xl:text-base">Next best action</h2>
+              <Button variant="outline" size="sm" className="h-7 px-2 text-[11px]" onClick={() => onOpenAssistant()}>New Chat</Button>
             </div>
-            <div className="rounded-md border border-border p-2.5">
-              <div className="grid gap-2 sm:grid-cols-[30px_1fr] 2xl:sm:grid-cols-[34px_1fr]">
-                <div className="grid h-8 w-8 place-items-center rounded-full bg-accent/20 text-accent">
-                  <Bot className="h-4 w-4" />
-                </div>
-                <div className="space-y-1 text-[11px] leading-tight text-muted">
-                  <p>I can help you with:</p>
-                  <div className="grid grid-cols-2 gap-x-2.5 gap-y-1 2xl:gap-x-3">
-                    {["Resume optimization", "Cover letter writing", "Interview preparation", "Job search strategy"].map((item) => (
-                      <p key={item} className="flex items-center gap-1.5"><Check className="h-3 w-3 text-accent" /> {item}</p>
-                    ))}
-                  </div>
-                </div>
+            <button type="button" onClick={openNextAssistantAction} className="flex w-full items-start gap-2.5 rounded-md border border-border p-2.5 text-left transition hover:border-accent/35 hover:bg-accent/[0.035]">
+              <div className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-accent/20 text-accent">
+                <Bot className="h-4 w-4" />
               </div>
-            </div>
-            <Button className="mt-2 h-8 w-full rounded-md bg-gradient-to-r from-[#ff5a00] to-[#e63e00] text-xs" onClick={onOpenAssistant}>
-              Start a conversation <Sparkles className="ml-auto h-5 w-5" />
-            </Button>
+              <span className="min-w-0">
+                <span className="block text-xs font-bold text-white">
+                  {nextEventApplication && (nextEvent?.type === "interview" || nextEvent?.type === "screening") ? "Prepare for your next interview" : profileCompletion < 70 ? "Strengthen your profile" : "Plan your next moves"}
+                </span>
+                <span className="mt-1 line-clamp-2 block text-[11px] leading-4 text-muted">
+                  {nextEventApplication && (nextEvent?.type === "interview" || nextEvent?.type === "screening") ? `${nextEventApplication.job.company} · ${formatApplicationEventDate(nextEvent.startsAt)}` : profileCompletion < 70 ? `Your profile is ${profileCompletion}% complete.` : "Let the assistant review your pipeline and prioritize this week."}
+                </span>
+              </span>
+              <Sparkles className="ml-auto h-4 w-4 shrink-0 text-accent" />
+            </button>
+            {profileCompletion < 100 ? (
+              <button type="button" onClick={onOpenProfile} className="mt-2 flex w-full items-center gap-2 text-left text-[11px] text-muted hover:text-white">
+                <span className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/[0.07]"><span className="block h-full rounded-full bg-accent" style={{ width: `${profileCompletion}%` }} /></span>
+                Profile {profileCompletion}%
+                <ChevronRight className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
           </section>
         </aside>
       </div>
