@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   Bot,
@@ -136,6 +136,17 @@ type ApplicationWorkspaceProps = {
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const docxContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const preApplicationReviewPrompt = `Create a complete pre-application review for this vacancy using only verified profile and vacancy evidence. Return concise plain text with these exact sections:
+BEST POSITIONING
+CV IMPROVEMENTS
+COVER LETTER STRATEGY
+GAPS AND RISKS
+KEYWORDS AND EVIDENCE TO EMPHASIZE
+LIKELY APPLICATION QUESTIONS
+FINAL BEFORE-SUBMITTING CHECKLIST
+
+Under CV IMPROVEMENTS, state exactly what should change in the existing summary, skills and achievement bullets without changing the document layout. Under each section give specific, actionable bullets. Include recommended answer points for likely questions, flag anything that must not be claimed, and finish with the most important action to take before applying. Do not invent facts.`;
+const applicationReviewCache = new Map<string, string>();
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -237,9 +248,14 @@ export function ApplicationWorkspace({
   const [generationType, setGenerationType] = useState<GeneratedDocument["type"] | "">("");
   const [isGeneratingPack, setIsGeneratingPack] = useState(false);
   const [documentError, setDocumentError] = useState("");
+  const [applicationReview, setApplicationReview] = useState("");
+  const [applicationReviewError, setApplicationReviewError] = useState("");
+  const [isLoadingApplicationReview, setIsLoadingApplicationReview] = useState(false);
+  const [reviewRefreshToken, setReviewRefreshToken] = useState(0);
   const [advice, setAdvice] = useState("");
   const [advicePrompt, setAdvicePrompt] = useState("");
   const [isLoadingAdvice, setIsLoadingAdvice] = useState(false);
+  const automaticReviewKeyRef = useRef("");
 
   useEffect(() => {
     if (!application) return;
@@ -287,6 +303,38 @@ export function ApplicationWorkspace({
     if (!selectedResumeSourceId && resumeSources[0]) setSelectedResumeSourceId(resumeSources[0].id);
     if (!selectedCoverSourceId && coverSources[0]) setSelectedCoverSourceId(coverSources[0].id);
   }, [coverSources, resumeSources, selectedCoverSourceId, selectedResumeSourceId]);
+
+  useEffect(() => {
+    if (!application) return;
+    const reviewKey = `${application.id}:${application.job.id}`;
+    if (automaticReviewKeyRef.current === reviewKey) return;
+    automaticReviewKeyRef.current = reviewKey;
+    setApplicationReviewError("");
+
+    const cachedReview = applicationReviewCache.get(reviewKey);
+    if (cachedReview) {
+      setApplicationReview(cachedReview);
+      setIsLoadingApplicationReview(false);
+      return;
+    }
+
+    setApplicationReview("");
+    setIsLoadingApplicationReview(true);
+    void askAssistant(preApplicationReviewPrompt)
+      .then((review) => {
+        if (automaticReviewKeyRef.current !== reviewKey) return;
+        const nextReview = review || "AI returned an empty pre-application review.";
+        applicationReviewCache.set(reviewKey, nextReview);
+        setApplicationReview(nextReview);
+      })
+      .catch((error) => {
+        if (automaticReviewKeyRef.current !== reviewKey) return;
+        setApplicationReviewError(error instanceof Error ? error.message : "Pre-application review failed");
+      })
+      .finally(() => {
+        if (automaticReviewKeyRef.current === reviewKey) setIsLoadingApplicationReview(false);
+      });
+  }, [application?.id, application?.job.id, reviewRefreshToken]);
 
   if (!application) {
     return (
@@ -347,9 +395,13 @@ export function ApplicationWorkspace({
       if (!selectedSource || !selectedSource.file_name.toLowerCase().endsWith(".docx")) {
         throw new Error(`Select a DOCX ${isCoverLetter ? "cover letter" : "CV"} before generating`);
       }
+      if (!applicationReview) {
+        throw new Error("Wait for the pre-application improvement plan before generating documents");
+      }
+      const improvementPlan = applicationReview.slice(0, 7_000);
       const prompt = isCoverLetter
-        ? "Rewrite the selected DOCX cover letter for this vacancy using only verified evidence from my profile and the source document. Preserve its truthful facts. Return only the complete letter text without Markdown or commentary, keeping a greeting, focused body paragraphs, and professional closing. Do not invent achievements or metrics."
-        : "Tailor the selected DOCX resume to this vacancy while keeping its layout unchanged. Return exactly one plain-text line for every non-empty body text block in the source DOCX, in the identical order and with the identical number of lines. Repeat contact details, section headings, dates, employers, education, and any line that should not change verbatim. Rewrite only existing summary, skill, and achievement lines where truthful evidence supports it. Do not add, remove, merge, split, or reorder lines. Do not use Markdown markers or commentary. Do not invent facts or metrics.";
+        ? `Rewrite the selected DOCX cover letter for this vacancy using only verified evidence from my profile and the source document. Follow the pre-application improvement plan below as mandatory guidance, especially its positioning, risks, and unsupported claims. Preserve truthful facts. Return only the complete letter text without Markdown or commentary, keeping a greeting, focused body paragraphs, and professional closing. Do not invent achievements or metrics.\n\nPRE-APPLICATION IMPROVEMENT PLAN:\n${improvementPlan}`
+        : `Tailor the selected DOCX resume to this vacancy while keeping its layout unchanged. Follow the pre-application improvement plan below as mandatory guidance: apply its recommended emphasis and fixes, and avoid every flagged unsupported claim. Return exactly one plain-text line for every non-empty body text block in the source DOCX, in the identical order and with the identical number of lines. Repeat contact details, section headings, dates, employers, education, and any line that should not change verbatim. Rewrite only existing summary, skill, and achievement lines where truthful evidence supports it. Do not add, remove, merge, split, or reorder lines. Do not use Markdown markers or commentary. Do not invent facts or metrics.\n\nPRE-APPLICATION IMPROVEMENT PLAN:\n${improvementPlan}`;
       const content = await askAssistant(prompt, [selectedSource]);
       if (!content) throw new Error("AI returned an empty document");
 
@@ -467,6 +519,13 @@ export function ApplicationWorkspace({
     }
   }
 
+  function retryApplicationReview() {
+    const reviewKey = `${activeApplication.id}:${activeApplication.job.id}`;
+    applicationReviewCache.delete(reviewKey);
+    automaticReviewKeyRef.current = "";
+    setReviewRefreshToken((current) => current + 1);
+  }
+
   return (
     <section className="job-scroll min-w-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4 2xl:px-5 2xl:py-4">
       <div className="mx-auto max-w-[1280px]">
@@ -508,6 +567,25 @@ export function ApplicationWorkspace({
 
         <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_350px]">
           <main className="space-y-3">
+            <section className="panel overflow-hidden border-accent/25">
+              <div className="flex flex-col gap-3 border-b border-border bg-accent/[0.045] p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+                <div className="flex items-start gap-3">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-accent/14 text-accent"><Bot className="h-5 w-5" /></span>
+                  <div>
+                    <p className="text-[10px] font-black uppercase tracking-[0.12em] text-accent">Step 1 · Improve before generating</p>
+                    <h2 className="mt-1 text-lg font-bold text-white">What to improve in your CV and application</h2>
+                    <p className="mt-1 text-xs leading-5 text-muted">AI reviews the vacancy first. The document generator then follows this plan automatically.</p>
+                  </div>
+                </div>
+                {applicationReviewError ? <Button type="button" variant="ghost" onClick={retryApplicationReview} className="h-9 shrink-0 rounded-md border border-border bg-white/[0.025] px-3 text-xs text-white hover:bg-white/[0.06]"><RefreshCw className="h-3.5 w-3.5" /> Retry review</Button> : null}
+              </div>
+              <div className="p-4 sm:p-5">
+                <div className="job-scroll max-h-[460px] min-h-[180px] overflow-y-auto rounded-md border border-border bg-[#0c1219] p-4">
+                  {isLoadingApplicationReview ? <div className="flex items-center gap-2 text-xs text-muted"><LoaderCircle className="h-4 w-4 animate-spin text-accent" /> Analyzing the vacancy and preparing CV improvements…</div> : applicationReviewError ? <div className="text-xs leading-5 text-red-200"><p className="font-bold">The improvement plan could not be generated.</p><p className="mt-1">{applicationReviewError}</p></div> : applicationReview ? <p className="whitespace-pre-wrap text-xs leading-5 text-[#dfe4ec]">{applicationReview}</p> : <div className="py-6 text-center"><Sparkles className="mx-auto h-5 w-5 text-muted" /><p className="mt-2 text-[11px] text-muted">The improvement plan will appear here before document generation.</p></div>}
+                </div>
+              </div>
+            </section>
+
             <section className="panel p-4 sm:p-5">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
@@ -515,7 +593,7 @@ export function ApplicationWorkspace({
                   <h2 className="mt-1 text-lg font-bold text-white">Documents tailored to this vacancy</h2>
                   <p className="mt-1 text-xs leading-5 text-muted">Choose DOCX originals, then AI changes their text without replacing the design.</p>
                 </div>
-                <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType) || !selectedResumeSourceId || !selectedCoverSourceId} className="h-10 shrink-0 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-4 text-xs font-bold text-white shadow-[0_10px_28px_rgba(255,90,0,0.2)] disabled:opacity-45">
+                <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType) || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || isLoadingApplicationReview} className="h-10 shrink-0 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-4 text-xs font-bold text-white shadow-[0_10px_28px_rgba(255,90,0,0.2)] disabled:opacity-45">
                   {isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
                   {isGeneratingPack ? "Generating pack…" : "Generate application pack"}
                 </Button>
@@ -531,7 +609,8 @@ export function ApplicationWorkspace({
                   document={latestResume}
                   isGenerating={generationType === "tailored_resume"}
                   onGenerate={() => generateDocument("tailored_resume")}
-                  canGenerate={Boolean(selectedResumeSourceId)}
+                  canGenerate={Boolean(selectedResumeSourceId && applicationReview && !isLoadingApplicationReview)}
+                  disabledLabel={!selectedResumeSourceId ? "Select DOCX" : isLoadingApplicationReview ? "Reviewing…" : "Review required"}
                   sourceControl={(
                     <SourcePicker
                       label="Source CV"
@@ -549,7 +628,8 @@ export function ApplicationWorkspace({
                   document={latestCoverLetter}
                   isGenerating={generationType === "cover_letter"}
                   onGenerate={() => generateDocument("cover_letter")}
-                  canGenerate={Boolean(selectedCoverSourceId)}
+                  canGenerate={Boolean(selectedCoverSourceId && applicationReview && !isLoadingApplicationReview)}
+                  disabledLabel={!selectedCoverSourceId ? "Select DOCX" : isLoadingApplicationReview ? "Reviewing…" : "Review required"}
                   sourceControl={(
                     <SourcePicker
                       label="Source cover letter"
@@ -605,7 +685,7 @@ export function ApplicationWorkspace({
           <aside className="space-y-3">
             <section className="panel overflow-hidden">
               <div className="border-b border-border p-4">
-                <div className="flex items-center gap-2.5"><span className="grid h-9 w-9 place-items-center rounded-md bg-accent/14 text-accent"><Bot className="h-4 w-4" /></span><div><h2 className="text-sm font-bold text-white">AI Application Coach</h2><p className="mt-0.5 text-[10px] text-muted">Grounded in this vacancy and your profile</p></div></div>
+                <div className="flex items-center gap-2.5"><span className="grid h-9 w-9 place-items-center rounded-md bg-accent/14 text-accent"><Bot className="h-4 w-4" /></span><div><h2 className="text-sm font-bold text-white">AI Application Coach</h2><p className="mt-0.5 text-[10px] text-muted">Ask follow-ups about the plan or vacancy</p></div></div>
               </div>
               <div className="p-4">
                 <div className="grid gap-2">
@@ -617,8 +697,8 @@ export function ApplicationWorkspace({
                     <button key={prompt} type="button" disabled={isLoadingAdvice} onClick={() => requestAdvice(prompt)} className={cn("rounded-md border p-2.5 text-left text-[11px] font-semibold leading-4 transition", advicePrompt === prompt ? "border-accent/45 bg-accent/10 text-white" : "border-border bg-white/[0.025] text-[#d8dee8] hover:border-accent/35 hover:bg-accent/[0.06]")}>{prompt}</button>
                   ))}
                 </div>
-                <div className="mt-3 min-h-[180px] rounded-md border border-border bg-[#0c1219] p-3">
-                  {isLoadingAdvice ? <div className="flex items-center gap-2 text-xs text-muted"><LoaderCircle className="h-4 w-4 animate-spin text-accent" /> Reviewing your application…</div> : advice ? <p className="whitespace-pre-wrap text-xs leading-5 text-[#dfe4ec]">{advice}</p> : <div className="py-7 text-center"><Sparkles className="mx-auto h-5 w-5 text-muted" /><p className="mt-2 text-[11px] leading-5 text-muted">Choose a question to get advice without leaving this workspace.</p></div>}
+                <div className="job-scroll mt-3 max-h-[360px] min-h-[150px] overflow-y-auto rounded-md border border-border bg-[#0c1219] p-3">
+                  {isLoadingAdvice ? <div className="flex items-center gap-2 text-xs text-muted"><LoaderCircle className="h-4 w-4 animate-spin text-accent" /> Reviewing your question…</div> : advice ? <p className="whitespace-pre-wrap text-xs leading-5 text-[#dfe4ec]">{advice}</p> : <div className="py-6 text-center"><Sparkles className="mx-auto h-5 w-5 text-muted" /><p className="mt-2 text-[11px] leading-5 text-muted">The full improvement plan is above the document generator. Choose a question for more detail.</p></div>}
                 </div>
                 <Button variant="ghost" onClick={() => onOpenAssistant("Review this application and help me finish it.", application.id)} className="mt-3 h-9 w-full rounded-md border border-border bg-transparent text-xs text-[#e6ebf3] hover:bg-white/[0.06]">Continue in full Assistant <ChevronRight className="h-4 w-4" /></Button>
               </div>
@@ -647,6 +727,7 @@ function DocumentCard({
   isGenerating,
   onGenerate,
   canGenerate,
+  disabledLabel,
   sourceControl,
 }: {
   icon: typeof FileText;
@@ -656,6 +737,7 @@ function DocumentCard({
   isGenerating: boolean;
   onGenerate: () => void;
   canGenerate: boolean;
+  disabledLabel: string;
   sourceControl?: React.ReactNode;
 }) {
   const content = currentContent(document);
@@ -670,7 +752,7 @@ function DocumentCard({
         {isGenerating ? <div className="grid h-full min-h-[150px] place-items-center text-center"><div><LoaderCircle className="mx-auto h-5 w-5 animate-spin text-[#ff5a00]" /><p className="mt-2 text-[11px] font-semibold text-[#646b74]">Writing an evidence-based version…</p></div></div> : content ? <p className="line-clamp-[10] whitespace-pre-wrap font-serif text-[10px] leading-[1.55]">{content}</p> : <div className="grid h-full min-h-[150px] place-items-center text-center"><div><Icon className="mx-auto h-6 w-6 text-[#a4a8ad]" /><p className="mt-2 text-[11px] font-semibold text-[#767c84]">Your document preview will appear here.</p></div></div>}
       </div>
       <div className="mt-3 flex gap-2">
-        <Button type="button" disabled={isGenerating || !canGenerate} onClick={onGenerate} className="h-9 flex-1 rounded-md bg-accent px-3 text-[11px] font-bold text-white hover:bg-[#ff6a14] disabled:opacity-45">{isGenerating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : document ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}{isGenerating ? "Generating…" : !canGenerate ? "Select DOCX" : document ? "Regenerate" : "Generate"}</Button>
+        <Button type="button" disabled={isGenerating || !canGenerate} onClick={onGenerate} className="h-9 flex-1 rounded-md bg-accent px-3 text-[11px] font-bold text-white hover:bg-[#ff6a14] disabled:opacity-45">{isGenerating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : document ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}{isGenerating ? "Generating…" : !canGenerate ? disabledLabel : document ? "Regenerate" : "Generate"}</Button>
         {document ? <a href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download`} download={documentFileName(document)} className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border px-3 text-[11px] font-bold text-[#e6ebf3] transition hover:bg-white/[0.06]"><Download className="h-3.5 w-3.5" /> DOCX</a> : null}
       </div>
     </article>
