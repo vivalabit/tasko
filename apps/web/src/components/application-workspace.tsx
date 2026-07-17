@@ -31,6 +31,13 @@ import {
   hasCurrentApplicationGuide,
   isLegacyAiMatch,
 } from "@/lib/ai-match";
+import {
+  importLegacyCandidateConfirmations,
+  isCandidateConfirmationComplete,
+  isMeaningfulCandidateConfirmation,
+  type CandidateConfirmation,
+  type CandidateConfirmationResponse,
+} from "@/lib/candidate-confirmations";
 import { cn } from "@/lib/utils";
 
 type WorkspaceJob = {
@@ -359,7 +366,10 @@ export function ApplicationWorkspace({
   const [generationType, setGenerationType] = useState<GeneratedDocument["type"] | "">("");
   const [isGeneratingPack, setIsGeneratingPack] = useState(false);
   const [documentError, setDocumentError] = useState("");
-  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({});
+  const [candidateConfirmations, setCandidateConfirmations] = useState<Record<string, CandidateConfirmation>>({});
+  const [confirmationsDirty, setConfirmationsDirty] = useState(false);
+  const [confirmationSyncStatus, setConfirmationSyncStatus] = useState<"loading" | "saving" | "saved" | "unsaved" | "error">("loading");
+  const [confirmationSyncMessage, setConfirmationSyncMessage] = useState("");
   const [advice, setAdvice] = useState("");
   const [advicePrompt, setAdvicePrompt] = useState("");
   const [isLoadingAdvice, setIsLoadingAdvice] = useState(false);
@@ -417,10 +427,11 @@ export function ApplicationWorkspace({
   const applicationGuide = hasCurrentAnalysis ? application?.job.aiMatch?.applicationGuide : undefined;
   const clarificationQuestions = applicationGuide?.clarificationQuestions ?? [];
   const unansweredBlockingQuestions = clarificationQuestions.filter(
-    (question) => question.blocking && !clarificationAnswers[question.id]?.trim(),
+    (question) => question.blocking && !isCandidateConfirmationComplete(question, candidateConfirmations[question.id]),
   );
+  const hasIncompleteBlockingConfirmations = unansweredBlockingQuestions.length > 0;
   const hasOversizedConfirmation = clarificationQuestions.some(
-    (question) => (clarificationAnswers[question.id]?.trim().length ?? 0) > confirmationAnswerMaxChars,
+    (question) => (candidateConfirmations[question.id]?.exampleText.trim().length ?? 0) > confirmationAnswerMaxChars,
   );
   const vacancyLanguage = applicationGuide?.language || (application ? detectLegacyJobLanguage(application.job) : "");
   const effectiveLanguage = languageMode === "auto" ? vacancyLanguage : languageMode;
@@ -433,17 +444,132 @@ export function ApplicationWorkspace({
     setSelectedCoverSourceId("");
     setAnalysisTab("overview");
     if (!application) {
-      setClarificationAnswers({});
+      setCandidateConfirmations({});
+      setConfirmationsDirty(false);
       return;
     }
-    try {
-      const stored = window.localStorage.getItem(`tasko.application-confirmations.${application.id}`);
-      const parsed = stored ? JSON.parse(stored) as unknown : null;
-      setClarificationAnswers(parsed && typeof parsed === "object" ? parsed as Record<string, string> : {});
-    } catch {
-      setClarificationAnswers({});
+    const controller = new AbortController();
+    const applicationId = application.id;
+    const legacyStorageKey = `tasko.application-confirmations.${applicationId}`;
+    setCandidateConfirmations({});
+    setConfirmationsDirty(false);
+    setConfirmationSyncStatus("loading");
+    setConfirmationSyncMessage("");
+
+    async function loadCandidateConfirmations() {
+      try {
+        const response = await fetch(
+          `${apiBaseUrl}/applications/${encodeURIComponent(applicationId)}/confirmations`,
+          { cache: "no-store", signal: controller.signal },
+        );
+        if (!response.ok && response.status !== 404) {
+          throw new Error(await readApiError(response, "Candidate confirmations could not be loaded"));
+        }
+        const storedConfirmations = response.ok ? await response.json() as CandidateConfirmation[] : [];
+        const questionsById = new Map(clarificationQuestions.map((question) => [question.id, question]));
+        const backendNeedsSync = storedConfirmations.some((confirmation) => {
+          const question = questionsById.get(confirmation.questionId);
+          return !question || confirmation.requirement !== question.requirement || confirmation.blocking !== question.blocking;
+        });
+        const backendById = Object.fromEntries(storedConfirmations.flatMap((confirmation) => {
+          const question = questionsById.get(confirmation.questionId);
+          if (!question) return [];
+          return [[confirmation.questionId, {
+            ...confirmation,
+            requirement: question.requirement,
+            blocking: question.blocking,
+          }]];
+        }));
+        let legacyById: Record<string, CandidateConfirmation> = {};
+        try {
+          const storedLegacyAnswers = window.localStorage.getItem(legacyStorageKey);
+          legacyById = importLegacyCandidateConfirmations(
+            storedLegacyAnswers ? JSON.parse(storedLegacyAnswers) : null,
+            clarificationQuestions,
+          );
+        } catch {
+          legacyById = {};
+        }
+
+        const missingLegacyConfirmations = Object.fromEntries(
+          Object.entries(legacyById).filter(([questionId]) => !backendById[questionId]),
+        );
+        const shouldSync = Object.keys(missingLegacyConfirmations).length > 0 || backendNeedsSync;
+        setCandidateConfirmations({ ...missingLegacyConfirmations, ...backendById });
+        setConfirmationsDirty(shouldSync);
+        setConfirmationSyncStatus(shouldSync ? "unsaved" : "saved");
+        setConfirmationSyncMessage(Object.keys(missingLegacyConfirmations).length > 0 ? "Legacy answers imported — checking before backend save" : backendNeedsSync ? "Requirements changed — updating saved answers" : "");
+        if (Object.keys(legacyById).length > 0 && Object.keys(missingLegacyConfirmations).length === 0) {
+          window.localStorage.removeItem(legacyStorageKey);
+        }
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setConfirmationSyncStatus("error");
+        setConfirmationSyncMessage(error instanceof Error ? error.message : "Candidate confirmations could not be loaded");
+      }
     }
-  }, [application?.id]);
+
+    void loadCandidateConfirmations();
+    return () => controller.abort();
+  }, [application?.id, application?.job.aiMatch?.updatedAt]);
+
+  useEffect(() => {
+    if (!application || !confirmationsDirty) return;
+    if (hasIncompleteBlockingConfirmations || hasOversizedConfirmation) {
+      setConfirmationSyncStatus("unsaved");
+      setConfirmationSyncMessage(
+        hasOversizedConfirmation
+          ? `Shorten examples to ${confirmationAnswerMaxChars.toLocaleString()} characters`
+          : "Choose an answer and add a concrete example for each required yes or partial response",
+      );
+      return;
+    }
+
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(async () => {
+      setConfirmationSyncStatus("saving");
+      setConfirmationSyncMessage("");
+      try {
+        const confirmations = clarificationQuestions.flatMap((question) => {
+          const confirmation = candidateConfirmations[question.id];
+          if (!confirmation) return [];
+          return [{
+            ...confirmation,
+            requirement: question.requirement,
+            blocking: question.blocking,
+          }];
+        });
+        const response = await fetch(
+          `${apiBaseUrl}/applications/${encodeURIComponent(application.id)}/confirmations`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              confirmations,
+              requiredQuestionIds: clarificationQuestions.filter((question) => question.blocking).map((question) => question.id),
+            }),
+            signal: controller.signal,
+          },
+        );
+        if (!response.ok) throw new Error(await readApiError(response, "Candidate confirmations could not be saved"));
+        const savedConfirmations = await response.json() as CandidateConfirmation[];
+        setCandidateConfirmations(Object.fromEntries(savedConfirmations.map((confirmation) => [confirmation.questionId, confirmation])));
+        setConfirmationsDirty(false);
+        setConfirmationSyncStatus("saved");
+        setConfirmationSyncMessage("");
+        window.localStorage.removeItem(`tasko.application-confirmations.${application.id}`);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setConfirmationSyncStatus("error");
+        setConfirmationSyncMessage(error instanceof Error ? error.message : "Candidate confirmations could not be saved");
+      }
+    }, 600);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      controller.abort();
+    };
+  }, [application, candidateConfirmations, clarificationQuestions, confirmationsDirty, hasIncompleteBlockingConfirmations, hasOversizedConfirmation]);
 
   useEffect(() => {
     if (!effectiveLanguage) return;
@@ -491,13 +617,25 @@ export function ApplicationWorkspace({
     { label: "Final review", detail: progress === 100 ? "Ready to submit" : `${readyCount} of ${checklist.length} checks ready`, ready: progress === 100, icon: ShieldCheck },
   ];
 
-  function updateClarificationAnswer(questionId: string, value: string) {
-    const nextAnswers = { ...clarificationAnswers, [questionId]: value };
-    setClarificationAnswers(nextAnswers);
-    window.localStorage.setItem(
-      `tasko.application-confirmations.${activeApplication.id}`,
-      JSON.stringify(nextAnswers),
-    );
+  function updateCandidateConfirmation(
+    question: NonNullable<ApplicationGuide["clarificationQuestions"]>[number],
+    updates: Partial<Pick<CandidateConfirmation, "response" | "exampleText">>,
+  ) {
+    setCandidateConfirmations((currentConfirmations) => {
+      const current = currentConfirmations[question.id];
+      const next: CandidateConfirmation = {
+        questionId: question.id,
+        requirement: question.requirement,
+        response: updates.response ?? current?.response ?? "yes",
+        exampleText: updates.exampleText ?? current?.exampleText ?? "",
+        blocking: question.blocking,
+        updatedAt: current?.updatedAt ?? "",
+      };
+      return { ...currentConfirmations, [question.id]: next };
+    });
+    setConfirmationsDirty(true);
+    setConfirmationSyncStatus("unsaved");
+    setConfirmationSyncMessage("");
   }
 
   async function askAssistant(
@@ -550,23 +688,27 @@ export function ApplicationWorkspace({
         throw new Error("Answer the required confirmation questions before generating documents");
       }
       const oversizedConfirmation = clarificationQuestions.find(
-        (question) => (clarificationAnswers[question.id]?.trim().length ?? 0) > confirmationAnswerMaxChars,
+        (question) => (candidateConfirmations[question.id]?.exampleText.trim().length ?? 0) > confirmationAnswerMaxChars,
       );
       if (oversizedConfirmation) {
         throw new Error(`Shorten the highlighted confirmation to ${confirmationAnswerMaxChars.toLocaleString()} characters before generating`);
       }
-      const candidateConfirmations = clarificationQuestions
-        .map((question) => ({
-          requirement: question.requirement,
-          question: question.question,
-          answer: clarificationAnswers[question.id]?.trim() ?? "",
-        }))
-        .filter((confirmation) => confirmation.answer);
+      const assistantConfirmations = clarificationQuestions
+        .flatMap((question) => {
+          const confirmation = candidateConfirmations[question.id];
+          if (!confirmation) return [];
+          const example = confirmation.exampleText.trim();
+          return [{
+            requirement: question.requirement,
+            question: question.question,
+            answer: `${confirmation.response.toUpperCase()}${example ? `: ${example}` : ""}`,
+          }];
+        });
       const targetLanguage = effectiveLanguage || selectedSource.language || "English";
       const prompt = isCoverLetter
         ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the guide's positioning, evidence map, risks, and cover-letter plan. Candidate confirmations take precedence over inferred evidence; a negative answer means the claim must be omitted. Use only verified facts and never invent achievements or metrics. Return only the complete letter text without Markdown or commentary, with a greeting, focused body paragraphs, and a professional closing.`
         : `Tailor the selected DOCX resume in ${targetLanguage} for this vacancy while preserving its layout. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the resume plan and evidence map; candidate confirmations take precedence over inferred evidence. Return exactly one plain-text line for every non-empty body text block in the source DOCX, in the same order and with the same number of lines. Repeat contact details, headings, dates, employers, education, and unchanged lines verbatim. Rewrite only existing summary, skill, and achievement lines supported by verified evidence. Do not add, remove, merge, split, or reorder lines. Do not use Markdown or invent facts or metrics.`;
-      const content = await askAssistant(prompt, [selectedSource], candidateConfirmations);
+      const content = await askAssistant(prompt, [selectedSource], assistantConfirmations);
       if (!content) throw new Error("AI returned an empty document");
 
       const templateId = await ensureSourceTemplate(selectedSource, type);
@@ -812,15 +954,17 @@ export function ApplicationWorkspace({
             <section className={cn("workspace-card overflow-hidden", !confirmationsReady && "border-amber-300/20")}>
               <div className="flex items-start gap-3 border-b border-white/[0.07] px-5 py-5 sm:px-6">
                 <span className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-xl", !confirmationsReady ? "bg-amber-400/10 text-amber-200" : "bg-success/10 text-success")}><MessageSquareText className="h-[18px] w-[18px]" /></span>
-                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">02 · Confirm your evidence</p>{!hasCurrentAnalysis ? <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black text-amber-200">Analysis required</span> : hasOversizedConfirmation ? <span className="rounded-full border border-red-400/25 bg-red-500/10 px-2 py-0.5 text-[9px] font-black text-red-200">Shorten long answer</span> : unansweredBlockingQuestions.length ? <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black text-amber-200">{unansweredBlockingQuestions.length} required</span> : <span className="rounded-full border border-success/25 bg-success/10 px-2 py-0.5 text-[9px] font-black text-success">Complete</span>}</div><h2 className="mt-1 text-lg font-bold text-white">Keep every claim accurate</h2><p className="mt-1 text-xs leading-5 text-muted">Only confirmed facts can be used in the generated CV and cover letter.</p></div>
+                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">02 · Confirm your evidence</p>{!hasCurrentAnalysis ? <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black text-amber-200">Analysis required</span> : hasOversizedConfirmation ? <span className="rounded-full border border-red-400/25 bg-red-500/10 px-2 py-0.5 text-[9px] font-black text-red-200">Shorten long answer</span> : unansweredBlockingQuestions.length ? <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black text-amber-200">{unansweredBlockingQuestions.length} required</span> : <span className="rounded-full border border-success/25 bg-success/10 px-2 py-0.5 text-[9px] font-black text-success">Complete</span>}<span className={cn("rounded-full border px-2 py-0.5 text-[9px] font-black", confirmationSyncStatus === "saved" ? "border-success/20 bg-success/[0.06] text-success" : confirmationSyncStatus === "error" ? "border-red-400/25 bg-red-500/10 text-red-200" : "border-white/10 bg-white/[0.035] text-muted")}>{confirmationSyncStatus === "loading" ? "Loading answers" : confirmationSyncStatus === "saving" ? "Saving…" : confirmationSyncStatus === "saved" ? "Saved" : confirmationSyncStatus === "error" ? "Save failed" : "Not saved"}</span></div><h2 className="mt-1 text-lg font-bold text-white">Keep every claim accurate</h2><p className="mt-1 text-xs leading-5 text-muted">Choose yes, no, or partial and support positive answers with a concrete example.</p></div>
               </div>
               <div className="p-5 sm:p-6">
+                {confirmationSyncMessage ? <div className={cn("mb-4 rounded-xl border px-3 py-2.5 text-[10px] leading-4", confirmationSyncStatus === "error" ? "border-red-400/25 bg-red-500/[0.07] text-red-200" : "border-amber-400/20 bg-amber-400/[0.05] text-amber-100/80")}>{confirmationSyncMessage}</div> : null}
                 {!hasCurrentAnalysis ? <div className="flex items-center gap-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.045] px-4 py-3 text-xs text-amber-100/80"><AlertTriangle className="h-5 w-5 shrink-0 text-amber-200" /><span>Update the analysis before confirming evidence. The legacy percentage does not contain the questions required for safe document generation.</span></div> : clarificationQuestions.length ? <div className="grid gap-3">{clarificationQuestions.map((question, index) => {
-                  const answerValue = clarificationAnswers[question.id] ?? "";
-                  const answerLength = answerValue.trim().length;
-                  const isAnswered = Boolean(answerLength);
+                  const confirmation = candidateConfirmations[question.id];
+                  const answerLength = confirmation?.exampleText.trim().length ?? 0;
+                  const isAnswered = Boolean(confirmation && (!question.blocking || isMeaningfulCandidateConfirmation(confirmation)));
                   const isOversized = answerLength > confirmationAnswerMaxChars;
-                  return <label key={question.id} className={cn("block rounded-xl border p-4 transition", isOversized ? "border-red-400/30 bg-red-500/[0.035]" : isAnswered ? "border-success/15 bg-success/[0.025]" : "border-white/[0.08] bg-black/15 focus-within:border-amber-400/35")}><span className="flex items-start gap-3"><span className={cn("grid h-6 w-6 shrink-0 place-items-center rounded-full border text-[10px] font-black", isAnswered && !isOversized ? "border-success/25 bg-success/10 text-success" : "border-white/10 text-muted")}>{isAnswered && !isOversized ? <Check className="h-3.5 w-3.5" /> : index + 1}</span><span className="min-w-0"><span className="flex flex-wrap items-center gap-2"><span className="text-xs font-bold leading-5 text-white">{question.question}</span>{question.blocking ? <span className="rounded-full bg-amber-400/10 px-2 py-0.5 text-[8px] font-black uppercase text-amber-200">Required</span> : null}</span>{question.why ? <span className="mt-1 block text-[10px] leading-4 text-muted">Why it matters: {question.why}</span> : null}</span></span><textarea value={answerValue} maxLength={confirmationAnswerMaxChars} onChange={(event) => updateClarificationAnswer(question.id, event.target.value)} rows={2} placeholder="Add a true, concrete example — or write No" className="mt-3 w-full resize-y rounded-xl border border-white/[0.08] bg-[#0b1118] px-3 py-2.5 text-xs leading-5 text-white outline-none placeholder:text-muted/55 focus:border-amber-400/40" /><span className={cn("mt-1.5 block text-right text-[9px]", isOversized ? "font-bold text-red-200" : "text-muted")}>{answerLength.toLocaleString()} / {confirmationAnswerMaxChars.toLocaleString()}</span></label>;
+                  const requiresExample = confirmation?.response === "yes" || confirmation?.response === "partial";
+                  return <article key={question.id} className={cn("block rounded-xl border p-4 transition", isOversized ? "border-red-400/30 bg-red-500/[0.035]" : isAnswered ? "border-success/15 bg-success/[0.025]" : "border-white/[0.08] bg-black/15 focus-within:border-amber-400/35")}><span className="flex items-start gap-3"><span className={cn("grid h-6 w-6 shrink-0 place-items-center rounded-full border text-[10px] font-black", isAnswered && !isOversized ? "border-success/25 bg-success/10 text-success" : "border-white/10 text-muted")}>{isAnswered && !isOversized ? <Check className="h-3.5 w-3.5" /> : index + 1}</span><span className="min-w-0"><span className="flex flex-wrap items-center gap-2"><span className="text-xs font-bold leading-5 text-white">{question.question}</span>{question.blocking ? <span className="rounded-full bg-amber-400/10 px-2 py-0.5 text-[8px] font-black uppercase text-amber-200">Required</span> : null}</span><span className="mt-1 block text-[10px] leading-4 text-[#9da8b7]"><span className="font-bold text-[#d5dbe4]">Requirement:</span> {question.requirement}</span>{question.why ? <span className="mt-1 block text-[10px] leading-4 text-muted">Why it matters: {question.why}</span> : null}</span></span><div className="mt-3 grid grid-cols-3 gap-2">{(["yes", "no", "partial"] as CandidateConfirmationResponse[]).map((response) => <button key={response} type="button" onClick={() => updateCandidateConfirmation(question, { response })} className={cn("h-9 rounded-lg border text-[10px] font-black uppercase tracking-wide transition", confirmation?.response === response ? response === "no" ? "border-red-400/35 bg-red-500/10 text-red-100" : response === "partial" ? "border-amber-400/35 bg-amber-400/10 text-amber-100" : "border-success/35 bg-success/10 text-success" : "border-white/[0.08] bg-white/[0.025] text-muted hover:bg-white/[0.06] hover:text-white")}>{response}</button>)}</div><textarea value={confirmation?.exampleText ?? ""} disabled={!confirmation} maxLength={confirmationAnswerMaxChars} onChange={(event) => updateCandidateConfirmation(question, { exampleText: event.target.value })} rows={2} placeholder={!confirmation ? "Choose yes, no, or partial first" : requiresExample ? "Add a true, concrete example" : "Optional context for this answer"} className="mt-3 w-full resize-y rounded-xl border border-white/[0.08] bg-[#0b1118] px-3 py-2.5 text-xs leading-5 text-white outline-none placeholder:text-muted/55 focus:border-amber-400/40 disabled:cursor-not-allowed disabled:opacity-45" /><span className="mt-1.5 flex items-center justify-between gap-3"><span className={cn("text-[9px]", question.blocking && requiresExample && !isMeaningfulCandidateConfirmation(confirmation) ? "font-bold text-amber-200" : "text-muted")}>{question.blocking && requiresExample && !isMeaningfulCandidateConfirmation(confirmation) ? "Add a specific example (at least two meaningful words)." : confirmationsDirty ? "Pending backend save" : confirmation?.updatedAt ? `Updated ${new Date(confirmation.updatedAt).toLocaleString()}` : "Changes save automatically"}</span><span className={cn("text-[9px]", isOversized ? "font-bold text-red-200" : "text-muted")}>{answerLength.toLocaleString()} / {confirmationAnswerMaxChars.toLocaleString()}</span></span></article>;
                 })}</div> : <div className="flex items-center gap-3 rounded-xl border border-success/15 bg-success/[0.035] px-4 py-3 text-xs text-[#dfe5ec]"><CheckCircle2 className="h-5 w-5 shrink-0 text-success" /><span>No additional confirmations are required. Your verified profile is enough to continue.</span></div>}
               </div>
             </section>
