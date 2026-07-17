@@ -12,7 +12,10 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 from lxml import etree
 
-from app.services.resume_blocks import parse_resume_blocks
+from app.services.resume_blocks import (
+    parse_resume_blocks,
+    replace_paragraph_text_preserving_inline,
+)
 
 
 BODY_FONT = "Calibri"
@@ -252,29 +255,7 @@ def replace_paragraph_elements(paragraphs, replacement_texts: list[str]) -> None
 
 
 def set_paragraph_element_text(element, text: str) -> None:
-    text_nodes = paragraph_text_nodes(element)
-    if not text_nodes:
-        raise ValueError("Editable template paragraph has no text run")
-    if "".join(node.text or "" for node in text_nodes) == text:
-        return
-    text_nodes[0].text = text
-    for node in text_nodes[1:]:
-        node.text = ""
-
-
-def paragraph_element_text(element) -> str:
-    return "".join(node.text or "" for node in paragraph_text_nodes(element))
-
-
-def paragraph_text_nodes(element) -> list:
-    nodes = []
-    for node in element.iter(qn("w:t")):
-        ancestor = node.getparent()
-        while ancestor is not None and ancestor.tag != qn("w:p"):
-            ancestor = ancestor.getparent()
-        if ancestor is element:
-            nodes.append(node)
-    return nodes
+    replace_paragraph_text_preserving_inline(element, text)
 
 
 def configure_document(document: Document) -> None:

@@ -6,6 +6,8 @@ from io import BytesIO
 
 import pytest
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -24,6 +26,7 @@ from app.models.conversations import ConversationRecord, MessageRecord
 from app.models.jobs import StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.assistant import (
+    OpenClawAssistantError,
     OpenClawAssistantTimeoutError,
     build_openclaw_assistant_prompt,
     compact_conversation_history,
@@ -160,6 +163,37 @@ def test_assistant_prompt_passes_resume_docx_as_structured_blocks() -> None:
     assert '"type":"heading"' in context
     assert '"original":"Backend engineer building reliable APIs."' in context
     assert '"text"' not in context
+
+
+def test_assistant_prompt_reports_unsupported_resume_construction() -> None:
+    document = Document()
+    paragraph = document.add_paragraph("Page ")
+    field = OxmlElement("w:fldChar")
+    field.set(qn("w:fldCharType"), "begin")
+    paragraph.add_run()._r.append(field)
+    output = BytesIO()
+    document.save(output)
+    data_url = "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+
+    with pytest.raises(OpenClawAssistantError, match="Word fields"):
+        build_openclaw_assistant_prompt(
+            message="Tailor my CV",
+            context_kind="application",
+            profile=ProfilePayload(name="Eduard"),
+            job=None,
+            application=None,
+            source_documents=[
+                AssistantSourceDocument(
+                    id="source-cv",
+                    title="Unsupported CV",
+                    category="CV / Resume",
+                    fileName="resume.docx",
+                    dataUrl=data_url,
+                )
+            ],
+        )
 
 
 def test_assistant_prompt_keeps_candidate_confirmations_in_structured_context() -> None:

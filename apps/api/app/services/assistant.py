@@ -34,7 +34,10 @@ from app.services.resume_import import (
     extract_resume_text,
     summarize_openclaw_error,
 )
-from app.services.resume_blocks import extract_resume_blocks_from_docx
+from app.services.resume_blocks import (
+    UnsupportedResumeStructureError,
+    extract_resume_blocks_from_docx,
+)
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -457,6 +460,11 @@ def build_source_document_context(
                     source.file_name,
                     source.data_url,
                 ).strip()
+        except UnsupportedResumeStructureError as exc:
+            raise OpenClawAssistantError(
+                f"Selected DOCX cannot be tailored safely. {exc}",
+                code="unsupported_document",
+            ) from exc
         except Exception:
             extracted_text = ""
         if not extracted_text:
