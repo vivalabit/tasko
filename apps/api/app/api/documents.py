@@ -17,6 +17,7 @@ from app.models.documents import (
     DocumentAttachmentRecord,
     DocumentCreateRequest,
     DocumentFileRecord,
+    DocumentGenerationProvenanceRecord,
     DocumentPayload,
     DocumentRecord,
     DocumentRestoreRequest,
@@ -48,6 +49,7 @@ def list_documents(
             .options(
                 selectinload(DocumentRecord.versions),
                 selectinload(DocumentRecord.attachments),
+                selectinload(DocumentRecord.generation_provenance),
             )
             .order_by(DocumentRecord.updated_at.desc())
         )
@@ -88,6 +90,24 @@ def create_document(
                 created_at=now,
             )
         )
+        provenance_fields_present = (
+            request.generation_fingerprint is not None,
+            bool(request.generation_model and request.generation_model.strip()),
+            bool(request.input_versions),
+        )
+        if any(provenance_fields_present) and not all(provenance_fields_present):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Generation fingerprint, model, and input versions must be provided together",
+            )
+        if all(provenance_fields_present):
+            record.generation_provenance = DocumentGenerationProvenanceRecord(
+                document_id=document_id,
+                generation_fingerprint=request.generation_fingerprint or "",
+                generation_model=(request.generation_model or "").strip(),
+                input_versions=request.input_versions,
+                created_at=now,
+            )
         db.add(record)
         db.flush()
         if request.template_id:
@@ -448,6 +468,7 @@ def require_document(db: Session, document_id: str) -> DocumentRecord:
         .options(
             selectinload(DocumentRecord.versions),
             selectinload(DocumentRecord.attachments),
+            selectinload(DocumentRecord.generation_provenance),
         )
     )
     if not record:
@@ -517,6 +538,7 @@ def current_version_record(record: DocumentRecord) -> DocumentVersionRecord:
 
 
 def document_payload(record: DocumentRecord) -> DocumentPayload:
+    provenance = record.generation_provenance
     return DocumentPayload(
         id=record.id,
         type=record.type,
@@ -526,6 +548,9 @@ def document_payload(record: DocumentRecord) -> DocumentPayload:
         current_version=record.current_version,
         created_at=record.created_at,
         updated_at=record.updated_at,
+        generation_fingerprint=provenance.generation_fingerprint if provenance else None,
+        generation_model=provenance.generation_model if provenance else None,
+        input_versions=provenance.input_versions if provenance else {},
         versions=[
             DocumentVersionPayload(
                 id=version.id,

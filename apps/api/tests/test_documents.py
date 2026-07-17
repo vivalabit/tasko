@@ -12,7 +12,11 @@ from sqlalchemy.pool import StaticPool
 from app.core.database import Base, get_db
 from app.main import app
 from app.models.applications import StoredApplicationRecord
-from app.models.documents import DocumentAttachmentRecord, DocumentVersionRecord
+from app.models.documents import (
+    DocumentAttachmentRecord,
+    DocumentGenerationProvenanceRecord,
+    DocumentVersionRecord,
+)
 
 
 def test_document_versions_download_and_application_attachments() -> None:
@@ -49,6 +53,17 @@ def test_document_versions_download_and_application_attachments() -> None:
                 "content": "Dear Hiring Team,\n\nI am applying for the role.",
                 "jobId": "job-figma",
                 "applicationId": "application-one",
+                "generationFingerprint": "a" * 64,
+                "generationModel": "openai/gpt-5.6-terra",
+                "inputVersions": {
+                    "fingerprintVersion": "generation-fingerprint-v1",
+                    "vacancy": "vacancy-v1",
+                    "profile": "profile-v2",
+                    "applicationGuide": "guide-v3",
+                    "sourceDocument": {"id": "source-one", "fingerprint": "docx-v1"},
+                    "language": "english-v1",
+                    "confirmations": "confirmations-v2",
+                },
             },
         )
         document_id = created.json()["id"]
@@ -72,12 +87,18 @@ def test_document_versions_download_and_application_attachments() -> None:
             attachment_count = db.scalar(
                 select(func.count()).select_from(DocumentAttachmentRecord)
             )
+            provenance_count = db.scalar(
+                select(func.count()).select_from(DocumentGenerationProvenanceRecord)
+            )
     finally:
         app.dependency_overrides.clear()
 
     assert created.status_code == 201
     assert created.json()["currentVersion"] == 1
     assert created.json()["applicationIds"] == ["application-one"]
+    assert created.json()["generationFingerprint"] == "a" * 64
+    assert created.json()["generationModel"] == "openai/gpt-5.6-terra"
+    assert created.json()["inputVersions"]["applicationGuide"] == "guide-v3"
     assert updated.status_code == 200
     assert updated.json()["currentVersion"] == 2
     assert len(updated.json()["versions"]) == 2
@@ -86,6 +107,7 @@ def test_document_versions_download_and_application_attachments() -> None:
     assert restored.json()["versions"][-1]["content"].startswith("Dear Hiring Team")
     assert listed.status_code == 200
     assert listed.json()[0]["jobId"] == "job-figma"
+    assert listed.json()[0]["generationFingerprint"] == "a" * 64
     assert downloaded.status_code == 200
     assert downloaded.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -98,6 +120,7 @@ def test_document_versions_download_and_application_attachments() -> None:
     assert deleted.status_code == 204
     assert version_count == 0
     assert attachment_count == 0
+    assert provenance_count == 0
 
 
 def test_document_attachment_requires_existing_application() -> None:
@@ -117,6 +140,15 @@ def test_document_attachment_requires_existing_application() -> None:
     client = TestClient(app)
 
     try:
+        incomplete_provenance = client.post(
+            "/documents",
+            json={
+                "type": "tailored_resume",
+                "title": "Incomplete provenance",
+                "content": "Verified achievements",
+                "generationFingerprint": "b" * 64,
+            },
+        )
         response = client.post(
             "/documents",
             json={
@@ -129,6 +161,8 @@ def test_document_attachment_requires_existing_application() -> None:
     finally:
         app.dependency_overrides.clear()
 
+    assert incomplete_provenance.status_code == 422
+    assert "must be provided together" in incomplete_provenance.json()["detail"]
     assert response.status_code == 404
     assert response.json()["detail"] == "Application not found"
 

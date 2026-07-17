@@ -38,6 +38,12 @@ import {
   type CandidateConfirmation,
   type CandidateConfirmationResponse,
 } from "@/lib/candidate-confirmations";
+import {
+  createGenerationProvenance,
+  isGeneratedDocumentOutdated,
+  type GenerationFingerprintInputs,
+  type GenerationInputVersions,
+} from "@/lib/generation-provenance";
 import { cn } from "@/lib/utils";
 
 type WorkspaceJob = {
@@ -169,6 +175,9 @@ type GeneratedDocument = {
   currentVersion: number;
   createdAt: string;
   updatedAt: string;
+  generationFingerprint: string | null;
+  generationModel: string | null;
+  inputVersions: GenerationInputVersions | Record<string, unknown>;
   versions: GeneratedDocumentVersion[];
 };
 
@@ -218,6 +227,44 @@ function currentContent(document: GeneratedDocument | undefined) {
 function documentFileName(document: GeneratedDocument) {
   const base = document.title.trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "") || "tasko-document";
   return `${base}-v${document.currentVersion}.docx`;
+}
+
+function generationFingerprintInputs(
+  application: WorkspaceApplication,
+  profile: WorkspaceProfile,
+  applicationGuide: ApplicationGuide | undefined,
+  sourceDocument: ProfileSourceDocument,
+  language: string,
+  clarificationQuestions: NonNullable<ApplicationGuide["clarificationQuestions"]>,
+  candidateConfirmations: Record<string, CandidateConfirmation>,
+): GenerationFingerprintInputs {
+  const job = application.job;
+  return {
+    vacancy: serializeJob(job),
+    profile,
+    applicationGuide: applicationGuide ?? null,
+    sourceDocument: {
+      id: sourceDocument.id,
+      title: sourceDocument.title,
+      category: sourceDocument.category,
+      fileName: sourceDocument.file_name,
+      fileType: sourceDocument.file_type,
+      uploadedAt: sourceDocument.uploaded_at,
+      dataUrl: sourceDocument.data_url,
+    },
+    language,
+    confirmations: clarificationQuestions.flatMap((question) => {
+      const confirmation = candidateConfirmations[question.id];
+      if (!confirmation) return [];
+      return [{
+        questionId: question.id,
+        requirement: question.requirement,
+        blocking: question.blocking,
+        response: confirmation.response,
+        exampleText: confirmation.exampleText.trim(),
+      }];
+    }),
+  };
 }
 
 function inferSourceLanguage(fileName: string, title = "") {
@@ -365,6 +412,7 @@ export function ApplicationWorkspace({
   const [temporarySources, setTemporarySources] = useState<ProfileSourceDocument[]>([]);
   const [generationType, setGenerationType] = useState<GeneratedDocument["type"] | "">("");
   const [isGeneratingPack, setIsGeneratingPack] = useState(false);
+  const [currentGenerationFingerprints, setCurrentGenerationFingerprints] = useState<Partial<Record<GeneratedDocument["type"], string>>>({});
   const [documentError, setDocumentError] = useState("");
   const [candidateConfirmations, setCandidateConfirmations] = useState<Record<string, CandidateConfirmation>>({});
   const [confirmationsDirty, setConfirmationsDirty] = useState(false);
@@ -583,6 +631,42 @@ export function ApplicationWorkspace({
     }
   }, [coverSources, effectiveLanguage, isCoverSourceManual, isResumeSourceManual, resumeSources]);
 
+  useEffect(() => {
+    setCurrentGenerationFingerprints({});
+    if (!application || !applicationGuide || !effectiveLanguage) return;
+
+    let cancelled = false;
+    const timeoutId = window.setTimeout(async () => {
+      const selectedSources: Array<[GeneratedDocument["type"], ProfileSourceDocument | undefined]> = [
+        ["tailored_resume", profileSources.find((source) => source.id === selectedResumeSourceId)],
+        ["cover_letter", profileSources.find((source) => source.id === selectedCoverSourceId)],
+      ];
+      const fingerprints = await Promise.all(selectedSources.map(async ([type, source]) => {
+        if (!source) return [type, undefined] as const;
+        const provenance = await createGenerationProvenance(generationFingerprintInputs(
+          application,
+          profile,
+          applicationGuide,
+          source,
+          effectiveLanguage || source.language || "English",
+          clarificationQuestions,
+          candidateConfirmations,
+        ));
+        return [type, provenance.generationFingerprint] as const;
+      }));
+      if (!cancelled) {
+        setCurrentGenerationFingerprints(Object.fromEntries(
+          fingerprints.filter((entry): entry is [GeneratedDocument["type"], string] => Boolean(entry[1])),
+        ));
+      }
+    }, 120);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [application, applicationGuide, candidateConfirmations, clarificationQuestions, effectiveLanguage, profile, profileSources, selectedCoverSourceId, selectedResumeSourceId]);
+
   if (!application) {
     return (
       <section className="grid min-w-0 flex-1 place-items-center p-6">
@@ -600,12 +684,22 @@ export function ApplicationWorkspace({
   const profileReady = Boolean(profile.name && (profile.experience || profile.resume_file_name));
   const confirmationsReady = hasCurrentAnalysis && unansweredBlockingQuestions.length === 0 && !hasOversizedConfirmation;
   const analysisRequiredLabel = isAnalysisOutdated ? "Refresh analysis first" : "AI Match required";
+  const isResumeOutdated = Boolean(latestResume && isGeneratedDocumentOutdated(
+    latestResume.generationFingerprint,
+    currentGenerationFingerprints.tailored_resume,
+  ));
+  const isCoverLetterOutdated = Boolean(latestCoverLetter && isGeneratedDocumentOutdated(
+    latestCoverLetter.generationFingerprint,
+    currentGenerationFingerprints.cover_letter,
+  ));
+  const resumeReady = Boolean(latestResume && !isResumeOutdated);
+  const coverLetterReady = Boolean(latestCoverLetter && !isCoverLetterOutdated);
   const checklist = [
     { label: "Candidate profile", ready: profileReady },
     { label: "Vacancy analysis", ready: hasCurrentAnalysis },
     { label: "Required confirmations", ready: confirmationsReady },
-    { label: "Tailored CV", ready: Boolean(latestResume) },
-    { label: "Cover letter", ready: Boolean(latestCoverLetter) },
+    { label: "Tailored CV", ready: resumeReady },
+    { label: "Cover letter", ready: coverLetterReady },
     { label: "Application link", ready: Boolean(jobUrl) },
   ];
   const readyCount = checklist.filter((item) => item.ready).length;
@@ -613,7 +707,7 @@ export function ApplicationWorkspace({
   const preparationSteps = [
     { label: "Review match", detail: isAnalysisOutdated ? "Analysis outdated" : "Positioning and requirements", ready: hasCurrentAnalysis, icon: Target },
     { label: "Confirm facts", detail: !hasCurrentAnalysis ? "Refresh analysis first" : hasOversizedConfirmation ? "Shorten a long answer" : unansweredBlockingQuestions.length ? `${unansweredBlockingQuestions.length} answer${unansweredBlockingQuestions.length === 1 ? "" : "s"} required` : "Evidence confirmed", ready: confirmationsReady, icon: MessageSquareText },
-    { label: "Create documents", detail: latestResume && latestCoverLetter ? "Application pack ready" : "CV and cover letter", ready: Boolean(latestResume && latestCoverLetter), icon: FileText },
+    { label: "Create documents", detail: resumeReady && coverLetterReady ? "Application pack ready" : "CV and cover letter", ready: resumeReady && coverLetterReady, icon: FileText },
     { label: "Final review", detail: progress === 100 ? "Ready to submit" : `${readyCount} of ${checklist.length} checks ready`, ready: progress === 100, icon: ShieldCheck },
   ];
 
@@ -643,7 +737,7 @@ export function ApplicationWorkspace({
     sources: ProfileSourceDocument[] = [],
     candidateConfirmations: Array<{ requirement: string; question: string; answer: string }> = [],
   ) {
-    if (!message.trim()) return "";
+    if (!message.trim()) return { message: "", model: "unknown" };
     const response = await fetch(`${apiBaseUrl}/assistant/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -667,8 +761,14 @@ export function ApplicationWorkspace({
       throw new Error("The application context is larger than the assistant can process. Your answers are saved — shorten unusually long confirmations and try again.");
     }
     if (!response.ok) throw new Error(await readApiError(response, "AI request failed"));
-    const payload = await response.json() as { message?: string };
-    return payload.message?.trim() ?? "";
+    const payload = await response.json() as {
+      message?: string;
+      metadata?: { metrics?: { model?: string } };
+    };
+    return {
+      message: payload.message?.trim() ?? "",
+      model: payload.metadata?.metrics?.model?.trim() || "unknown",
+    };
   }
 
   async function generateDocument(type: GeneratedDocument["type"]) {
@@ -705,10 +805,20 @@ export function ApplicationWorkspace({
           }];
         });
       const targetLanguage = effectiveLanguage || selectedSource.language || "English";
+      const provenance = await createGenerationProvenance(generationFingerprintInputs(
+        activeApplication,
+        profile,
+        applicationGuide,
+        selectedSource,
+        targetLanguage,
+        clarificationQuestions,
+        candidateConfirmations,
+      ));
       const prompt = isCoverLetter
         ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the guide's positioning, evidence map, risks, and cover-letter plan. Candidate confirmations take precedence over inferred evidence; a negative answer means the claim must be omitted. Use only verified facts and never invent achievements or metrics. Return only the complete letter text without Markdown or commentary, with a greeting, focused body paragraphs, and a professional closing.`
         : `Tailor the selected DOCX resume in ${targetLanguage} for this vacancy while preserving its layout. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the resume plan and evidence map; candidate confirmations take precedence over inferred evidence. Return exactly one plain-text line for every non-empty body text block in the source DOCX, in the same order and with the same number of lines. Repeat contact details, headings, dates, employers, education, and unchanged lines verbatim. Rewrite only existing summary, skill, and achievement lines supported by verified evidence. Do not add, remove, merge, split, or reorder lines. Do not use Markdown or invent facts or metrics.`;
-      const content = await askAssistant(prompt, [selectedSource], assistantConfirmations);
+      const assistantResult = await askAssistant(prompt, [selectedSource], assistantConfirmations);
+      const content = assistantResult.message;
       if (!content) throw new Error("AI returned an empty document");
 
       const templateId = await ensureSourceTemplate(selectedSource, type);
@@ -724,11 +834,18 @@ export function ApplicationWorkspace({
           jobId: activeApplication.job.id,
           applicationId: activeApplication.id,
           templateId,
+          generationFingerprint: provenance.generationFingerprint,
+          generationModel: assistantResult.model,
+          inputVersions: provenance.inputVersions,
         }),
       });
       if (!response.ok) throw new Error(await readApiError(response, "Document save failed"));
       const saved = await response.json() as GeneratedDocument;
       setDocuments((current) => [saved, ...current.filter((document) => document.id !== saved.id)]);
+      setCurrentGenerationFingerprints((current) => ({
+        ...current,
+        [type]: provenance.generationFingerprint,
+      }));
       onDocumentAttached(activeApplication.id, {
         artifactId: saved.id,
         title: saved.title,
@@ -820,7 +937,7 @@ export function ApplicationWorkspace({
     setAdvicePrompt(prompt);
     setIsLoadingAdvice(true);
     try {
-      setAdvice(await askAssistant(prompt));
+      setAdvice((await askAssistant(prompt)).message);
     } catch (error) {
       setAdvice(error instanceof Error ? error.message : "Advice request failed");
     } finally {
@@ -978,8 +1095,8 @@ export function ApplicationWorkspace({
                 {documentError ? <div className="mb-4 rounded-xl border border-red-400/25 bg-red-500/[0.07] px-3 py-2.5 text-xs leading-5 text-red-200">{documentError}</div> : null}
                 {effectiveLanguage && !resumeSources.some((source) => source.language === effectiveLanguage) ? <div className="mb-4 rounded-xl border border-amber-400/25 bg-amber-400/[0.07] px-3 py-2.5 text-xs leading-5 text-amber-200">No {effectiveLanguage} CV DOCX is saved in Profile. Add one or choose another language.</div> : null}
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <DocumentCard icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isGenerating={generationType === "tailored_resume"} onGenerate={() => generateDocument("tailored_resume")} canGenerate={Boolean(selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={!selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
-                  <DocumentCard icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isGenerating={generationType === "cover_letter"} onGenerate={() => generateDocument("cover_letter")} canGenerate={Boolean(selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={!selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
+                  <DocumentCard icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} onGenerate={() => generateDocument("tailored_resume")} canGenerate={Boolean(selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={!selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
+                  <DocumentCard icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} onGenerate={() => generateDocument("cover_letter")} canGenerate={Boolean(selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={!selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
                 </div>
               </div>
             </section>
@@ -1016,6 +1133,7 @@ function DocumentCard({
   label,
   description,
   document,
+  isOutdated,
   isGenerating,
   onGenerate,
   canGenerate,
@@ -1026,6 +1144,7 @@ function DocumentCard({
   label: string;
   description: string;
   document: GeneratedDocument | undefined;
+  isOutdated: boolean;
   isGenerating: boolean;
   onGenerate: () => void;
   canGenerate: boolean;
@@ -1037,7 +1156,7 @@ function DocumentCard({
     <article className="flex flex-col rounded-2xl border border-white/[0.08] bg-black/15 p-4 transition hover:border-white/[0.12]">
       <div className="flex items-start gap-3">
         <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/[0.07] bg-white/[0.035] text-accent"><Icon className="h-[18px] w-[18px]" /></span>
-        <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-bold text-white">{label}</h3>{document ? <span className="inline-flex items-center gap-1 rounded-full border border-success/25 bg-success/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-success"><FileCheck2 className="h-3 w-3" /> Ready · v{document.currentVersion}</span> : <span className="rounded-full border border-white/[0.08] bg-white/[0.025] px-2 py-1 text-[8px] font-black uppercase tracking-wide text-muted">Not generated</span>}</div><p className="mt-1 text-[10px] leading-4 text-muted">{description}</p></div>
+        <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-bold text-white">{label}</h3>{document ? isOutdated ? <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-amber-200"><AlertTriangle className="h-3 w-3" /> Outdated · v{document.currentVersion}</span> : <span className="inline-flex items-center gap-1 rounded-full border border-success/25 bg-success/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-success"><FileCheck2 className="h-3 w-3" /> Ready · v{document.currentVersion}</span> : <span className="rounded-full border border-white/[0.08] bg-white/[0.025] px-2 py-1 text-[8px] font-black uppercase tracking-wide text-muted">Not generated</span>}</div><p className="mt-1 text-[10px] leading-4 text-muted">{description}</p></div>
       </div>
       {sourceControl}
       <div className={cn("mt-3 min-h-[132px] overflow-hidden rounded-xl border p-4", content ? "border-white/[0.09] bg-[#f6f4ef] text-[#20242a] shadow-inner" : "border-dashed border-white/[0.1] bg-white/[0.015]")}>
