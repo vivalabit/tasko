@@ -238,10 +238,11 @@ type DocumentTemplate = {
   type: "cover_letter" | "tailored_resume";
   name: string;
   fileName: string;
-  extractedText: string;
   createdAt: string;
   updatedAt: string;
 };
+
+type PendingAiGeneration = GeneratedDocument["type"] | "pack" | null;
 
 type ApplicationWorkspaceProps = {
   application: WorkspaceApplication | null;
@@ -266,6 +267,7 @@ type ApplicationWorkspaceProps = {
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const docxContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const aiDisclosureStorageKey = "tasko.ai-cv-disclosure.v1";
 const confirmationAnswerMaxChars = 1_500;
 const packStageDefinitions: Array<{ id: PackStageId; label: string }> = [
   { id: "resume_generation", label: "Generate CV" },
@@ -544,6 +546,13 @@ export function ApplicationWorkspace({
   const [advicePrompt, setAdvicePrompt] = useState("");
   const [isLoadingAdvice, setIsLoadingAdvice] = useState(false);
   const [analysisTab, setAnalysisTab] = useState<"overview" | "evidence" | "strategy">("overview");
+  const [aiDisclosureAccepted, setAiDisclosureAccepted] = useState(false);
+  const [aiDisclosureConfirmed, setAiDisclosureConfirmed] = useState(false);
+  const [pendingAiGeneration, setPendingAiGeneration] = useState<PendingAiGeneration>(null);
+
+  useEffect(() => {
+    setAiDisclosureAccepted(window.localStorage.getItem(aiDisclosureStorageKey) === "accepted");
+  }, []);
 
   useEffect(() => {
     if (!application) return;
@@ -1045,6 +1054,26 @@ export function ApplicationWorkspace({
     }
   }
 
+  function requestAiGeneration(action: Exclude<PendingAiGeneration, null>) {
+    if (!aiDisclosureAccepted) {
+      setAiDisclosureConfirmed(false);
+      setPendingAiGeneration(action);
+      return;
+    }
+    if (action === "pack") void generatePack();
+    else void generateDocument(action);
+  }
+
+  function acceptAiDisclosure() {
+    if (!aiDisclosureConfirmed || !pendingAiGeneration) return;
+    const action = pendingAiGeneration;
+    window.localStorage.setItem(aiDisclosureStorageKey, "accepted");
+    setAiDisclosureAccepted(true);
+    setPendingAiGeneration(null);
+    if (action === "pack") void generatePack();
+    else void generateDocument(action);
+  }
+
   async function generatePack() {
     if (isGeneratingPack || generationType) return;
     const packJobId = createId("application-pack");
@@ -1269,6 +1298,7 @@ export function ApplicationWorkspace({
   }
 
   return (
+    <>
     <section className="job-scroll application-workspace min-w-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5 xl:px-7">
       <div className="mx-auto max-w-[1420px]">
         <button type="button" onClick={onBack} className="mb-4 inline-flex items-center gap-2 text-xs font-semibold text-muted transition hover:text-white">
@@ -1414,7 +1444,7 @@ export function ApplicationWorkspace({
                 <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent"><Sparkles className="h-[18px] w-[18px]" /></span><div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">03 · Build your application pack</p><h2 className="mt-1 text-lg font-bold text-white">Tailored documents</h2><p className="mt-1 text-xs leading-5 text-muted">Select your originals. Tasko rewrites the content and preserves the DOCX design.</p></div></div>
                 <div className="flex flex-col gap-2 sm:items-end">
                   <label className="flex items-center gap-2 text-[9px] font-bold text-muted"><span>On cover failure</span><select value={packPersistenceMode} disabled={isGeneratingPack} onChange={(event) => setPackPersistenceMode(event.target.value as PackPersistenceMode)} className="h-8 rounded-lg border border-white/[0.08] bg-[#151c24] px-2 text-[10px] font-bold text-white outline-none focus:border-accent/60 disabled:opacity-50"><option value="atomic">Roll back pack</option><option value="partial">Keep validated CV</option></select></label>
-                  <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType) || !documentsLoaded || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? packStageDefinitions.find((stage) => stage.id === packProgress?.stage)?.label ?? "Generating pack…" : "Generate both documents"}</Button>
+                  <Button onClick={() => requestAiGeneration("pack")} disabled={isGeneratingPack || Boolean(generationType) || !documentsLoaded || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? packStageDefinitions.find((stage) => stage.id === packProgress?.stage)?.label ?? "Generating pack…" : "Generate both documents"}</Button>
                 </div>
               </div>
               <div className="p-5 sm:p-6">
@@ -1422,8 +1452,8 @@ export function ApplicationWorkspace({
                 {packProgress ? <div className={cn("mb-4 rounded-xl border p-3", packProgress.status === "failed" ? "border-red-400/25 bg-red-500/[0.045]" : packProgress.status === "partial" ? "border-amber-400/25 bg-amber-400/[0.045]" : "border-white/[0.08] bg-black/15")}><div className="grid gap-2 sm:grid-cols-4">{packStageDefinitions.map((stage, index) => { const currentIndex = packStageDefinitions.findIndex((candidate) => candidate.id === packProgress.stage); const stageStatus = index < currentIndex ? "completed" : index === currentIndex ? packProgress.status : "pending"; return <div key={stage.id} className={cn("rounded-lg border px-2.5 py-2", stageStatus === "completed" ? "border-success/20 bg-success/[0.05]" : stageStatus === "failed" ? "border-red-400/25 bg-red-500/[0.06]" : stageStatus === "partial" ? "border-amber-400/25 bg-amber-400/[0.06]" : stageStatus === "active" || stageStatus === "retrying" ? "border-accent/30 bg-accent/[0.07]" : "border-white/[0.06] bg-white/[0.015]")}><div className="flex items-center gap-2">{stageStatus === "completed" ? <Check className="h-3.5 w-3.5 text-success" /> : stageStatus === "active" || stageStatus === "retrying" ? <LoaderCircle className="h-3.5 w-3.5 animate-spin text-accent" /> : stageStatus === "failed" ? <AlertTriangle className="h-3.5 w-3.5 text-red-200" /> : <CircleDot className="h-3.5 w-3.5 text-muted" />}<span className={cn("text-[9px] font-black uppercase tracking-wide", stageStatus === "completed" ? "text-success" : stageStatus === "failed" ? "text-red-200" : stageStatus === "partial" ? "text-amber-200" : stageStatus === "active" || stageStatus === "retrying" ? "text-white" : "text-muted")}>{stage.label}</span></div></div>; })}</div><div className="mt-2 flex items-center justify-between gap-3 px-1 text-[9px]"><span className={cn(packProgress.status === "failed" ? "text-red-200" : packProgress.status === "partial" ? "text-amber-200" : "text-muted")}>{packProgress.message}</span><span className="shrink-0 font-mono text-muted">{packProgress.attempt > 1 ? `attempt ${packProgress.attempt}/3 · ` : ""}{packProgress.jobId.slice(-8)}</span></div></div> : null}
                 {effectiveLanguage && !resumeSources.some((source) => source.language === effectiveLanguage) ? <div className="mb-4 rounded-xl border border-amber-400/25 bg-amber-400/[0.07] px-3 py-2.5 text-xs leading-5 text-amber-200">No {effectiveLanguage} CV DOCX is saved in Profile. Add one or choose another language.</div> : null}
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <DocumentCard icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} onGenerate={() => generateDocument("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? "Loading history…" : !selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
-                  <DocumentCard icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} onGenerate={() => generateDocument("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? "Loading history…" : !selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
+                  <DocumentCard icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} onGenerate={() => requestAiGeneration("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? "Loading history…" : !selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
+                  <DocumentCard icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} onGenerate={() => requestAiGeneration("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? "Loading history…" : !selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
                 </div>
               </div>
             </section>
@@ -1452,6 +1482,25 @@ export function ApplicationWorkspace({
         </div>
       </div>
     </section>
+    {pendingAiGeneration ? (
+      <div className="fixed inset-0 z-50 grid place-items-center bg-black/75 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="ai-disclosure-title">
+        <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-[#111821] p-5 shadow-2xl sm:p-6">
+          <div className="flex items-start gap-3">
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-accent/25 bg-accent/10 text-accent"><ShieldCheck className="h-5 w-5" /></span>
+            <div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">AI data disclosure</p><h2 id="ai-disclosure-title" className="mt-1 text-lg font-bold text-white">Your CV will be sent to the configured AI provider</h2></div>
+          </div>
+          <p className="mt-4 text-xs leading-5 text-[#cbd3df]">To tailor your application, Tasko sends the selected source document together with relevant profile details, vacancy text, and your confirmations through OpenClaw to the configured AI model provider.</p>
+          <div className="mt-4 space-y-2 rounded-xl border border-white/[0.08] bg-black/20 p-4 text-[11px] leading-5 text-muted">
+            <p><span className="font-bold text-white">Purpose:</span> generate the CV and cover letter you requested.</p>
+            <p><span className="font-bold text-white">Tasko storage:</span> source templates remain until you delete them; generated DOCX files remain until you delete their document.</p>
+            <p><span className="font-bold text-white">Provider retention:</span> processing and retention follow the policy of the AI provider configured for this Tasko deployment.</p>
+          </div>
+          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3 text-xs leading-5 text-[#dce2ea]"><input type="checkbox" checked={aiDisclosureConfirmed} onChange={(event) => setAiDisclosureConfirmed(event.target.checked)} className="mt-1 h-4 w-4 accent-[#ff5a00]" /><span>I understand and agree to send these application data to the AI provider for generation.</span></label>
+          <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={() => setPendingAiGeneration(null)} className="h-10 rounded-xl border border-white/10 px-4 text-xs">Cancel</Button><Button disabled={!aiDisclosureConfirmed} onClick={acceptAiDisclosure} className="h-10 rounded-xl bg-accent px-4 text-xs font-bold text-white disabled:opacity-40"><Bot className="h-4 w-4" /> Continue to AI</Button></div>
+        </div>
+      </div>
+    ) : null}
+    </>
   );
 }
 

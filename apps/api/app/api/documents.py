@@ -41,6 +41,7 @@ from app.models.documents import (
     utc_now,
 )
 from app.services.document_export import build_document_docx, build_document_from_template
+from app.services.document_security import DocumentSecurityError, validate_docx_package
 from app.services.document_validation import (
     DocumentValidationError,
     validate_generated_document,
@@ -724,6 +725,36 @@ def create_document_template(
             detail="Template must be a non-empty DOCX file under 10 MB",
         )
     try:
+        validate_docx_package(content)
+    except DocumentSecurityError as exc:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_413_CONTENT_TOO_LARGE
+                if exc.limit_exceeded
+                else status.HTTP_422_UNPROCESSABLE_ENTITY
+            ),
+            detail=str(exc),
+        ) from exc
+
+    content_sha256 = hashlib.sha256(content).digest()
+    try:
+        candidates = db.scalars(
+            select(DocumentTemplateRecord).where(DocumentTemplateRecord.type == request.type)
+        ).all()
+        duplicate = next(
+            (
+                candidate
+                for candidate in candidates
+                if hashlib.sha256(candidate.content).digest() == content_sha256
+            ),
+            None,
+        )
+        if duplicate is not None:
+            return document_template_payload(duplicate)
+    except SQLAlchemyError as exc:
+        raise database_unavailable(exc) from exc
+
+    try:
         document = Document(BytesIO(content))
     except Exception as exc:
         raise HTTPException(
@@ -1155,7 +1186,7 @@ def decode_data_url(value: str) -> tuple[str, bytes]:
     content_type = header.removeprefix("data:").split(";")[0]
     try:
         if ";base64" in header:
-            return content_type, base64.b64decode(payload, validate=False)
+            return content_type, base64.b64decode(payload, validate=True)
         return content_type, payload.encode()
     except (ValueError, TypeError):
         return content_type, b""
@@ -1167,7 +1198,6 @@ def document_template_payload(record: DocumentTemplateRecord) -> DocumentTemplat
         type=record.type,
         name=record.name,
         file_name=record.file_name,
-        extracted_text=record.extracted_text,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )

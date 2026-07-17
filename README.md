@@ -74,6 +74,24 @@ application attachments are stored in PostgreSQL through `/documents`.
 `GET /documents/{id}/download` produces a styled `.docx` for the current or a
 selected historical version.
 
+### Document storage and AI disclosure
+
+DOCX templates are deduplicated per document type by the SHA-256 digest of the
+uploaded bytes. Before storage, Tasko rejects unsafe ZIP paths, encrypted or
+symlinked entries, malformed XML, DTDs/entities, and packages that exceed the
+entry-count, uncompressed-size, XML-size, or XML-element limits.
+
+Source templates and generated files have independent retention. Deleting a
+source template removes its original bytes and extracted text but keeps any
+already-generated DOCX files downloadable. Deleting a document removes all of
+its versions, attachments, validation/provenance records, and generated DOCX
+files. Neither source templates nor generated documents expire automatically.
+
+Before the first document-generation request, the application identifies the
+data sent through OpenClaw to the configured AI provider and requires explicit
+acknowledgement. Provider-side processing and retention remain governed by the
+provider configured for the deployment.
+
 OpenClaw can propose a small allowlist of Tasko actions: application notes and
 next steps, interview events, documents, and individual profile fields. These
 proposals are stored with the assistant message and rendered as previews. No

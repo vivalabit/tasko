@@ -53,6 +53,11 @@ class DocumentRecord(Base):
         cascade="all, delete-orphan",
         order_by="DocumentVersionValidationRecord.version",
     )
+    files: Mapped[list["DocumentFileRecord"]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="DocumentFileRecord.version",
+    )
 
 
 class DocumentVersionRecord(Base):
@@ -181,6 +186,9 @@ class DocumentTemplateRecord(Base):
         onupdate=utc_now,
         index=True,
     )
+    files: Mapped[list["DocumentFileRecord"]] = relationship(
+        back_populates="template",
+    )
 
 
 class DocumentFileRecord(Base):
@@ -205,6 +213,8 @@ class DocumentFileRecord(Base):
     )
     content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    document: Mapped[DocumentRecord] = relationship(back_populates="files")
+    template: Mapped[DocumentTemplateRecord | None] = relationship(back_populates="files")
 
 
 DocumentType = Literal["cover_letter", "tailored_resume"]
@@ -388,7 +398,6 @@ class DocumentTemplatePayload(BaseModel):
     type: DocumentType
     name: str
     file_name: str = Field(alias="fileName")
-    extracted_text: str = Field(alias="extractedText")
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
 
