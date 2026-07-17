@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getHashForView, getRouteFromHash } from "./app-route.ts";
+import {
+  findWorkspaceApplication,
+  getHashForView,
+  getRouteFromHash,
+} from "./app-route.ts";
 
 test("recognizes the legacy application workspace hash", () => {
   assert.deepEqual(getRouteFromHash("#application-workspace"), {
@@ -30,4 +34,16 @@ test("keeps existing view hashes working", () => {
   assert.deepEqual(getRouteFromHash("#applications"), { view: "Applications" });
   assert.equal(getHashForView("Applications"), "#applications");
   assert.deepEqual(getRouteFromHash("#unknown"), { view: "Dashboard" });
+});
+
+test("requires an application ID before resolving a workspace application", () => {
+  const applications = [{ id: "first" }, { id: "second" }];
+
+  assert.equal(findWorkspaceApplication(applications, undefined), null);
+  assert.equal(findWorkspaceApplication(applications, null), null);
+  assert.equal(findWorkspaceApplication(applications, "missing"), null);
+  assert.equal(
+    findWorkspaceApplication(applications, "second"),
+    applications[1],
+  );
 });

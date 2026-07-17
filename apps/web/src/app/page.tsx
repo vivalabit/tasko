@@ -69,7 +69,7 @@ import {
 import { ApplicationWorkspace } from "@/components/application-workspace";
 import { DashboardGreeting, useHydrationSafeCurrentTime } from "@/components/dashboard-greeting";
 import { legacyAiMatchVersion } from "@/lib/ai-match";
-import { getHashForView, getRouteFromHash, type View } from "@/lib/app-route";
+import { findWorkspaceApplication, getHashForView, getRouteFromHash, type View } from "@/lib/app-route";
 import { cn } from "@/lib/utils";
 
 type AiMatchMetadata = {
@@ -2694,6 +2694,7 @@ export default function HomePage() {
   const [showArchivedJobs, setShowArchivedJobs] = useState(false);
   const [applications, setApplications] = useState<TrackedApplication[]>([]);
   const [selectedApplicationId, setSelectedApplicationId] = useState("");
+  const [workspaceApplicationId, setWorkspaceApplicationId] = useState<string | null>(null);
   const [areApplicationsLoaded, setAreApplicationsLoaded] = useState(false);
   const [matchingApplicationIds, setMatchingApplicationIds] = useState<string[]>([]);
   const [applicationEvents, setApplicationEvents] = useState<ApplicationEvent[]>([]);
@@ -2835,6 +2836,7 @@ export default function HomePage() {
     ? applications.find((application) => application.job.id === selectedJob.id)
     : undefined;
   const selectedApplication = applications.find((application) => application.id === selectedApplicationId) ?? applications[0] ?? null;
+  const workspaceApplication = findWorkspaceApplication(applications, workspaceApplicationId);
 
   function openAiMatchSection(section: "analysis" | "recommendations") {
     setActiveTab("AI Match");
@@ -2859,6 +2861,11 @@ export default function HomePage() {
       const route = getRouteFromHash(window.location.hash);
 
       setActiveView(route.view);
+      if (route.view === "ApplicationWorkspace") {
+        setWorkspaceApplicationId(route.applicationId ?? null);
+      } else {
+        setWorkspaceApplicationId(null);
+      }
       if (route.applicationId) {
         setSelectedApplicationId(route.applicationId);
       }
@@ -3234,6 +3241,7 @@ export default function HomePage() {
 
   function changeView(view: View, applicationId?: string) {
     setActiveView(view);
+    setWorkspaceApplicationId(view === "ApplicationWorkspace" ? applicationId ?? null : null);
     window.history.replaceState(null, "", getHashForView(view, applicationId));
   }
 
@@ -5061,13 +5069,13 @@ export default function HomePage() {
           />
         ) : activeView === "ApplicationWorkspace" ? (
           <ApplicationWorkspace
-            application={selectedApplication}
+            application={workspaceApplication}
             profile={profile}
             onBack={() => changeView("Applications")}
             onOpenAssistant={(prompt, applicationId) => openAssistant(prompt, "application", applicationId)}
             onDocumentAttached={attachGeneratedDocumentToApplication}
             onRefreshAnalysis={refreshApplicationAnalysis}
-            isAnalysisRefreshing={Boolean(selectedApplication && matchingApplicationIds.includes(selectedApplication.id))}
+            isAnalysisRefreshing={Boolean(workspaceApplication && matchingApplicationIds.includes(workspaceApplication.id))}
             onMarkApplied={(applicationId) => {
               updateApplicationStatus(applicationId, "applied");
               appendAppLog({

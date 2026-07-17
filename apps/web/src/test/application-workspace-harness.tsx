@@ -209,7 +209,7 @@ export function installApplicationWorkspaceApiMock({
 }
 
 export function renderApplicationWorkspace(
-  application: WorkspaceApplication,
+  application: ApplicationWorkspaceProps["application"],
   overrides: Partial<Omit<ApplicationWorkspaceProps, "application">> = {},
 ) {
   const props: ApplicationWorkspaceProps = {

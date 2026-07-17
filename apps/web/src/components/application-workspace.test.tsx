@@ -10,6 +10,17 @@ import {
 } from "@/test/application-workspace-harness";
 
 describe("ApplicationWorkspace", () => {
+  it("shows an empty state when the route has no application ID", () => {
+    renderApplicationWorkspace(null);
+
+    expect(
+      screen.getByRole("heading", { name: "No application selected" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Back to applications" }),
+    ).toBeInTheDocument();
+  });
+
   it("renders a legacy application and asks for a refreshed analysis", async () => {
     installApplicationWorkspaceApiMock();
 

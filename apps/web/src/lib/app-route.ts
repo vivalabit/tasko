@@ -50,7 +50,10 @@ export function getRouteFromHash(hash: string): AppRoute {
           applicationId: decodeURIComponent(encodedApplicationId),
         };
       } catch {
-        return { view: "ApplicationWorkspace", applicationId: encodedApplicationId };
+        return {
+          view: "ApplicationWorkspace",
+          applicationId: encodedApplicationId,
+        };
       }
     }
   }
@@ -66,4 +69,14 @@ export function getHashForView(view: View, applicationId?: string) {
   }
 
   return hashByView[view];
+}
+
+export function findWorkspaceApplication<T extends { id: string }>(
+  applications: readonly T[],
+  applicationId: string | null | undefined,
+) {
+  if (!applicationId) return null;
+  return (
+    applications.find((application) => application.id === applicationId) ?? null
+  );
 }
