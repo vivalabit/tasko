@@ -607,7 +607,10 @@ export function ApplicationWorkspace({
     [application],
   );
   const applicationGuide = hasCurrentAnalysis ? application?.job.aiMatch?.applicationGuide : undefined;
-  const clarificationQuestions = applicationGuide?.clarificationQuestions ?? [];
+  const clarificationQuestions = useMemo(
+    () => applicationGuide?.clarificationQuestions ?? [],
+    [applicationGuide],
+  );
   const unansweredBlockingQuestions = clarificationQuestions.filter(
     (question) => question.blocking && !isCandidateConfirmationComplete(question, candidateConfirmations[question.id]),
   );
