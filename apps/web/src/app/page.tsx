@@ -523,6 +523,10 @@ const jobs: Job[] = [
 
 const tabs = ["Overview", "Company", "AI Match", "Reviews", "Similar Jobs"];
 type View = "Dashboard" | "Jobs" | "ApplicationWorkspace" | "Applications" | "Calendar" | "Assistant" | "Profile" | "Settings" | "Logs";
+type AppRoute = {
+  view: View;
+  applicationId?: string;
+};
 type ParserSearchStatus = "idle" | "loading" | "ready" | "error";
 
 const applicationStatuses: Array<{ status: ApplicationStatus; label: string }> = [
@@ -1627,36 +1631,36 @@ function getProfileCompletion(profile: CandidateProfile) {
   return Math.round((completedFields.length / completionItems.length) * 100);
 }
 
-function getViewFromHash(): View {
-  if (typeof window === "undefined") {
-    return "Dashboard";
+function getRouteFromHash(hash: string): AppRoute {
+  const applicationWorkspacePrefix = "#application-workspace/";
+
+  if (hash.startsWith(applicationWorkspacePrefix)) {
+    const encodedApplicationId = hash.slice(applicationWorkspacePrefix.length);
+
+    if (encodedApplicationId) {
+      try {
+        return {
+          view: "ApplicationWorkspace",
+          applicationId: decodeURIComponent(encodedApplicationId),
+        };
+      } catch {
+        return { view: "ApplicationWorkspace", applicationId: encodedApplicationId };
+      }
+    }
   }
 
-  if (window.location.hash === "#profile") {
-    return "Profile";
-  }
+  const viewByHash: Record<string, View> = {
+    "#profile": "Profile",
+    "#settings": "Settings",
+    "#logs": "Logs",
+    "#applications": "Applications",
+    "#application-workspace": "ApplicationWorkspace",
+    "#calendar": "Calendar",
+    "#assistant": "Assistant",
+    "#jobs": "Jobs",
+  };
 
-  if (window.location.hash === "#settings") {
-    return "Settings";
-  }
-
-  if (window.location.hash === "#logs") {
-    return "Logs";
-  }
-
-  if (window.location.hash === "#applications") {
-    return "Applications";
-  }
-
-  if (window.location.hash === "#calendar") {
-    return "Calendar";
-  }
-
-  if (window.location.hash === "#assistant") {
-    return "Assistant";
-  }
-
-  return window.location.hash === "#jobs" ? "Jobs" : "Dashboard";
+  return { view: viewByHash[hash] ?? "Dashboard" };
 }
 
 function createParsedJobId(job: ParsedJob, index: number) {
@@ -2886,7 +2890,12 @@ export default function HomePage() {
 
   useEffect(() => {
     const syncViewFromHash = () => {
-      setActiveView(getViewFromHash());
+      const route = getRouteFromHash(window.location.hash);
+
+      setActiveView(route.view);
+      if (route.applicationId) {
+        setSelectedApplicationId(route.applicationId);
+      }
     };
 
     syncViewFromHash();
@@ -3257,12 +3266,14 @@ export default function HomePage() {
     void refreshAiMatches(jobList.filter(isImportedJob), runSignature);
   }, [aiMatchProfileSignature, importedJobSignature, isProfileLoaded, jobList]);
 
-  function changeView(view: View) {
+  function changeView(view: View, applicationId?: string) {
     setActiveView(view);
     const viewHash: Record<View, string> = {
       Dashboard: "#dashboard",
       Jobs: "#jobs",
-      ApplicationWorkspace: "#application-workspace",
+      ApplicationWorkspace: applicationId
+        ? `#application-workspace/${encodeURIComponent(applicationId)}`
+        : "#application-workspace",
       Applications: "#applications",
       Calendar: "#calendar",
       Assistant: "#assistant",
@@ -3350,17 +3361,18 @@ export default function HomePage() {
     if (existingApplication) {
       updateApplicationJob(existingApplication.id, job);
       setSelectedApplicationId(existingApplication.id);
+      changeView("ApplicationWorkspace", existingApplication.id);
     } else {
       const application = createApplicationFromJob(job, "draft");
       setApplications((currentApplications) => [application, ...currentApplications]);
       setSelectedApplicationId(application.id);
+      changeView("ApplicationWorkspace", application.id);
     }
-    changeView("ApplicationWorkspace");
   }
 
   function openApplicationWorkspace(applicationId: string) {
     setSelectedApplicationId(applicationId);
-    changeView("ApplicationWorkspace");
+    changeView("ApplicationWorkspace", applicationId);
   }
 
   function addManualApplication(draft: ManualApplicationDraft) {
