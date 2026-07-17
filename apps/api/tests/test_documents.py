@@ -18,6 +18,7 @@ from app.models.documents import (
     DocumentGenerationProvenanceRecord,
     DocumentVersionGenerationProvenanceRecord,
     DocumentVersionRecord,
+    DocumentVersionValidationRecord,
 )
 
 
@@ -382,3 +383,96 @@ def test_resume_template_rewrites_blocks_without_rebuilding_design() -> None:
     assert rendered.tables[0].style.name == "Table Grid"
     assert rendered.tables[0].cell(0, 0).text == "Python"
     assert rendered.tables[0].cell(0, 1).text == "Built a verified production service"
+
+
+def test_generated_template_document_exposes_validation_and_diff(monkeypatch) -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        with testing_session_local() as db:
+            yield db
+
+    expected_diff = [{
+        "blockId": "paragraph-change-0001",
+        "type": "paragraph",
+        "original": "Original body.",
+        "replacement": "Built a Python service at Acme in 2023.",
+        "reason": "Generated cover-letter paragraph update",
+    }]
+
+    def fake_validation(**_kwargs):
+        return {
+            "factual": {"status": "passed", "checkedChanges": 1},
+            "visual": {
+                "status": "passed",
+                "sourcePageCount": 1,
+                "renderedPageCount": 1,
+                "linksPreserved": True,
+                "tableOverflow": False,
+            },
+            "diff": expected_diff,
+        }
+
+    monkeypatch.setattr("app.api.documents.validate_generated_document", fake_validation)
+
+    template = Document()
+    template.add_paragraph("Dear Hiring Team,")
+    template.add_paragraph("Original body.")
+    template.add_paragraph("Kind regards,")
+    template_output = BytesIO()
+    template.save(template_output)
+    data_url = (
+        "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;"
+        "base64," + base64.b64encode(template_output.getvalue()).decode()
+    )
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        uploaded = client.post(
+            "/documents/templates",
+            json={
+                "type": "cover_letter",
+                "name": "Validated source",
+                "fileName": "source.docx",
+                "dataUrl": data_url,
+            },
+        )
+        created = client.post(
+            "/documents",
+            json={
+                "type": "cover_letter",
+                "title": "Validated letter",
+                "content": (
+                    "Dear Hiring Team,\n\n"
+                    "Built a Python service at Acme in 2023.\n\n"
+                    "Kind regards,"
+                ),
+                "templateId": uploaded.json()["id"],
+                "generationFingerprint": "f" * 64,
+                "generationModel": "test-model",
+                "inputVersions": {"profile": "profile-v1"},
+                "validationEvidence": {"profile": "Python, Acme, 2023"},
+            },
+        )
+        listed = client.get("/documents")
+        with testing_session_local() as db:
+            validation_count = db.scalar(
+                select(func.count()).select_from(DocumentVersionValidationRecord)
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert uploaded.status_code == 201
+    assert created.status_code == 201
+    assert created.json()["versions"][0]["factualValidation"]["status"] == "passed"
+    assert created.json()["versions"][0]["visualValidation"]["renderedPageCount"] == 1
+    assert created.json()["versions"][0]["diff"] == expected_diff
+    assert listed.json()[0]["versions"][0]["diff"] == expected_diff
+    assert validation_count == 1

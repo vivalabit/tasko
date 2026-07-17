@@ -29,9 +29,14 @@ from app.models.documents import (
     DocumentVersionGenerationProvenanceRecord,
     DocumentVersionPayload,
     DocumentVersionRecord,
+    DocumentVersionValidationRecord,
     utc_now,
 )
 from app.services.document_export import build_document_docx, build_document_from_template
+from app.services.document_validation import (
+    DocumentValidationError,
+    validate_generated_document,
+)
 
 router = APIRouter()
 
@@ -52,6 +57,7 @@ def list_documents(
                 selectinload(DocumentRecord.versions),
                 selectinload(DocumentRecord.attachments),
                 selectinload(DocumentRecord.generation_provenance),
+                selectinload(DocumentRecord.version_validations),
             )
             .order_by(DocumentRecord.updated_at.desc())
         )
@@ -133,6 +139,20 @@ def create_document(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=str(exc),
                 ) from exc
+            if has_provenance:
+                if not request.validation_evidence:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail="Validation evidence is required for generated documents",
+                    )
+                validation = validate_document_or_422(
+                    template_content=template.content,
+                    rendered_content=rendered_content,
+                    generated_content=request.content,
+                    document_type=request.type,
+                    evidence=request.validation_evidence,
+                )
+                append_document_validation(record, 1, validation, now)
             db.add(
                 DocumentFileRecord(
                     id=str(uuid4()),
@@ -240,6 +260,25 @@ def update_document(
                             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail=str(exc),
                         ) from exc
+                    if has_provenance:
+                        if not request.validation_evidence:
+                            raise HTTPException(
+                                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                detail="Validation evidence is required for generated documents",
+                            )
+                        validation = validate_document_or_422(
+                            template_content=template.content,
+                            rendered_content=rendered_content,
+                            generated_content=request.content,
+                            document_type=record.type,
+                            evidence=request.validation_evidence,
+                        )
+                        append_document_validation(
+                            record,
+                            next_version,
+                            validation,
+                            now,
+                        )
                     db.add(
                         DocumentFileRecord(
                             id=str(uuid4()),
@@ -346,6 +385,25 @@ def restore_document_version(
             )
         else:
             record.generation_provenance = None
+        source_validation = next(
+            (
+                validation
+                for validation in record.version_validations
+                if validation.version == source.version
+            ),
+            None,
+        )
+        if source_validation:
+            append_document_validation(
+                record,
+                next_version,
+                {
+                    "factual": source_validation.factual_report,
+                    "visual": source_validation.visual_report,
+                    "diff": source_validation.diff_items,
+                },
+                now,
+            )
         record.current_version = next_version
         record.updated_at = now
         db.commit()
@@ -601,6 +659,47 @@ def append_version_generation_provenance(
     )
 
 
+def validate_document_or_422(
+    *,
+    template_content: bytes,
+    rendered_content: bytes,
+    generated_content: str,
+    document_type: str,
+    evidence: dict[str, object],
+) -> dict[str, object]:
+    try:
+        return validate_generated_document(
+            template_content=template_content,
+            rendered_content=rendered_content,
+            generated_content=generated_content,
+            document_type=document_type,
+            evidence=evidence,
+        )
+    except DocumentValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+
+
+def append_document_validation(
+    record: DocumentRecord,
+    version: int,
+    validation: dict[str, object],
+    created_at: datetime,
+) -> None:
+    record.version_validations.append(
+        DocumentVersionValidationRecord(
+            document_id=record.id,
+            version=version,
+            factual_report=validation.get("factual", {}),
+            visual_report=validation.get("visual", {}),
+            diff_items=validation.get("diff", []),
+            created_at=created_at,
+        )
+    )
+
+
 def require_document(db: Session, document_id: str) -> DocumentRecord:
     record = db.scalar(
         select(DocumentRecord)
@@ -610,6 +709,7 @@ def require_document(db: Session, document_id: str) -> DocumentRecord:
             selectinload(DocumentRecord.attachments),
             selectinload(DocumentRecord.generation_provenance),
             selectinload(DocumentRecord.version_generation_provenance),
+            selectinload(DocumentRecord.version_validations),
         )
     )
     if not record:
@@ -680,6 +780,9 @@ def current_version_record(record: DocumentRecord) -> DocumentVersionRecord:
 
 def document_payload(record: DocumentRecord) -> DocumentPayload:
     provenance = record.generation_provenance
+    validations_by_version = {
+        validation.version: validation for validation in record.version_validations
+    }
     return DocumentPayload(
         id=record.id,
         type=record.type,
@@ -698,6 +801,21 @@ def document_payload(record: DocumentRecord) -> DocumentPayload:
                 version=version.version,
                 content=version.content,
                 created_at=version.created_at,
+                factual_validation=(
+                    validations_by_version[version.version].factual_report
+                    if version.version in validations_by_version
+                    else {}
+                ),
+                visual_validation=(
+                    validations_by_version[version.version].visual_report
+                    if version.version in validations_by_version
+                    else {}
+                ),
+                diff=(
+                    validations_by_version[version.version].diff_items
+                    if version.version in validations_by_version
+                    else []
+                ),
             )
             for version in record.versions
         ],

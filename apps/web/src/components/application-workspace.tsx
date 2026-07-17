@@ -164,6 +164,26 @@ type GeneratedDocumentVersion = {
   version: number;
   content: string;
   createdAt: string;
+  factualValidation: {
+    status?: string;
+    checkedChanges?: number;
+  };
+  visualValidation: {
+    status?: string;
+    sourcePageCount?: number;
+    renderedPageCount?: number;
+    linksPreserved?: boolean;
+    sourceLinkCount?: number;
+    renderedLinkCount?: number;
+    tableOverflow?: boolean;
+  };
+  diff: Array<{
+    blockId: string;
+    type: string;
+    original: string;
+    replacement: string;
+    reason: string;
+  }>;
 };
 
 type GeneratedDocument = {
@@ -283,6 +303,38 @@ function generationFingerprintInputs(
         exampleText: confirmation.exampleText.trim(),
       }];
     }),
+  };
+}
+
+function documentValidationEvidence(
+  profile: WorkspaceProfile,
+  applicationGuide: ApplicationGuide | undefined,
+  clarificationQuestions: NonNullable<ApplicationGuide["clarificationQuestions"]>,
+  candidateConfirmations: Record<string, CandidateConfirmation>,
+) {
+  return {
+    profile: {
+      name: profile.name,
+      currentRole: profile.current_role,
+      desiredRole: profile.desired_role,
+      location: profile.location,
+      headline: profile.headline,
+      skills: profile.skills,
+      experience: profile.experience,
+      education: profile.education,
+    },
+    confirmations: clarificationQuestions.flatMap((question) => {
+      const confirmation = candidateConfirmations[question.id];
+      if (!confirmation || confirmation.response === "no") return [];
+      return [{
+        requirement: question.requirement,
+        response: confirmation.response,
+        exampleText: confirmation.exampleText.trim(),
+      }];
+    }),
+    verifiedGuideEvidence: applicationGuide?.evidenceMatrix
+      ?.filter((item) => item.status === "verified" || item.status === "transferable")
+      .map((item) => ({ requirement: item.requirement, evidence: item.evidence })) ?? [],
   };
 }
 
@@ -863,6 +915,12 @@ export function ApplicationWorkspace({
             generationFingerprint: provenance.generationFingerprint,
             generationModel: assistantResult.model,
             inputVersions: provenance.inputVersions,
+            validationEvidence: documentValidationEvidence(
+              profile,
+              applicationGuide,
+              clarificationQuestions,
+              candidateConfirmations,
+            ),
             ...(existingDocument ? {} : {
               type,
               title,
@@ -1223,6 +1281,9 @@ function DocumentCard({
   sourceControl?: React.ReactNode;
 }) {
   const content = currentContent(document);
+  const currentVersion = document?.versions.find((version) => version.version === document.currentVersion);
+  const isValidated = currentVersion?.factualValidation.status === "passed"
+    && currentVersion.visualValidation.status === "passed";
   const isRestoringDocument = Boolean(document && restoringVersionKey.startsWith(`${document.id}:`));
   return (
     <article className="flex flex-col rounded-2xl border border-white/[0.08] bg-black/15 p-4 transition hover:border-white/[0.12]">
@@ -1234,6 +1295,20 @@ function DocumentCard({
       <div className={cn("mt-3 min-h-[132px] overflow-hidden rounded-xl border p-4", content ? "border-white/[0.09] bg-[#f6f4ef] text-[#20242a] shadow-inner" : "border-dashed border-white/[0.1] bg-white/[0.015]")}>
         {isGenerating ? <div className="grid min-h-[100px] place-items-center text-center"><div><LoaderCircle className="mx-auto h-5 w-5 animate-spin text-accent" /><p className="mt-2 text-[11px] font-semibold text-muted">Writing an evidence-based version…</p></div></div> : content ? <p className="line-clamp-[7] whitespace-pre-wrap font-serif text-[9px] leading-[1.55]">{content}</p> : <div className="grid min-h-[100px] place-items-center text-center"><div><Icon className="mx-auto h-5 w-5 text-[#606b79]" /><p className="mt-2 text-[10px] font-semibold text-[#7f8998]">Preview will appear after generation</p></div></div>}
       </div>
+      {isValidated ? (
+        <details open className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.02]">
+          <summary className="cursor-pointer px-3 py-2.5 text-[10px] font-bold text-white marker:text-muted">Review before download · {currentVersion.diff.length} change{currentVersion.diff.length === 1 ? "" : "s"}</summary>
+          <div className="job-scroll max-h-72 space-y-2 overflow-y-auto border-t border-white/[0.07] p-3">
+            <div className="flex flex-wrap gap-1.5">
+              <span className="rounded-full border border-success/25 bg-success/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-success">Facts validated</span>
+              <span className="rounded-full border border-success/25 bg-success/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-success">Rendered · {currentVersion.visualValidation.sourcePageCount ?? "?"} → {currentVersion.visualValidation.renderedPageCount ?? "?"} page{currentVersion.visualValidation.renderedPageCount === 1 ? "" : "s"}</span>
+              {!currentVersion.visualValidation.tableOverflow ? <span className="rounded-full border border-success/25 bg-success/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-success">Tables fit</span> : null}
+              {currentVersion.visualValidation.linksPreserved ? <span className="rounded-full border border-success/25 bg-success/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-success">Links preserved</span> : null}
+            </div>
+            {currentVersion.diff.length ? currentVersion.diff.map((change) => <article key={`${change.blockId}-${change.original}`} className="rounded-lg border border-white/[0.07] bg-black/20 p-2.5"><div className="flex items-center justify-between gap-2"><p className="text-[9px] font-black uppercase tracking-wide text-[#9aa5b4]">{change.blockId} · {change.type}</p><p className="text-[8px] text-muted">{change.reason}</p></div><p className="mt-2 whitespace-pre-wrap text-[10px] leading-4 text-red-200/75 line-through">{change.original || "Added paragraph"}</p><p className="mt-1 whitespace-pre-wrap text-[10px] leading-4 text-emerald-200">{change.replacement || "Removed paragraph"}</p></article>) : <p className="rounded-lg border border-success/15 bg-success/[0.04] px-3 py-2 text-[9px] font-bold text-success">No factual content changes</p>}
+          </div>
+        </details>
+      ) : null}
       <div className="mt-3 flex gap-2">
         <Button type="button" disabled={isGenerating || isRestoringDocument || !canGenerate} onClick={onGenerate} className="h-10 flex-1 rounded-xl bg-accent px-3 text-[11px] font-bold text-white hover:bg-[#ff6a14] disabled:opacity-40">{isGenerating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : document ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}{isGenerating ? "Generating…" : !canGenerate ? disabledLabel : document ? "Regenerate" : `Generate ${label}`}</Button>
         {document ? <a href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download`} download={documentFileName(document)} className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-white/[0.09] px-3 text-[11px] font-bold text-[#e6ebf3] transition hover:bg-white/[0.05]"><Download className="h-3.5 w-3.5" /> DOCX</a> : null}

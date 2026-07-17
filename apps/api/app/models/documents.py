@@ -48,6 +48,11 @@ class DocumentRecord(Base):
         cascade="all, delete-orphan",
         order_by="DocumentVersionGenerationProvenanceRecord.version",
     )
+    version_validations: Mapped[list["DocumentVersionValidationRecord"]] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="DocumentVersionValidationRecord.version",
+    )
 
 
 class DocumentVersionRecord(Base):
@@ -124,6 +129,22 @@ class DocumentVersionGenerationProvenanceRecord(Base):
     )
 
 
+class DocumentVersionValidationRecord(Base):
+    __tablename__ = "document_version_validations"
+
+    document_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    factual_report: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    visual_report: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    diff_items: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    document: Mapped[DocumentRecord] = relationship(back_populates="version_validations")
+
+
 class DocumentTemplateRecord(Base):
     __tablename__ = "document_templates"
 
@@ -175,6 +196,15 @@ class DocumentVersionPayload(BaseModel):
     version: int
     content: str
     created_at: datetime = Field(alias="createdAt")
+    factual_validation: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="factualValidation",
+    )
+    visual_validation: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="visualValidation",
+    )
+    diff: list[dict[str, Any]] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
 
@@ -217,6 +247,10 @@ class DocumentCreateRequest(BaseModel):
         alias="generationModel",
     )
     input_versions: dict[str, Any] = Field(default_factory=dict, alias="inputVersions")
+    validation_evidence: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="validationEvidence",
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -240,6 +274,10 @@ class DocumentUpdateRequest(BaseModel):
         alias="generationModel",
     )
     input_versions: dict[str, Any] = Field(default_factory=dict, alias="inputVersions")
+    validation_evidence: dict[str, Any] = Field(
+        default_factory=dict,
+        alias="validationEvidence",
+    )
 
     model_config = {"populate_by_name": True}
 

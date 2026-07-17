@@ -8,6 +8,10 @@ ENV PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libreoffice-writer poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules/openclaw /usr/local/lib/node_modules/openclaw
 RUN ln -s ../lib/node_modules/openclaw/openclaw.mjs /usr/local/bin/openclaw
