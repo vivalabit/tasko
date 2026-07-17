@@ -221,7 +221,20 @@ function createId(prefix: string) {
 
 function currentContent(document: GeneratedDocument | undefined) {
   if (!document) return "";
-  return document.versions.find((version) => version.version === document.currentVersion)?.content ?? "";
+  const content = document.versions.find((version) => version.version === document.currentVersion)?.content ?? "";
+  if (document.type !== "tailored_resume") return content;
+  try {
+    const payload = JSON.parse(content) as {
+      replacements?: Array<{ blockId?: string; replacement?: string; reason?: string }>;
+    };
+    if (!Array.isArray(payload.replacements)) return content;
+    if (payload.replacements.length === 0) return "No safe block replacements were needed.";
+    return payload.replacements.map((replacement) => (
+      `${replacement.blockId ?? "Block"}: ${replacement.replacement ?? ""}${replacement.reason ? `\nWhy: ${replacement.reason}` : ""}`
+    )).join("\n\n");
+  } catch {
+    return content;
+  }
 }
 
 function documentFileName(document: GeneratedDocument, version = document.currentVersion) {
@@ -828,7 +841,7 @@ export function ApplicationWorkspace({
       ));
       const prompt = isCoverLetter
         ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the guide's positioning, evidence map, risks, and cover-letter plan. Candidate confirmations take precedence over inferred evidence; a negative answer means the claim must be omitted. Use only verified facts and never invent achievements or metrics. Return only the complete letter text without Markdown or commentary, with a greeting, focused body paragraphs, and a professional closing.`
-        : `Tailor the selected DOCX resume in ${targetLanguage} for this vacancy while preserving its layout. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the resume plan and evidence map; candidate confirmations take precedence over inferred evidence. Return exactly one plain-text line for every non-empty body text block in the source DOCX, in the same order and with the same number of lines. Repeat contact details, headings, dates, employers, education, and unchanged lines verbatim. Rewrite only existing summary, skill, and achievement lines supported by verified evidence. Do not add, remove, merge, split, or reorder lines. Do not use Markdown or invent facts or metrics.`;
+        : `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v1 and contains blocks with stable blockId, type, and original fields. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0001","original":"exact original block text","replacement":"new text","reason":"short evidence-based reason"}]}. Include only blocks that should change. Copy blockId and original exactly from CONTEXT_JSON. Never change a block whose type is immutable. Do not add IDs, remove blocks, merge blocks, split blocks, use Markdown, or invent facts or metrics. Prefer targeted replacements for summary, skill, and achievement blocks; preserve headings, contacts, and table structure.`;
       const assistantResult = await askAssistant(prompt, [selectedSource], assistantConfirmations);
       const content = assistantResult.message;
       if (!content) throw new Error("AI returned an empty document");

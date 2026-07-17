@@ -34,6 +34,7 @@ from app.services.resume_import import (
     extract_resume_text,
     summarize_openclaw_error,
 )
+from app.services.resume_blocks import extract_resume_blocks_from_docx
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -411,13 +412,43 @@ def build_profile_context(profile: ProfilePayload) -> dict[str, Any]:
 
 def build_source_document_context(
     source_documents: list[AssistantSourceDocument],
-) -> list[dict[str, str]]:
-    context: list[dict[str, str]] = []
+) -> list[dict[str, Any]]:
+    context: list[dict[str, Any]] = []
     remaining_chars = 16_000
     for source in source_documents:
         if remaining_chars <= 0:
             break
         try:
+            is_resume_docx = source.file_name.lower().endswith(".docx") and any(
+                token in source.category.lower() for token in ("cv", "resume")
+            )
+            if is_resume_docx:
+                _, binary_content = decode_resume_data_url(source.data_url)
+                blocks = extract_resume_blocks_from_docx(binary_content)
+                source_context: dict[str, Any] = {
+                    "id": source.id,
+                    "title": source.title,
+                    "category": source.category,
+                    "file_name": source.file_name,
+                    "format": "resume-blocks-v1",
+                    "blocks": [],
+                }
+                for block in blocks:
+                    candidate = {**source_context, "blocks": [*source_context["blocks"], block]}
+                    serialized_length = len(
+                        json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
+                    )
+                    if serialized_length > min(10_000, remaining_chars):
+                        break
+                    source_context = candidate
+                if not source_context["blocks"]:
+                    continue
+                used_chars = len(
+                    json.dumps(source_context, ensure_ascii=False, separators=(",", ":"))
+                )
+                remaining_chars -= used_chars
+                context.append(source_context)
+                continue
             if source.file_name.lower().endswith(".docx"):
                 _, binary_content = decode_resume_data_url(source.data_url)
                 extracted_text = extract_docx_body_text(binary_content).strip()

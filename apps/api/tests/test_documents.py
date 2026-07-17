@@ -1,6 +1,7 @@
 from collections.abc import Generator
 import base64
 from io import BytesIO
+import json
 import zipfile
 
 from docx import Document
@@ -303,7 +304,7 @@ def test_resume_template_rewrites_blocks_without_rebuilding_design() -> None:
     template.sections[0].header.paragraphs[0].text = "EDUARD · CONTACT"
     name = template.add_paragraph("Eduard Ishchenko")
     name.style = template.styles["Heading 1"]
-    template.add_paragraph("Original professional summary")
+    template.add_paragraph("Original professional summary with verified delivery experience.")
     table = template.add_table(rows=1, cols=2)
     table.style = "Table Grid"
     table.cell(0, 0).text = "Python"
@@ -332,11 +333,23 @@ def test_resume_template_rewrites_blocks_without_rebuilding_design() -> None:
             json={
                 "type": "tailored_resume",
                 "title": "Tailored resume",
-                "content": (
-                    "Eduard Ishchenko\n"
-                    "Backend engineer focused on FastAPI\n"
-                    "Python\n"
-                    "Built a verified production service"
+                "content": json.dumps(
+                    {
+                        "replacements": [
+                            {
+                                "blockId": "block-0002",
+                                "original": "Original professional summary with verified delivery experience.",
+                                "replacement": "Backend engineer focused on FastAPI",
+                                "reason": "Matches the target role with verified profile evidence",
+                            },
+                            {
+                                "blockId": "block-0004",
+                                "original": "Original achievement",
+                                "replacement": "Built a verified production service",
+                                "reason": "Uses a verified achievement",
+                            },
+                        ]
+                    }
                 ),
                 "applicationId": "application-resume-template",
                 "templateId": uploaded.json()["id"],

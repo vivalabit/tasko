@@ -1,3 +1,4 @@
+import json
 import re
 import zipfile
 from copy import deepcopy
@@ -10,6 +11,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 from lxml import etree
+
+from app.services.resume_blocks import parse_resume_blocks
 
 
 BODY_FONT = "Calibri"
@@ -140,36 +143,58 @@ def replace_cover_letter_text(document: Document, content: str) -> None:
 
 
 def replace_resume_text(body, content: str) -> None:
-    generated = normalized_content_lines(content)
-    if not generated:
-        raise ValueError("Generated resume content is empty")
+    blocks = parse_resume_blocks(body)
+    blocks_by_id = {block.block_id: block for block in blocks}
+    seen_block_ids: set[str] = set()
+    for replacement in parse_resume_replacements(content):
+        block_id = replacement["blockId"]
+        if block_id in seen_block_ids:
+            raise ValueError(f"Duplicate resume replacement for {block_id}")
+        seen_block_ids.add(block_id)
+        block = blocks_by_id.get(block_id)
+        if block is None:
+            raise ValueError(f"Unknown resume block: {block_id}")
+        if replacement["original"] != block.original:
+            raise ValueError(f"Resume block original does not match template: {block_id}")
+        replacement_text = replacement["replacement"]
+        if block.block_type == "immutable" and replacement_text != block.original:
+            raise ValueError(f"Immutable resume block cannot be changed: {block_id}")
+        if not replacement_text.strip():
+            raise ValueError(f"Resume block replacement cannot be empty: {block_id}")
+        set_paragraph_element_text(block.element, replacement_text)
 
-    body_paragraphs = [
-        element
-        for element in body.iter(qn("w:p"))
-        if paragraph_element_text(element).strip()
-    ]
-    marker = next(
-        (
-            element
-            for element in body_paragraphs
-            if "{{resume_body}}" in paragraph_element_text(element).lower()
-            or "{{content}}" in paragraph_element_text(element).lower()
-        ),
-        None,
-    )
-    if marker is not None:
-        replace_paragraph_elements([marker], generated)
-        return
 
-    if len(generated) != len(body_paragraphs):
-        raise ValueError(
-            "Generated resume must keep the DOCX structure: "
-            f"expected {len(body_paragraphs)} non-empty text blocks, received {len(generated)}"
-        )
+def parse_resume_replacements(content: str) -> list[dict[str, str]]:
+    cleaned = content.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        cleaned = fenced.group(1).strip()
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Generated resume must be structured JSON") from exc
 
-    for paragraph, replacement in zip(body_paragraphs, generated, strict=True):
-        set_paragraph_element_text(paragraph, replacement)
+    if isinstance(payload, dict) and isinstance(payload.get("replacements"), list):
+        raw_replacements = payload["replacements"]
+    elif isinstance(payload, list):
+        raw_replacements = payload
+    elif isinstance(payload, dict) and "blockId" in payload:
+        raw_replacements = [payload]
+    else:
+        raise ValueError("Generated resume JSON must contain a replacements array")
+
+    replacements: list[dict[str, str]] = []
+    required_fields = ("blockId", "original", "replacement", "reason")
+    for index, raw_replacement in enumerate(raw_replacements):
+        if not isinstance(raw_replacement, dict) or not all(
+            isinstance(raw_replacement.get(field), str) for field in required_fields
+        ):
+            raise ValueError(
+                f"Resume replacement {index + 1} must contain string fields: "
+                "blockId, original, replacement, reason"
+            )
+        replacements.append({field: raw_replacement[field] for field in required_fields})
+    return replacements
 
 
 def normalized_content_paragraphs(content: str) -> list[str]:
@@ -187,14 +212,6 @@ def normalized_content_paragraphs(content: str) -> list[str]:
     if current:
         paragraphs.append(" ".join(current))
     return paragraphs
-
-
-def normalized_content_lines(content: str) -> list[str]:
-    return [
-        re.sub(r"^#{1,3}\s+", "", line.strip())
-        for line in content.replace("\r\n", "\n").split("\n")
-        if line.strip()
-    ]
 
 
 def split_generated_letter(paragraphs: list[str]) -> tuple[str, list[str], str]:

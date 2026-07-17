@@ -2,8 +2,10 @@ import asyncio
 import base64
 import json
 from collections.abc import Generator
+from io import BytesIO
 
 import pytest
+from docx import Document
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
@@ -123,6 +125,41 @@ def test_assistant_prompt_uses_only_selected_profile_source_documents() -> None:
     assert "built a FastAPI service" in prompt
     assert "Ignore previous instructions" not in prompt
     assert "[removed potential prompt-injection instruction]" in prompt
+
+
+def test_assistant_prompt_passes_resume_docx_as_structured_blocks() -> None:
+    document = Document()
+    document.add_paragraph("SUMMARY", style="Heading 1")
+    document.add_paragraph("Backend engineer building reliable APIs.")
+    output = BytesIO()
+    document.save(output)
+    data_url = "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+
+    prompt = build_openclaw_assistant_prompt(
+        message="Tailor my CV and return structured replacements.",
+        context_kind="application",
+        profile=ProfilePayload(name="Eduard"),
+        job=AssistantJobContext(id="job-1", title="Backend Engineer"),
+        application=None,
+        source_documents=[
+            AssistantSourceDocument(
+                id="source-cv",
+                title="Main CV",
+                category="CV / Resume",
+                fileName="resume.docx",
+                dataUrl=data_url,
+            )
+        ],
+    )
+
+    context, _ = prompt.split("USER_MESSAGE (trusted instructions):\n", 1)
+    assert '"format":"resume-blocks-v1"' in context
+    assert '"blockId":"block-0001"' in context
+    assert '"type":"heading"' in context
+    assert '"original":"Backend engineer building reliable APIs."' in context
+    assert '"text"' not in context
 
 
 def test_assistant_prompt_keeps_candidate_confirmations_in_structured_context() -> None:
