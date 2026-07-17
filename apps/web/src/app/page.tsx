@@ -67,6 +67,7 @@ import {
   type AssistantLaunch,
 } from "@/components/assistant-view";
 import { ApplicationWorkspace } from "@/components/application-workspace";
+import { DashboardGreeting, useHydrationSafeCurrentTime } from "@/components/dashboard-greeting";
 import { legacyAiMatchVersion } from "@/lib/ai-match";
 import { getHashForView, getRouteFromHash, type View } from "@/lib/app-route";
 import { cn } from "@/lib/utils";
@@ -8337,29 +8338,8 @@ function DashboardView({
   onOpenAssistant: (prompt?: string, contextKind?: AssistantLaunch["contextKind"], contextId?: string) => void;
   onOpenProfile: () => void;
 }) {
-  const [currentTime, setCurrentTime] = useState(() => new Date());
-  const now = currentTime.getTime();
-  const firstName = profile.name.trim().split(/\s+/)[0] ?? "";
-  const hour = currentTime.getHours();
-  const timeOfDay = hour >= 5 && hour < 12
-    ? {
-        greeting: "Good morning",
-        titleClassName: "from-white via-[#fff4de] to-[#ffc66f]",
-      }
-    : hour >= 12 && hour < 17
-      ? {
-          greeting: "Good afternoon",
-          titleClassName: "from-white via-[#fff0e3] to-[#ff9e4f]",
-        }
-      : hour >= 17 && hour < 22
-        ? {
-            greeting: "Good evening",
-            titleClassName: "from-white via-[#f8eaff] to-[#d7a0ff]",
-          }
-        : {
-            greeting: "Hello, night owl",
-            titleClassName: "from-white via-[#eaf2ff] to-[#91bbff]",
-          };
+  const currentTime = useHydrationSafeCurrentTime();
+  const now = currentTime?.getTime() ?? Number.NEGATIVE_INFINITY;
   const profileCompletion = getProfileCompletion(profile);
   const scoredJobs = jobs.filter(hasDisplayableMatch);
   const averageMatch = scoredJobs.length > 0
@@ -8437,11 +8417,6 @@ function DashboardView({
   ];
 
   useEffect(() => {
-    const interval = window.setInterval(() => setCurrentTime(new Date()), 60_000);
-    return () => window.clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
     const openSearch = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -8468,9 +8443,7 @@ function DashboardView({
     <section className="job-scroll flex h-screen min-w-0 flex-1 flex-col overflow-y-auto px-3 py-3 sm:px-4 xl:overflow-hidden xl:px-4 2xl:px-5 2xl:py-4">
       <header className="mb-3 flex shrink-0 flex-col gap-3 md:flex-row md:items-start md:justify-between 2xl:mb-4 2xl:gap-4">
         <div>
-          <h1 className={cn("bg-gradient-to-r bg-clip-text text-[24px] font-bold leading-tight tracking-normal text-transparent sm:text-[27px] 2xl:text-[31px]", timeOfDay.titleClassName)}>
-            {timeOfDay.greeting}{firstName ? `, ${firstName}` : ""}!
-          </h1>
+          <DashboardGreeting name={profile.name} currentTime={currentTime} />
         </div>
       </header>
 
