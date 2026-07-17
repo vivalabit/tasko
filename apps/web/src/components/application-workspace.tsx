@@ -31,6 +31,7 @@ import {
   hasCurrentApplicationGuide,
   isLegacyAiMatch,
 } from "@/lib/ai-match";
+import { RetryablePackError, retryPackOperation } from "@/lib/application-pack";
 import {
   importLegacyCandidateConfirmations,
   isCandidateConfirmationComplete,
@@ -201,6 +202,37 @@ type GeneratedDocument = {
   versions: GeneratedDocumentVersion[];
 };
 
+type PackPersistenceMode = "atomic" | "partial";
+type PackStageId = "resume_generation" | "resume_validation" | "cover_letter_generation" | "saving";
+type PackProgressStatus = "active" | "retrying" | "failed" | "completed" | "partial";
+
+type GeneratedDocumentDraft = {
+  documentId?: string;
+  title: string;
+  content: string;
+  templateId: string;
+  generationFingerprint: string;
+  generationModel: string;
+  inputVersions: GenerationInputVersions;
+  validationEvidence: ReturnType<typeof documentValidationEvidence>;
+};
+
+type DocumentPackResponse = {
+  packJobId: string;
+  status: "completed" | "partial";
+  persistenceMode: PackPersistenceMode;
+  documents: GeneratedDocument[];
+  message: string;
+};
+
+type PackProgress = {
+  jobId: string;
+  stage: PackStageId;
+  status: PackProgressStatus;
+  attempt: number;
+  message: string;
+};
+
 type DocumentTemplate = {
   id: string;
   type: "cover_letter" | "tailored_resume";
@@ -235,6 +267,13 @@ type ApplicationWorkspaceProps = {
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const docxContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const confirmationAnswerMaxChars = 1_500;
+const packStageDefinitions: Array<{ id: PackStageId; label: string }> = [
+  { id: "resume_generation", label: "Generate CV" },
+  { id: "resume_validation", label: "Validate CV" },
+  { id: "cover_letter_generation", label: "Generate cover letter" },
+  { id: "saving", label: "Validate and save pack" },
+];
+
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -386,7 +425,15 @@ function buildSavedApplicationReview(job: WorkspaceJob) {
 
 async function readApiError(response: Response, fallback: string) {
   const payload = await response.json().catch(() => null) as { detail?: unknown } | null;
-  return typeof payload?.detail === "string" && payload.detail.trim() ? payload.detail : fallback;
+  if (typeof payload?.detail === "string" && payload.detail.trim()) return payload.detail;
+  if (
+    payload?.detail
+    && typeof payload.detail === "object"
+    && "message" in payload.detail
+    && typeof payload.detail.message === "string"
+    && payload.detail.message.trim()
+  ) return payload.detail.message;
+  return fallback;
 }
 
 function serializeJob(job: WorkspaceJob) {
@@ -484,6 +531,8 @@ export function ApplicationWorkspace({
   const [temporarySources, setTemporarySources] = useState<ProfileSourceDocument[]>([]);
   const [generationType, setGenerationType] = useState<GeneratedDocument["type"] | "">("");
   const [isGeneratingPack, setIsGeneratingPack] = useState(false);
+  const [packPersistenceMode, setPackPersistenceMode] = useState<PackPersistenceMode>("atomic");
+  const [packProgress, setPackProgress] = useState<PackProgress | null>(null);
   const [restoringVersionKey, setRestoringVersionKey] = useState("");
   const [currentGenerationFingerprints, setCurrentGenerationFingerprints] = useState<Partial<Record<GeneratedDocument["type"], string>>>({});
   const [documentError, setDocumentError] = useState("");
@@ -836,7 +885,13 @@ export function ApplicationWorkspace({
     if (response.status === 413) {
       throw new Error("The application context is larger than the assistant can process. Your answers are saved — shorten unusually long confirmations and try again.");
     }
-    if (!response.ok) throw new Error(await readApiError(response, "AI request failed"));
+    if (!response.ok) {
+      const message = await readApiError(response, "AI request failed");
+      if (response.status === 429 || response.status >= 500) {
+        throw new RetryablePackError(message);
+      }
+      throw new Error(message);
+    }
     const payload = await response.json() as {
       message?: string;
       metadata?: { metrics?: { model?: string } };
@@ -847,61 +902,108 @@ export function ApplicationWorkspace({
     };
   }
 
+  async function generateDocumentDraft(
+    type: GeneratedDocument["type"],
+    onRetry?: (attempt: number) => void,
+  ): Promise<GeneratedDocumentDraft> {
+    if (!documentsLoaded) throw new Error("Document history is still loading");
+    const isCoverLetter = type === "cover_letter";
+    const selectedSourceId = isCoverLetter ? selectedCoverSourceId : selectedResumeSourceId;
+    const selectedSource = profileSources.find((source) => source.id === selectedSourceId);
+    if (!selectedSource || !selectedSource.file_name.toLowerCase().endsWith(".docx")) {
+      throw new Error(`Select a DOCX ${isCoverLetter ? "cover letter" : "CV"} before generating`);
+    }
+    if (!applicationReview) {
+      throw new Error(isAnalysisOutdated ? "Refresh the outdated analysis before generating documents" : "Run AI Match before generating documents");
+    }
+    if (unansweredBlockingQuestions.length > 0) {
+      throw new Error("Answer the required confirmation questions before generating documents");
+    }
+    const oversizedConfirmation = clarificationQuestions.find(
+      (question) => (candidateConfirmations[question.id]?.exampleText.trim().length ?? 0) > confirmationAnswerMaxChars,
+    );
+    if (oversizedConfirmation) {
+      throw new Error(`Shorten the highlighted confirmation to ${confirmationAnswerMaxChars.toLocaleString()} characters before generating`);
+    }
+    const assistantConfirmations = clarificationQuestions.flatMap((question) => {
+      const confirmation = candidateConfirmations[question.id];
+      if (!confirmation) return [];
+      const example = confirmation.exampleText.trim();
+      return [{
+        requirement: question.requirement,
+        question: question.question,
+        answer: `${confirmation.response.toUpperCase()}${example ? `: ${example}` : ""}`,
+      }];
+    });
+    const targetLanguage = effectiveLanguage || selectedSource.language || "English";
+    const provenance = await createGenerationProvenance(generationFingerprintInputs(
+      activeApplication,
+      profile,
+      applicationGuide,
+      selectedSource,
+      targetLanguage,
+      clarificationQuestions,
+      candidateConfirmations,
+    ));
+    const prompt = isCoverLetter
+      ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the guide's positioning, evidence map, risks, and cover-letter plan. Candidate confirmations take precedence over inferred evidence; a negative answer means the claim must be omitted. Use only verified facts and never invent achievements or metrics. Return only the complete letter text without Markdown or commentary, with a greeting, focused body paragraphs, and a professional closing.`
+      : `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v1 and contains blocks with stable blockId, type, and original fields. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0001","original":"exact original block text","replacement":"new text","reason":"short evidence-based reason"}]}. Include only blocks that should change. Copy blockId and original exactly from CONTEXT_JSON. Never change a block whose type is immutable. Preserve every tab (\\t) and line break (\\n) at the same position in the replacement's inline structure so DOCX hyperlinks, runs, and formatting remain valid. Do not add IDs, remove blocks, merge blocks, split blocks, use Markdown, or invent facts or metrics. Prefer targeted replacements for summary, skill, and achievement blocks; preserve headings, contacts, and table structure.`;
+    const generate = () => askAssistant(prompt, [selectedSource], assistantConfirmations);
+    const assistantResult = onRetry
+      ? await retryPackOperation(generate, onRetry)
+      : await generate();
+    if (!assistantResult.message) throw new Error("AI returned an empty document");
+    const templateId = await ensureSourceTemplate(selectedSource, type);
+    const existingDocument = isCoverLetter ? latestCoverLetter : latestResume;
+    return {
+      ...(existingDocument ? { documentId: existingDocument.id } : {}),
+      title: `${isCoverLetter ? "Cover letter" : "Tailored CV"} · ${activeApplication.job.title} · ${activeApplication.job.company}`,
+      content: assistantResult.message,
+      templateId,
+      generationFingerprint: provenance.generationFingerprint,
+      generationModel: assistantResult.model,
+      inputVersions: provenance.inputVersions,
+      validationEvidence: documentValidationEvidence(
+        profile,
+        applicationGuide,
+        clarificationQuestions,
+        candidateConfirmations,
+      ),
+    };
+  }
+
+  function applySavedPack(
+    payload: DocumentPackResponse,
+    resumeDraft: GeneratedDocumentDraft,
+    coverDraft?: GeneratedDocumentDraft,
+  ) {
+    const savedIds = new Set(payload.documents.map((document) => document.id));
+    setDocuments((current) => [
+      ...payload.documents,
+      ...current.filter((document) => !savedIds.has(document.id)),
+    ]);
+    setCurrentGenerationFingerprints((current) => ({
+      ...current,
+      tailored_resume: resumeDraft.generationFingerprint,
+      ...(coverDraft ? { cover_letter: coverDraft.generationFingerprint } : {}),
+    }));
+    payload.documents.forEach((saved) => onDocumentAttached(activeApplication.id, {
+      artifactId: saved.id,
+      title: saved.title,
+      fileName: documentFileName(saved),
+      fileType: docxContentType,
+      uploadedAt: saved.updatedAt,
+      dataUrl: `${apiBaseUrl}/documents/${encodeURIComponent(saved.id)}/download`,
+    }));
+  }
+
   async function generateDocument(type: GeneratedDocument["type"]) {
+    if (isGeneratingPack) return false;
     setGenerationType(type);
     setDocumentError("");
     try {
-      if (!documentsLoaded) throw new Error("Document history is still loading");
-      const isCoverLetter = type === "cover_letter";
-      const selectedSourceId = isCoverLetter ? selectedCoverSourceId : selectedResumeSourceId;
-      const selectedSource = profileSources.find((source) => source.id === selectedSourceId);
-      if (!selectedSource || !selectedSource.file_name.toLowerCase().endsWith(".docx")) {
-        throw new Error(`Select a DOCX ${isCoverLetter ? "cover letter" : "CV"} before generating`);
-      }
-      if (!applicationReview) {
-        throw new Error(isAnalysisOutdated ? "Refresh the outdated analysis before generating documents" : "Run AI Match before generating documents");
-      }
-      if (unansweredBlockingQuestions.length > 0) {
-        throw new Error("Answer the required confirmation questions before generating documents");
-      }
-      const oversizedConfirmation = clarificationQuestions.find(
-        (question) => (candidateConfirmations[question.id]?.exampleText.trim().length ?? 0) > confirmationAnswerMaxChars,
-      );
-      if (oversizedConfirmation) {
-        throw new Error(`Shorten the highlighted confirmation to ${confirmationAnswerMaxChars.toLocaleString()} characters before generating`);
-      }
-      const assistantConfirmations = clarificationQuestions
-        .flatMap((question) => {
-          const confirmation = candidateConfirmations[question.id];
-          if (!confirmation) return [];
-          const example = confirmation.exampleText.trim();
-          return [{
-            requirement: question.requirement,
-            question: question.question,
-            answer: `${confirmation.response.toUpperCase()}${example ? `: ${example}` : ""}`,
-          }];
-        });
-      const targetLanguage = effectiveLanguage || selectedSource.language || "English";
-      const provenance = await createGenerationProvenance(generationFingerprintInputs(
-        activeApplication,
-        profile,
-        applicationGuide,
-        selectedSource,
-        targetLanguage,
-        clarificationQuestions,
-        candidateConfirmations,
-      ));
-      const prompt = isCoverLetter
-        ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the guide's positioning, evidence map, risks, and cover-letter plan. Candidate confirmations take precedence over inferred evidence; a negative answer means the claim must be omitted. Use only verified facts and never invent achievements or metrics. Return only the complete letter text without Markdown or commentary, with a greeting, focused body paragraphs, and a professional closing.`
-        : `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v1 and contains blocks with stable blockId, type, and original fields. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0001","original":"exact original block text","replacement":"new text","reason":"short evidence-based reason"}]}. Include only blocks that should change. Copy blockId and original exactly from CONTEXT_JSON. Never change a block whose type is immutable. Preserve every tab (\\t) and line break (\\n) at the same position in the replacement's inline structure so DOCX hyperlinks, runs, and formatting remain valid. Do not add IDs, remove blocks, merge blocks, split blocks, use Markdown, or invent facts or metrics. Prefer targeted replacements for summary, skill, and achievement blocks; preserve headings, contacts, and table structure.`;
-      const assistantResult = await askAssistant(prompt, [selectedSource], assistantConfirmations);
-      const content = assistantResult.message;
-      if (!content) throw new Error("AI returned an empty document");
-
-      const templateId = await ensureSourceTemplate(selectedSource, type);
-
-      const title = `${isCoverLetter ? "Cover letter" : "Tailored CV"} · ${activeApplication.job.title} · ${activeApplication.job.company}`;
-      const existingDocument = isCoverLetter ? latestCoverLetter : latestResume;
+      const draft = await generateDocumentDraft(type);
+      const existingDocument = type === "cover_letter" ? latestCoverLetter : latestResume;
       const response = await fetch(
         existingDocument
           ? `${apiBaseUrl}/documents/${encodeURIComponent(existingDocument.id)}`
@@ -910,20 +1012,9 @@ export function ApplicationWorkspace({
           method: existingDocument ? "PATCH" : "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            content,
-            templateId,
-            generationFingerprint: provenance.generationFingerprint,
-            generationModel: assistantResult.model,
-            inputVersions: provenance.inputVersions,
-            validationEvidence: documentValidationEvidence(
-              profile,
-              applicationGuide,
-              clarificationQuestions,
-              candidateConfirmations,
-            ),
-            ...(existingDocument ? {} : {
+            ...draft,
+            ...(existingDocument ? { documentId: undefined } : {
               type,
-              title,
               jobId: activeApplication.job.id,
               applicationId: activeApplication.id,
             }),
@@ -935,7 +1026,7 @@ export function ApplicationWorkspace({
       setDocuments((current) => [saved, ...current.filter((document) => document.id !== saved.id)]);
       setCurrentGenerationFingerprints((current) => ({
         ...current,
-        [type]: provenance.generationFingerprint,
+        [type]: draft.generationFingerprint,
       }));
       onDocumentAttached(activeApplication.id, {
         artifactId: saved.id,
@@ -955,10 +1046,117 @@ export function ApplicationWorkspace({
   }
 
   async function generatePack() {
+    if (isGeneratingPack || generationType) return;
+    const packJobId = createId("application-pack");
+    const updateProgress = (
+      stage: PackStageId,
+      status: PackProgressStatus,
+      message: string,
+      attempt = 1,
+    ) => setPackProgress({ jobId: packJobId, stage, status, attempt, message });
+    const postPackRequest = async (
+      path: string,
+      body: unknown,
+      stage: PackStageId,
+      fallback: string,
+    ) => retryPackOperation(async () => {
+      const response = await fetch(`${apiBaseUrl}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (response.status === 429 || response.status >= 500) {
+        throw new RetryablePackError(await readApiError(response, fallback));
+      }
+      return response;
+    }, (attempt) => updateProgress(stage, "retrying", `Retrying ${fallback.toLowerCase()}…`, attempt));
+
     setIsGeneratingPack(true);
-    const resumeReady = await generateDocument("tailored_resume");
-    if (resumeReady) await generateDocument("cover_letter");
-    setIsGeneratingPack(false);
+    setDocumentError("");
+    let resumeDraft: GeneratedDocumentDraft | undefined;
+    let coverDraft: GeneratedDocumentDraft | undefined;
+    try {
+      setGenerationType("tailored_resume");
+      updateProgress("resume_generation", "active", "Creating an evidence-based CV");
+      resumeDraft = await generateDocumentDraft(
+        "tailored_resume",
+        (attempt) => updateProgress("resume_generation", "retrying", "Retrying CV generation…", attempt),
+      );
+      updateProgress("resume_generation", "completed", "CV draft generated");
+
+      setGenerationType("");
+      updateProgress("resume_validation", "active", "Rendering and validating CV");
+      const resumeValidationResponse = await postPackRequest(
+        "/documents/packs/validate-resume",
+        resumeDraft,
+        "resume_validation",
+        "CV validation failed",
+      );
+      if (!resumeValidationResponse.ok) {
+        const message = await readApiError(resumeValidationResponse, "CV validation failed");
+        updateProgress("resume_validation", "failed", message);
+        throw new Error(message);
+      }
+      updateProgress("resume_validation", "completed", "CV passed factual and visual validation");
+
+      setGenerationType("cover_letter");
+      updateProgress("cover_letter_generation", "active", "Creating cover letter after CV approval");
+      try {
+        coverDraft = await generateDocumentDraft(
+          "cover_letter",
+          (attempt) => updateProgress("cover_letter_generation", "retrying", "Retrying cover letter generation…", attempt),
+        );
+        updateProgress("cover_letter_generation", "completed", "Cover letter draft generated");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Cover letter generation failed";
+        updateProgress("cover_letter_generation", "failed", message);
+        if (packPersistenceMode === "atomic") throw error;
+      }
+
+      setGenerationType("");
+      updateProgress(
+        "saving",
+        "active",
+        coverDraft ? "Validating and committing both documents" : "Saving validated CV as an explicit partial pack",
+      );
+      const packResponse = await postPackRequest(
+        "/documents/packs",
+        {
+          packJobId,
+          jobId: activeApplication.job.id,
+          applicationId: activeApplication.id,
+          persistenceMode: packPersistenceMode,
+          resume: resumeDraft,
+          coverLetter: coverDraft,
+          partialReason: coverDraft ? undefined : "Cover letter generation did not complete after retries",
+        },
+        "saving",
+        "Application pack save failed",
+      );
+      if (!packResponse.ok) {
+        const message = await readApiError(packResponse, "Application pack validation failed");
+        updateProgress("saving", "failed", message);
+        throw new Error(message);
+      }
+      const savedPack = await packResponse.json() as DocumentPackResponse;
+      applySavedPack(savedPack, resumeDraft, coverDraft);
+      updateProgress(
+        "saving",
+        savedPack.status === "partial" ? "partial" : "completed",
+        savedPack.message,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Application pack generation failed";
+      setPackProgress((current) => (
+        current && current.jobId === packJobId && current.status !== "failed"
+          ? { ...current, status: "failed", message }
+          : current
+      ));
+      setDocumentError(`${message}. No pack documents were saved.`);
+    } finally {
+      setGenerationType("");
+      setIsGeneratingPack(false);
+    }
   }
 
   async function restoreDocumentVersion(document: GeneratedDocument, version: number) {
@@ -1214,14 +1412,18 @@ export function ApplicationWorkspace({
             <section className="workspace-card overflow-hidden">
               <div className="flex flex-col gap-4 border-b border-white/[0.07] px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
                 <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent"><Sparkles className="h-[18px] w-[18px]" /></span><div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">03 · Build your application pack</p><h2 className="mt-1 text-lg font-bold text-white">Tailored documents</h2><p className="mt-1 text-xs leading-5 text-muted">Select your originals. Tasko rewrites the content and preserves the DOCX design.</p></div></div>
-                <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType) || !documentsLoaded || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? "Generating pack…" : "Generate both documents"}</Button>
+                <div className="flex flex-col gap-2 sm:items-end">
+                  <label className="flex items-center gap-2 text-[9px] font-bold text-muted"><span>On cover failure</span><select value={packPersistenceMode} disabled={isGeneratingPack} onChange={(event) => setPackPersistenceMode(event.target.value as PackPersistenceMode)} className="h-8 rounded-lg border border-white/[0.08] bg-[#151c24] px-2 text-[10px] font-bold text-white outline-none focus:border-accent/60 disabled:opacity-50"><option value="atomic">Roll back pack</option><option value="partial">Keep validated CV</option></select></label>
+                  <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType) || !documentsLoaded || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? packStageDefinitions.find((stage) => stage.id === packProgress?.stage)?.label ?? "Generating pack…" : "Generate both documents"}</Button>
+                </div>
               </div>
               <div className="p-5 sm:p-6">
                 {documentError ? <div className="mb-4 rounded-xl border border-red-400/25 bg-red-500/[0.07] px-3 py-2.5 text-xs leading-5 text-red-200">{documentError}</div> : null}
+                {packProgress ? <div className={cn("mb-4 rounded-xl border p-3", packProgress.status === "failed" ? "border-red-400/25 bg-red-500/[0.045]" : packProgress.status === "partial" ? "border-amber-400/25 bg-amber-400/[0.045]" : "border-white/[0.08] bg-black/15")}><div className="grid gap-2 sm:grid-cols-4">{packStageDefinitions.map((stage, index) => { const currentIndex = packStageDefinitions.findIndex((candidate) => candidate.id === packProgress.stage); const stageStatus = index < currentIndex ? "completed" : index === currentIndex ? packProgress.status : "pending"; return <div key={stage.id} className={cn("rounded-lg border px-2.5 py-2", stageStatus === "completed" ? "border-success/20 bg-success/[0.05]" : stageStatus === "failed" ? "border-red-400/25 bg-red-500/[0.06]" : stageStatus === "partial" ? "border-amber-400/25 bg-amber-400/[0.06]" : stageStatus === "active" || stageStatus === "retrying" ? "border-accent/30 bg-accent/[0.07]" : "border-white/[0.06] bg-white/[0.015]")}><div className="flex items-center gap-2">{stageStatus === "completed" ? <Check className="h-3.5 w-3.5 text-success" /> : stageStatus === "active" || stageStatus === "retrying" ? <LoaderCircle className="h-3.5 w-3.5 animate-spin text-accent" /> : stageStatus === "failed" ? <AlertTriangle className="h-3.5 w-3.5 text-red-200" /> : <CircleDot className="h-3.5 w-3.5 text-muted" />}<span className={cn("text-[9px] font-black uppercase tracking-wide", stageStatus === "completed" ? "text-success" : stageStatus === "failed" ? "text-red-200" : stageStatus === "partial" ? "text-amber-200" : stageStatus === "active" || stageStatus === "retrying" ? "text-white" : "text-muted")}>{stage.label}</span></div></div>; })}</div><div className="mt-2 flex items-center justify-between gap-3 px-1 text-[9px]"><span className={cn(packProgress.status === "failed" ? "text-red-200" : packProgress.status === "partial" ? "text-amber-200" : "text-muted")}>{packProgress.message}</span><span className="shrink-0 font-mono text-muted">{packProgress.attempt > 1 ? `attempt ${packProgress.attempt}/3 · ` : ""}{packProgress.jobId.slice(-8)}</span></div></div> : null}
                 {effectiveLanguage && !resumeSources.some((source) => source.language === effectiveLanguage) ? <div className="mb-4 rounded-xl border border-amber-400/25 bg-amber-400/[0.07] px-3 py-2.5 text-xs leading-5 text-amber-200">No {effectiveLanguage} CV DOCX is saved in Profile. Add one or choose another language.</div> : null}
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <DocumentCard icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} onGenerate={() => generateDocument("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} canGenerate={Boolean(documentsLoaded && selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={!documentsLoaded ? "Loading history…" : !selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
-                  <DocumentCard icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} onGenerate={() => generateDocument("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} canGenerate={Boolean(documentsLoaded && selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={!documentsLoaded ? "Loading history…" : !selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
+                  <DocumentCard icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} onGenerate={() => generateDocument("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? "Loading history…" : !selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
+                  <DocumentCard icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} onGenerate={() => generateDocument("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? "Loading history…" : !selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
                 </div>
               </div>
             </section>

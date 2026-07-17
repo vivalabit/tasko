@@ -145,6 +145,25 @@ class DocumentVersionValidationRecord(Base):
     document: Mapped[DocumentRecord] = relationship(back_populates="version_validations")
 
 
+class DocumentPackJobRecord(Base):
+    __tablename__ = "document_pack_jobs"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    application_id: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    persistence_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    document_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    stages: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+    )
+
+
 class DocumentTemplateRecord(Base):
     __tablename__ = "document_templates"
 
@@ -189,6 +208,7 @@ class DocumentFileRecord(Base):
 
 
 DocumentType = Literal["cover_letter", "tailored_resume"]
+DocumentPackPersistenceMode = Literal["atomic", "partial"]
 
 
 class DocumentVersionPayload(BaseModel):
@@ -278,6 +298,68 @@ class DocumentUpdateRequest(BaseModel):
         default_factory=dict,
         alias="validationEvidence",
     )
+
+    model_config = {"populate_by_name": True}
+
+
+class DocumentPackItemRequest(BaseModel):
+    document_id: str | None = Field(default=None, max_length=36, alias="documentId")
+    title: str = Field(min_length=1, max_length=240)
+    content: str = Field(min_length=1, max_length=200_000)
+    template_id: str = Field(min_length=1, max_length=36, alias="templateId")
+    generation_fingerprint: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[a-f0-9]{64}$",
+        alias="generationFingerprint",
+    )
+    generation_model: str = Field(
+        min_length=1,
+        max_length=160,
+        alias="generationModel",
+    )
+    input_versions: dict[str, Any] = Field(alias="inputVersions")
+    validation_evidence: dict[str, Any] = Field(alias="validationEvidence")
+
+    model_config = {"populate_by_name": True}
+
+
+class DocumentPackRequest(BaseModel):
+    pack_job_id: str = Field(min_length=1, max_length=80, alias="packJobId")
+    job_id: str | None = Field(default=None, max_length=160, alias="jobId")
+    application_id: str = Field(min_length=1, max_length=160, alias="applicationId")
+    persistence_mode: DocumentPackPersistenceMode = Field(
+        default="atomic",
+        alias="persistenceMode",
+    )
+    resume: DocumentPackItemRequest
+    cover_letter: DocumentPackItemRequest | None = Field(
+        default=None,
+        alias="coverLetter",
+    )
+    partial_reason: str | None = Field(default=None, max_length=500, alias="partialReason")
+
+    model_config = {"populate_by_name": True}
+
+
+class DocumentPackValidationPayload(BaseModel):
+    status: Literal["passed"] = "passed"
+    validation: dict[str, Any]
+
+
+class DocumentPackStagePayload(BaseModel):
+    id: Literal["resume_validation", "cover_letter_validation", "saving"]
+    status: Literal["completed", "failed", "skipped"]
+    message: str = ""
+
+
+class DocumentPackPayload(BaseModel):
+    pack_job_id: str = Field(alias="packJobId")
+    status: Literal["completed", "partial"]
+    persistence_mode: DocumentPackPersistenceMode = Field(alias="persistenceMode")
+    documents: list[DocumentPayload]
+    stages: list[DocumentPackStagePayload]
+    message: str = ""
 
     model_config = {"populate_by_name": True}
 

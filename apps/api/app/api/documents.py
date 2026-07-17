@@ -1,4 +1,6 @@
 import base64
+import hashlib
+import json
 import re
 from datetime import datetime
 from io import BytesIO
@@ -19,6 +21,12 @@ from app.models.documents import (
     DocumentCreateRequest,
     DocumentFileRecord,
     DocumentGenerationProvenanceRecord,
+    DocumentPackItemRequest,
+    DocumentPackJobRecord,
+    DocumentPackPayload,
+    DocumentPackRequest,
+    DocumentPackStagePayload,
+    DocumentPackValidationPayload,
     DocumentPayload,
     DocumentRecord,
     DocumentRestoreRequest,
@@ -167,6 +175,178 @@ def create_document(
             attach_document_record(db, record, request.application_id)
         db.commit()
         return document_payload(require_document(db, document_id))
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+
+
+@router.post(
+    "/packs/validate-resume",
+    response_model=DocumentPackValidationPayload,
+)
+def validate_resume_pack_item(
+    request: DocumentPackItemRequest,
+    db: Session = Depends(get_db),
+) -> DocumentPackValidationPayload:
+    try:
+        _, _, validation = prepare_pack_document(
+            db,
+            request,
+            "tailored_resume",
+        )
+        return DocumentPackValidationPayload(validation=validation)
+    except DocumentValidationError as exc:
+        raise pack_validation_failed("resume_validation", exc) from exc
+    except ValueError as exc:
+        raise pack_validation_failed("resume_validation", exc) from exc
+    except SQLAlchemyError as exc:
+        raise database_unavailable(exc) from exc
+
+
+@router.post(
+    "/packs",
+    response_model=DocumentPackPayload,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_document_pack(
+    request: DocumentPackRequest,
+    db: Session = Depends(get_db),
+) -> DocumentPackPayload:
+    request_fingerprint = document_pack_request_fingerprint(request)
+    try:
+        existing_job = db.get(DocumentPackJobRecord, request.pack_job_id)
+        if existing_job:
+            if existing_job.request_fingerprint != request_fingerprint:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Pack job ID was already used for a different request",
+                )
+            return document_pack_payload(existing_job, db)
+
+        if not db.get(StoredApplicationRecord, request.application_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application not found",
+            )
+        if request.persistence_mode == "atomic" and request.cover_letter is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={
+                    "stage": "cover_letter_generation",
+                    "status": "rolled_back",
+                    "message": "Atomic application packs require a cover letter",
+                },
+            )
+
+        try:
+            resume_template, resume_content, resume_validation = prepare_pack_document(
+                db,
+                request.resume,
+                "tailored_resume",
+            )
+        except (DocumentValidationError, ValueError) as exc:
+            raise pack_validation_failed("resume_validation", exc) from exc
+
+        cover_prepared: tuple[DocumentTemplateRecord, bytes, dict[str, object]] | None = None
+        cover_failure = ""
+        if request.cover_letter is not None:
+            try:
+                cover_prepared = prepare_pack_document(
+                    db,
+                    request.cover_letter,
+                    "cover_letter",
+                )
+            except (DocumentValidationError, ValueError) as exc:
+                cover_failure = str(exc)
+                if request.persistence_mode == "atomic":
+                    raise pack_validation_failed("cover_letter_validation", exc) from exc
+        else:
+            cover_failure = request.partial_reason or "Cover letter generation did not complete"
+
+        now = utc_now()
+        document_ids = [
+            persist_pack_document(
+                db=db,
+                item=request.resume,
+                document_type="tailored_resume",
+                template=resume_template,
+                rendered_content=resume_content,
+                validation=resume_validation,
+                job_id=request.job_id,
+                application_id=request.application_id,
+                created_at=now,
+            )
+        ]
+        stages = [
+            {
+                "id": "resume_validation",
+                "status": "completed",
+                "message": "CV passed factual and visual validation",
+            }
+        ]
+        pack_status = "partial"
+        message = cover_failure
+        if request.cover_letter is not None and cover_prepared is not None:
+            cover_template, cover_content, cover_validation = cover_prepared
+            document_ids.append(
+                persist_pack_document(
+                    db=db,
+                    item=request.cover_letter,
+                    document_type="cover_letter",
+                    template=cover_template,
+                    rendered_content=cover_content,
+                    validation=cover_validation,
+                    job_id=request.job_id,
+                    application_id=request.application_id,
+                    created_at=now,
+                )
+            )
+            pack_status = "completed"
+            message = "Application pack saved atomically"
+            stages.append(
+                {
+                    "id": "cover_letter_validation",
+                    "status": "completed",
+                    "message": "Cover letter passed factual and visual validation",
+                }
+            )
+        else:
+            stages.append(
+                {
+                    "id": "cover_letter_validation",
+                    "status": "failed" if request.cover_letter else "skipped",
+                    "message": cover_failure,
+                }
+            )
+        stages.append(
+            {
+                "id": "saving",
+                "status": "completed",
+                "message": (
+                    "Both documents committed in one transaction"
+                    if pack_status == "completed"
+                    else "Validated CV saved as an explicit partial pack"
+                ),
+            }
+        )
+        job = DocumentPackJobRecord(
+            id=request.pack_job_id,
+            request_fingerprint=request_fingerprint,
+            application_id=request.application_id,
+            persistence_mode=request.persistence_mode,
+            status=pack_status,
+            document_ids=document_ids,
+            stages=stages,
+            message=message,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(job)
+        db.commit()
+        return document_pack_payload(job, db)
     except HTTPException:
         db.rollback()
         raise
@@ -697,6 +877,143 @@ def append_document_validation(
             diff_items=validation.get("diff", []),
             created_at=created_at,
         )
+    )
+
+
+def prepare_pack_document(
+    db: Session,
+    item: DocumentPackItemRequest,
+    document_type: str,
+) -> tuple[DocumentTemplateRecord, bytes, dict[str, object]]:
+    if not item.input_versions:
+        raise DocumentValidationError("Generation input versions are required")
+    if not item.validation_evidence:
+        raise DocumentValidationError("Validation evidence is required")
+    template = require_template(db, item.template_id)
+    if template.type != document_type:
+        raise DocumentValidationError("Document template type does not match pack item type")
+    rendered_content = build_document_from_template(
+        template_content=template.content,
+        content=item.content,
+        document_type=document_type,
+    )
+    validation = validate_generated_document(
+        template_content=template.content,
+        rendered_content=rendered_content,
+        generated_content=item.content,
+        document_type=document_type,
+        evidence=item.validation_evidence,
+    )
+    return template, rendered_content, validation
+
+
+def persist_pack_document(
+    *,
+    db: Session,
+    item: DocumentPackItemRequest,
+    document_type: str,
+    template: DocumentTemplateRecord,
+    rendered_content: bytes,
+    validation: dict[str, object],
+    job_id: str | None,
+    application_id: str,
+    created_at: datetime,
+) -> str:
+    if item.document_id:
+        record = require_document(db, item.document_id)
+        if record.type != document_type:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Existing document type does not match pack item type",
+            )
+        next_version = record.current_version + 1
+        record.title = item.title.strip()
+        record.job_id = job_id
+    else:
+        document_id = str(uuid4())
+        record = DocumentRecord(
+            id=document_id,
+            type=document_type,
+            title=item.title.strip(),
+            job_id=job_id,
+            current_version=1,
+            created_at=created_at,
+            updated_at=created_at,
+        )
+        db.add(record)
+        next_version = 1
+
+    record.versions.append(
+        DocumentVersionRecord(
+            id=str(uuid4()),
+            document_id=record.id,
+            version=next_version,
+            content=item.content,
+            created_at=created_at,
+        )
+    )
+    set_current_generation_provenance(
+        record,
+        item.generation_fingerprint,
+        item.generation_model,
+        item.input_versions,
+        created_at,
+    )
+    append_version_generation_provenance(
+        record,
+        next_version,
+        item.generation_fingerprint,
+        item.generation_model,
+        item.input_versions,
+        created_at,
+    )
+    append_document_validation(record, next_version, validation, created_at)
+    db.add(
+        DocumentFileRecord(
+            id=str(uuid4()),
+            document_id=record.id,
+            version=next_version,
+            template_id=template.id,
+            content=rendered_content,
+            created_at=created_at,
+        )
+    )
+    attach_document_record(db, record, application_id)
+    record.current_version = next_version
+    record.updated_at = created_at
+    return record.id
+
+
+def document_pack_request_fingerprint(request: DocumentPackRequest) -> str:
+    canonical = json.dumps(
+        request.model_dump(mode="json", by_alias=True),
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def document_pack_payload(job: DocumentPackJobRecord, db: Session) -> DocumentPackPayload:
+    documents = [document_payload(require_document(db, document_id)) for document_id in job.document_ids]
+    return DocumentPackPayload(
+        pack_job_id=job.id,
+        status=job.status,
+        persistence_mode=job.persistence_mode,
+        documents=documents,
+        stages=[DocumentPackStagePayload.model_validate(stage) for stage in job.stages],
+        message=job.message,
+    )
+
+
+def pack_validation_failed(stage: str, exc: Exception) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail={
+            "stage": stage,
+            "status": "rolled_back",
+            "message": str(exc),
+        },
     )
 
 
