@@ -741,11 +741,15 @@ def build_candidate_snapshot_hash(snapshot: dict[str, Any]) -> str:
 
 
 def is_cached_match_valid(value: Any, cache_key: str) -> bool:
+    application_guide = value.get("applicationGuide") if isinstance(value, dict) else None
     return (
         isinstance(value, dict)
         and value.get("version") == MATCHER_VERSION
         and value.get("cacheKey") == cache_key
         and isinstance(value.get("score"), int)
+        and isinstance(application_guide, dict)
+        and application_guide.get("language") in {"English", "German"}
+        and bool(str(application_guide.get("positioning") or "").strip())
     )
 
 

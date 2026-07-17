@@ -26,6 +26,11 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  getAiMatchAnalysisStatus,
+  hasCurrentApplicationGuide,
+  isLegacyAiMatch,
+} from "@/lib/ai-match";
 import { cn } from "@/lib/utils";
 
 type WorkspaceJob = {
@@ -42,6 +47,7 @@ type WorkspaceJob = {
   applyUrl?: string;
   sourceUrl?: string;
   aiMatch?: {
+    version?: string;
     reasons: string[];
     gaps: string[];
     updatedAt?: string;
@@ -186,6 +192,8 @@ type ApplicationWorkspaceProps = {
     },
   ) => void;
   onMarkApplied: (applicationId: string) => void;
+  onRefreshAnalysis: (applicationId: string) => void;
+  isAnalysisRefreshing: boolean;
 };
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -227,6 +235,7 @@ function reviewSection(title: string, values: string[]) {
 }
 
 function buildSavedApplicationReview(job: WorkspaceJob) {
+  if (!hasCurrentApplicationGuide(job.aiMatch)) return "";
   const guide = job.aiMatch?.applicationGuide;
   if (!guide) return "";
   const language = guide?.language || detectLegacyJobLanguage(job);
@@ -336,6 +345,8 @@ export function ApplicationWorkspace({
   onOpenAssistant,
   onDocumentAttached,
   onMarkApplied,
+  onRefreshAnalysis,
+  isAnalysisRefreshing,
 }: ApplicationWorkspaceProps) {
   const [documents, setDocuments] = useState<GeneratedDocument[]>([]);
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
@@ -395,11 +406,15 @@ export function ApplicationWorkspace({
     () => profileSources.filter((source) => source.category === "Cover Letter" && source.file_name.toLowerCase().endsWith(".docx")),
     [profileSources],
   );
+  const analysisStatus = getAiMatchAnalysisStatus(application?.job.aiMatch);
+  const hasCurrentAnalysis = analysisStatus === "current";
+  const isAnalysisOutdated = analysisStatus === "outdated";
+  const isLegacyAnalysis = isLegacyAiMatch(application?.job.aiMatch);
   const applicationReview = useMemo(
     () => application ? buildSavedApplicationReview(application.job) : "",
     [application],
   );
-  const applicationGuide = application?.job.aiMatch?.applicationGuide;
+  const applicationGuide = hasCurrentAnalysis ? application?.job.aiMatch?.applicationGuide : undefined;
   const clarificationQuestions = applicationGuide?.clarificationQuestions ?? [];
   const unansweredBlockingQuestions = clarificationQuestions.filter(
     (question) => question.blocking && !clarificationAnswers[question.id]?.trim(),
@@ -407,7 +422,7 @@ export function ApplicationWorkspace({
   const hasOversizedConfirmation = clarificationQuestions.some(
     (question) => (clarificationAnswers[question.id]?.trim().length ?? 0) > confirmationAnswerMaxChars,
   );
-  const vacancyLanguage = application?.job.aiMatch?.applicationGuide?.language || (application ? detectLegacyJobLanguage(application.job) : "");
+  const vacancyLanguage = applicationGuide?.language || (application ? detectLegacyJobLanguage(application.job) : "");
   const effectiveLanguage = languageMode === "auto" ? vacancyLanguage : languageMode;
 
   useEffect(() => {
@@ -457,10 +472,12 @@ export function ApplicationWorkspace({
   const activeApplication = application;
   const jobUrl = activeApplication.job.applyUrl || activeApplication.job.sourceUrl || "";
   const profileReady = Boolean(profile.name && (profile.experience || profile.resume_file_name));
+  const confirmationsReady = hasCurrentAnalysis && unansweredBlockingQuestions.length === 0 && !hasOversizedConfirmation;
+  const analysisRequiredLabel = isAnalysisOutdated ? "Refresh analysis first" : "AI Match required";
   const checklist = [
     { label: "Candidate profile", ready: profileReady },
-    { label: "Vacancy analysis", ready: Boolean(applicationGuide) },
-    { label: "Required confirmations", ready: unansweredBlockingQuestions.length === 0 && !hasOversizedConfirmation },
+    { label: "Vacancy analysis", ready: hasCurrentAnalysis },
+    { label: "Required confirmations", ready: confirmationsReady },
     { label: "Tailored CV", ready: Boolean(latestResume) },
     { label: "Cover letter", ready: Boolean(latestCoverLetter) },
     { label: "Application link", ready: Boolean(jobUrl) },
@@ -468,8 +485,8 @@ export function ApplicationWorkspace({
   const readyCount = checklist.filter((item) => item.ready).length;
   const progress = Math.round((readyCount / checklist.length) * 100);
   const preparationSteps = [
-    { label: "Review match", detail: "Positioning and requirements", ready: Boolean(applicationGuide), icon: Target },
-    { label: "Confirm facts", detail: hasOversizedConfirmation ? "Shorten a long answer" : unansweredBlockingQuestions.length ? `${unansweredBlockingQuestions.length} answer${unansweredBlockingQuestions.length === 1 ? "" : "s"} required` : "Evidence confirmed", ready: unansweredBlockingQuestions.length === 0 && !hasOversizedConfirmation, icon: MessageSquareText },
+    { label: "Review match", detail: isAnalysisOutdated ? "Analysis outdated" : "Positioning and requirements", ready: hasCurrentAnalysis, icon: Target },
+    { label: "Confirm facts", detail: !hasCurrentAnalysis ? "Refresh analysis first" : hasOversizedConfirmation ? "Shorten a long answer" : unansweredBlockingQuestions.length ? `${unansweredBlockingQuestions.length} answer${unansweredBlockingQuestions.length === 1 ? "" : "s"} required` : "Evidence confirmed", ready: confirmationsReady, icon: MessageSquareText },
     { label: "Create documents", detail: latestResume && latestCoverLetter ? "Application pack ready" : "CV and cover letter", ready: Boolean(latestResume && latestCoverLetter), icon: FileText },
     { label: "Final review", detail: progress === 100 ? "Ready to submit" : `${readyCount} of ${checklist.length} checks ready`, ready: progress === 100, icon: ShieldCheck },
   ];
@@ -527,7 +544,7 @@ export function ApplicationWorkspace({
         throw new Error(`Select a DOCX ${isCoverLetter ? "cover letter" : "CV"} before generating`);
       }
       if (!applicationReview) {
-        throw new Error("Wait for the pre-application improvement plan before generating documents");
+        throw new Error(isAnalysisOutdated ? "Refresh the outdated analysis before generating documents" : "Run AI Match before generating documents");
       }
       if (unansweredBlockingQuestions.length > 0) {
         throw new Error("Answer the required confirmation questions before generating documents");
@@ -722,12 +739,15 @@ export function ApplicationWorkspace({
                   <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent"><Target className="h-[18px] w-[18px]" /></span>
                   <div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">01 · Understand the role</p><h2 className="mt-1 text-lg font-bold tracking-[-0.01em] text-white">Your application angle</h2><p className="mt-1 text-xs leading-5 text-muted">Review the recommendation before generating any documents.</p></div>
                 </div>
-                <label className="flex shrink-0 items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.025] p-1.5 pl-3">
-                  <span className="text-[10px] font-bold text-muted">Language</span>
-                  <select value={languageMode} onChange={(event) => { setLanguageMode(event.target.value as "auto" | "English" | "German"); setIsResumeSourceManual(false); setIsCoverSourceManual(false); setSelectedResumeSourceId(""); setSelectedCoverSourceId(""); }} className="h-8 rounded-lg border border-white/[0.08] bg-[#151c24] px-2.5 text-[11px] font-bold text-white outline-none focus:border-accent/60">
-                    <option value="auto">Auto · {vacancyLanguage || "Detect"}</option><option value="English">English</option><option value="German">German</option>
-                  </select>
-                </label>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button type="button" variant="ghost" disabled={isAnalysisRefreshing} onClick={() => onRefreshAnalysis(activeApplication.id)} className={cn("h-11 rounded-xl border px-3 text-[11px] font-bold", isAnalysisOutdated ? "border-amber-400/30 bg-amber-400/[0.07] text-amber-100 hover:bg-amber-400/10" : "border-white/[0.08] bg-white/[0.025] text-[#dfe5ec] hover:bg-white/[0.06]")}>{isAnalysisRefreshing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}{isAnalysisRefreshing ? "Updating…" : isAnalysisOutdated ? "Update analysis" : "Refresh analysis"}</Button>
+                  <label className="flex shrink-0 items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.025] p-1.5 pl-3">
+                    <span className="text-[10px] font-bold text-muted">Language</span>
+                    <select value={languageMode} onChange={(event) => { setLanguageMode(event.target.value as "auto" | "English" | "German"); setIsResumeSourceManual(false); setIsCoverSourceManual(false); setSelectedResumeSourceId(""); setSelectedCoverSourceId(""); }} className="h-8 rounded-lg border border-white/[0.08] bg-[#151c24] px-2.5 text-[11px] font-bold text-white outline-none focus:border-accent/60">
+                      <option value="auto">Auto · {vacancyLanguage || "Detect"}</option><option value="English">English</option><option value="German">German</option>
+                    </select>
+                  </label>
+                </div>
               </div>
 
               {applicationGuide ? (
@@ -779,16 +799,23 @@ export function ApplicationWorkspace({
                     </div>
                   ) : null}
                 </div>
+              ) : isAnalysisOutdated ? (
+                <div className="m-5 rounded-xl border border-amber-400/25 bg-amber-400/[0.055] px-5 py-8 text-center sm:px-8">
+                  <AlertTriangle className="mx-auto h-6 w-6 text-amber-200" />
+                  <p className="mt-3 text-sm font-bold text-amber-100">Analysis outdated</p>
+                  <p className="mx-auto mt-2 max-w-2xl text-xs leading-5 text-amber-100/70">{isLegacyAnalysis ? "This application uses a legacy ai-match-v1 percentage without an application guide." : "This application does not have a complete application guide v3."} Refresh this application before generating a CV or cover letter.</p>
+                  <Button type="button" disabled={isAnalysisRefreshing} onClick={() => onRefreshAnalysis(activeApplication.id)} className="mt-5 h-10 rounded-xl bg-amber-300 px-4 text-xs font-bold text-[#241804] hover:bg-amber-200 disabled:opacity-55">{isAnalysisRefreshing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}{isAnalysisRefreshing ? "Updating analysis…" : "Update this application"}</Button>
+                </div>
               ) : <div className="m-5 rounded-xl border border-white/[0.07] bg-black/15 py-12 text-center"><Sparkles className="mx-auto h-5 w-5 text-muted" /><p className="mt-2 text-xs text-muted">Run AI Match for this vacancy to create the application plan.</p></div>}
             </section>
 
-            <section className={cn("workspace-card overflow-hidden", clarificationQuestions.length && (unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation) && "border-amber-300/20")}>
+            <section className={cn("workspace-card overflow-hidden", !confirmationsReady && "border-amber-300/20")}>
               <div className="flex items-start gap-3 border-b border-white/[0.07] px-5 py-5 sm:px-6">
-                <span className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-xl", unansweredBlockingQuestions.length || hasOversizedConfirmation ? "bg-amber-400/10 text-amber-200" : "bg-success/10 text-success")}><MessageSquareText className="h-[18px] w-[18px]" /></span>
-                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">02 · Confirm your evidence</p>{hasOversizedConfirmation ? <span className="rounded-full border border-red-400/25 bg-red-500/10 px-2 py-0.5 text-[9px] font-black text-red-200">Shorten long answer</span> : unansweredBlockingQuestions.length ? <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black text-amber-200">{unansweredBlockingQuestions.length} required</span> : <span className="rounded-full border border-success/25 bg-success/10 px-2 py-0.5 text-[9px] font-black text-success">Complete</span>}</div><h2 className="mt-1 text-lg font-bold text-white">Keep every claim accurate</h2><p className="mt-1 text-xs leading-5 text-muted">Only confirmed facts can be used in the generated CV and cover letter.</p></div>
+                <span className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-xl", !confirmationsReady ? "bg-amber-400/10 text-amber-200" : "bg-success/10 text-success")}><MessageSquareText className="h-[18px] w-[18px]" /></span>
+                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">02 · Confirm your evidence</p>{!hasCurrentAnalysis ? <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black text-amber-200">Analysis required</span> : hasOversizedConfirmation ? <span className="rounded-full border border-red-400/25 bg-red-500/10 px-2 py-0.5 text-[9px] font-black text-red-200">Shorten long answer</span> : unansweredBlockingQuestions.length ? <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black text-amber-200">{unansweredBlockingQuestions.length} required</span> : <span className="rounded-full border border-success/25 bg-success/10 px-2 py-0.5 text-[9px] font-black text-success">Complete</span>}</div><h2 className="mt-1 text-lg font-bold text-white">Keep every claim accurate</h2><p className="mt-1 text-xs leading-5 text-muted">Only confirmed facts can be used in the generated CV and cover letter.</p></div>
               </div>
               <div className="p-5 sm:p-6">
-                {clarificationQuestions.length ? <div className="grid gap-3">{clarificationQuestions.map((question, index) => {
+                {!hasCurrentAnalysis ? <div className="flex items-center gap-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.045] px-4 py-3 text-xs text-amber-100/80"><AlertTriangle className="h-5 w-5 shrink-0 text-amber-200" /><span>Update the analysis before confirming evidence. The legacy percentage does not contain the questions required for safe document generation.</span></div> : clarificationQuestions.length ? <div className="grid gap-3">{clarificationQuestions.map((question, index) => {
                   const answerValue = clarificationAnswers[question.id] ?? "";
                   const answerLength = answerValue.trim().length;
                   const isAnswered = Boolean(answerLength);
@@ -807,8 +834,8 @@ export function ApplicationWorkspace({
                 {documentError ? <div className="mb-4 rounded-xl border border-red-400/25 bg-red-500/[0.07] px-3 py-2.5 text-xs leading-5 text-red-200">{documentError}</div> : null}
                 {effectiveLanguage && !resumeSources.some((source) => source.language === effectiveLanguage) ? <div className="mb-4 rounded-xl border border-amber-400/25 bg-amber-400/[0.07] px-3 py-2.5 text-xs leading-5 text-amber-200">No {effectiveLanguage} CV DOCX is saved in Profile. Add one or choose another language.</div> : null}
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <DocumentCard icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isGenerating={generationType === "tailored_resume"} onGenerate={() => generateDocument("tailored_resume")} canGenerate={Boolean(selectedResumeSourceId && applicationReview && unansweredBlockingQuestions.length === 0 && !hasOversizedConfirmation)} disabledLabel={!selectedResumeSourceId ? "Select source first" : !applicationReview ? "AI Match required" : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
-                  <DocumentCard icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isGenerating={generationType === "cover_letter"} onGenerate={() => generateDocument("cover_letter")} canGenerate={Boolean(selectedCoverSourceId && applicationReview && unansweredBlockingQuestions.length === 0 && !hasOversizedConfirmation)} disabledLabel={!selectedCoverSourceId ? "Select source first" : !applicationReview ? "AI Match required" : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
+                  <DocumentCard icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isGenerating={generationType === "tailored_resume"} onGenerate={() => generateDocument("tailored_resume")} canGenerate={Boolean(selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={!selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
+                  <DocumentCard icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isGenerating={generationType === "cover_letter"} onGenerate={() => generateDocument("cover_letter")} canGenerate={Boolean(selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={!selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
                 </div>
               </div>
             </section>

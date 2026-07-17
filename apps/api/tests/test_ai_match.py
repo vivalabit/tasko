@@ -177,6 +177,62 @@ def test_openclaw_ai_match_scores_relevant_job_higher(monkeypatch: pytest.Monkey
     assert matched[0]["aiMatch"]["reasons"]
 
 
+def test_ai_match_v1_is_migrated_to_application_guide_v3(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_openclaw_fakes(monkeypatch)
+    profile = ProfilePayload(
+        current_role="Machine Learning Engineer",
+        desired_role="Machine Learning Engineer",
+        location="Zurich",
+        skills="Python\nMachine Learning",
+    )
+    legacy_job = {
+        "id": "linkedin-legacy-ai-match",
+        "title": "Machine Learning Engineer",
+        "company": "Acme",
+        "location": "Zurich",
+        "type": "Full-Time",
+        "salary": "Not specified",
+        "posted": "LinkedIn",
+        "experience": "Mid-Senior level",
+        "department": "Engineering",
+        "match": 97,
+        "logo": "linkedin",
+        "overview": "Build machine learning systems with Python.",
+        "responsibilities": ["Build ML systems"],
+        "requirements": ["Python", "Machine Learning"],
+        "skills": ["Python", "Machine Learning"],
+        "aiMatch": {
+            "version": "ai-match-v1",
+            "cacheKey": "legacy-cache-key",
+            "source": "openclaw",
+            "score": 97,
+            "confidence": "high",
+            "breakdown": {},
+            "reasons": ["Legacy percentage only"],
+            "gaps": [],
+        },
+    }
+
+    migrated = calculate_ai_matches(
+        profile,
+        [legacy_job],
+        command="openclaw",
+        agent_id="main",
+        thinking="low",
+        timeout_seconds=1,
+        openclaw_enabled=True,
+        openclaw_max_jobs=20,
+    )[0]
+
+    assert migrated["aiMatch"]["version"] == "ai-match-v3"
+    assert migrated["match"] == 88
+    assert migrated["match"] != legacy_job["match"]
+    assert migrated["aiMatch"]["applicationGuide"]["roleMission"]
+    assert migrated["aiMatch"]["applicationGuide"]["evidenceMatrix"]
+
+
 def test_ai_match_requires_openclaw_enabled() -> None:
     profile = ProfilePayload(
         current_role="Senior LLM Engineer",

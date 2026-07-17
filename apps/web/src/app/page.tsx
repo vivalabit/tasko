@@ -67,6 +67,7 @@ import {
   type AssistantLaunch,
 } from "@/components/assistant-view";
 import { ApplicationWorkspace } from "@/components/application-workspace";
+import { legacyAiMatchVersion } from "@/lib/ai-match";
 import { getHashForView, getRouteFromHash, type View } from "@/lib/app-route";
 import { cn } from "@/lib/utils";
 
@@ -2163,7 +2164,7 @@ function getDisplayMatch(job: Job) {
 }
 
 function sanitizeLegacyLocalAiMatch(job: Job): Job {
-  if (job.aiMatch?.source !== "local") return job;
+  if (job.aiMatch?.source !== "local" || job.aiMatch.version === legacyAiMatchVersion) return job;
 
   const { aiMatch: _legacyAiMatch, ...jobWithoutLegacyAiMatch } = job;
   return {
@@ -3406,6 +3407,13 @@ export default function HomePage() {
     } finally {
       setMatchingApplicationIds((currentIds) => currentIds.filter((id) => id !== application.id));
     }
+  }
+
+  function refreshApplicationAnalysis(applicationId: string) {
+    const application = applications.find((item) => item.id === applicationId);
+    if (!application) return;
+
+    void analyzeApplicationWithAi(application);
   }
 
   function updateApplicationStatus(applicationId: string, status: ApplicationStatus) {
@@ -5057,6 +5065,8 @@ export default function HomePage() {
             onBack={() => changeView("Applications")}
             onOpenAssistant={(prompt, applicationId) => openAssistant(prompt, "application", applicationId)}
             onDocumentAttached={attachGeneratedDocumentToApplication}
+            onRefreshAnalysis={refreshApplicationAnalysis}
+            isAnalysisRefreshing={Boolean(selectedApplication && matchingApplicationIds.includes(selectedApplication.id))}
             onMarkApplied={(applicationId) => {
               updateApplicationStatus(applicationId, "applied");
               appendAppLog({
