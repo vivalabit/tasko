@@ -448,7 +448,7 @@ export function ApplicationWorkspace({
         <div className="panel max-w-md p-6 text-center">
           <FileText className="mx-auto h-8 w-8 text-muted" />
           <h1 className="mt-3 text-lg font-bold text-white">No application selected</h1>
-          <Button className="mt-4 bg-accent text-white" onClick={onBack}><ArrowLeft className="h-4 w-4" /> Back to jobs</Button>
+          <Button className="mt-4 bg-accent text-white" onClick={onBack}><ArrowLeft className="h-4 w-4" /> Back to applications</Button>
         </div>
       </section>
     );

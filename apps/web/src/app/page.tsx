@@ -67,6 +67,7 @@ import {
   type AssistantLaunch,
 } from "@/components/assistant-view";
 import { ApplicationWorkspace } from "@/components/application-workspace";
+import { getHashForView, getRouteFromHash, type View } from "@/lib/app-route";
 import { cn } from "@/lib/utils";
 
 type AiMatchMetadata = {
@@ -522,11 +523,6 @@ const jobs: Job[] = [
 ];
 
 const tabs = ["Overview", "Company", "AI Match", "Reviews", "Similar Jobs"];
-type View = "Dashboard" | "Jobs" | "ApplicationWorkspace" | "Applications" | "Calendar" | "Assistant" | "Profile" | "Settings" | "Logs";
-type AppRoute = {
-  view: View;
-  applicationId?: string;
-};
 type ParserSearchStatus = "idle" | "loading" | "ready" | "error";
 
 const applicationStatuses: Array<{ status: ApplicationStatus; label: string }> = [
@@ -1629,38 +1625,6 @@ function getProfileCompletion(profile: CandidateProfile) {
   const completedFields = completionItems.filter((item) => item.complete);
 
   return Math.round((completedFields.length / completionItems.length) * 100);
-}
-
-function getRouteFromHash(hash: string): AppRoute {
-  const applicationWorkspacePrefix = "#application-workspace/";
-
-  if (hash.startsWith(applicationWorkspacePrefix)) {
-    const encodedApplicationId = hash.slice(applicationWorkspacePrefix.length);
-
-    if (encodedApplicationId) {
-      try {
-        return {
-          view: "ApplicationWorkspace",
-          applicationId: decodeURIComponent(encodedApplicationId),
-        };
-      } catch {
-        return { view: "ApplicationWorkspace", applicationId: encodedApplicationId };
-      }
-    }
-  }
-
-  const viewByHash: Record<string, View> = {
-    "#profile": "Profile",
-    "#settings": "Settings",
-    "#logs": "Logs",
-    "#applications": "Applications",
-    "#application-workspace": "ApplicationWorkspace",
-    "#calendar": "Calendar",
-    "#assistant": "Assistant",
-    "#jobs": "Jobs",
-  };
-
-  return { view: viewByHash[hash] ?? "Dashboard" };
 }
 
 function createParsedJobId(job: ParsedJob, index: number) {
@@ -3268,20 +3232,7 @@ export default function HomePage() {
 
   function changeView(view: View, applicationId?: string) {
     setActiveView(view);
-    const viewHash: Record<View, string> = {
-      Dashboard: "#dashboard",
-      Jobs: "#jobs",
-      ApplicationWorkspace: applicationId
-        ? `#application-workspace/${encodeURIComponent(applicationId)}`
-        : "#application-workspace",
-      Applications: "#applications",
-      Calendar: "#calendar",
-      Assistant: "#assistant",
-      Profile: "#profile",
-      Settings: "#settings",
-      Logs: "#logs",
-    };
-    window.history.replaceState(null, "", viewHash[view]);
+    window.history.replaceState(null, "", getHashForView(view, applicationId));
   }
 
   function openJobFromDashboard(jobId: string) {
@@ -5103,7 +5054,7 @@ export default function HomePage() {
           <ApplicationWorkspace
             application={selectedApplication}
             profile={profile}
-            onBack={() => changeView("Jobs")}
+            onBack={() => changeView("Applications")}
             onOpenAssistant={(prompt, applicationId) => openAssistant(prompt, "application", applicationId)}
             onDocumentAttached={attachGeneratedDocumentToApplication}
             onMarkApplied={(applicationId) => {
