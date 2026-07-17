@@ -53,6 +53,12 @@ class AssistantSourceDocument(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class AssistantCandidateConfirmation(BaseModel):
+    requirement: str = Field(default="", max_length=500)
+    question: str = Field(default="", max_length=1_200)
+    answer: str = Field(min_length=1, max_length=1_500)
+
+
 class AssistantChatRequest(BaseModel):
     thread_id: str = Field(min_length=1, max_length=160, alias="threadId")
     message: str = Field(min_length=1, max_length=12_000)
@@ -64,6 +70,11 @@ class AssistantChatRequest(BaseModel):
         default_factory=list,
         max_length=3,
         alias="sourceDocuments",
+    )
+    candidate_confirmations: list[AssistantCandidateConfirmation] = Field(
+        default_factory=list,
+        max_length=20,
+        alias="candidateConfirmations",
     )
 
     model_config = {"populate_by_name": True}

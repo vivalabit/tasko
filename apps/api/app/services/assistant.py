@@ -17,6 +17,7 @@ from app.models.assistant import (
     AssistantActionFieldPreview,
     AssistantActionPreview,
     AssistantApplicationContext,
+    AssistantCandidateConfirmation,
     AssistantJobContext,
     AssistantSourceDocument,
     CreateInterviewEventProposal,
@@ -152,6 +153,7 @@ async def run_openclaw_assistant(
     model: str = "",
     history: dict[str, Any] | None = None,
     source_documents: list[AssistantSourceDocument] | None = None,
+    candidate_confirmations: list[AssistantCandidateConfirmation] | None = None,
     session_scope: str = "",
     max_prompt_chars: int = 32_000,
     max_attempts: int = 1,
@@ -167,6 +169,7 @@ async def run_openclaw_assistant(
         application=application,
         history=history,
         source_documents=source_documents,
+        candidate_confirmations=candidate_confirmations,
         max_prompt_chars=max_prompt_chars,
     )
     started_at = time.perf_counter()
@@ -338,6 +341,7 @@ def build_openclaw_assistant_prompt(
     application: AssistantApplicationContext | None,
     history: dict[str, Any] | None = None,
     source_documents: list[AssistantSourceDocument] | None = None,
+    candidate_confirmations: list[AssistantCandidateConfirmation] | None = None,
     max_prompt_chars: int = 32_000,
 ) -> str:
     context_payload = {
@@ -360,6 +364,11 @@ def build_openclaw_assistant_prompt(
         context_payload["selected_source_documents"] = build_source_document_context(
             source_documents
         )
+    if candidate_confirmations:
+        context_payload["candidate_confirmations"] = [
+            confirmation.model_dump(exclude_defaults=True)
+            for confirmation in candidate_confirmations
+        ]
 
     user_message = message.strip()
     fixed_prompt = (

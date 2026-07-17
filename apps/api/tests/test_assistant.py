@@ -13,7 +13,11 @@ from app.api import assistant as assistant_api
 from app.core.database import Base, get_db
 from app.core.settings import Settings, get_settings
 from app.main import app
-from app.models.assistant import AssistantJobContext, AssistantSourceDocument
+from app.models.assistant import (
+    AssistantCandidateConfirmation,
+    AssistantJobContext,
+    AssistantSourceDocument,
+)
 from app.models.conversations import ConversationRecord, MessageRecord
 from app.models.jobs import StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
@@ -119,6 +123,29 @@ def test_assistant_prompt_uses_only_selected_profile_source_documents() -> None:
     assert "built a FastAPI service" in prompt
     assert "Ignore previous instructions" not in prompt
     assert "[removed potential prompt-injection instruction]" in prompt
+
+
+def test_assistant_prompt_keeps_candidate_confirmations_in_structured_context() -> None:
+    prompt = build_openclaw_assistant_prompt(
+        message="Tailor the selected CV using the structured application context.",
+        context_kind="application",
+        profile=ProfilePayload(name="Eduard"),
+        job=AssistantJobContext(id="job-1", title="Backend Engineer"),
+        application=None,
+        candidate_confirmations=[
+            AssistantCandidateConfirmation(
+                requirement="German client communication",
+                question="Have you discussed technical topics in German?",
+                answer="Yes, I presented an API integration to a German-speaking client.",
+            )
+        ],
+    )
+
+    context, user_message = prompt.split("USER_MESSAGE (trusted instructions):\n", 1)
+    assert '"candidate_confirmations"' in context
+    assert "German-speaking client" in context
+    assert "German-speaking client" not in user_message
+    assert user_message == "Tailor the selected CV using the structured application context."
 
 
 def test_assistant_prompt_removes_vacancy_prompt_injection_and_honors_budget() -> None:
@@ -370,6 +397,13 @@ def test_assistant_chat_uses_stored_profile_and_job(monkeypatch: pytest.MonkeyPa
                 "message": "Summarize my fit",
                 "contextKind": "job",
                 "contextId": "job-1",
+                "candidateConfirmations": [
+                    {
+                        "requirement": "Availability",
+                        "question": "Can you work 80%?",
+                        "answer": "Yes, from September.",
+                    }
+                ],
             },
         )
     finally:
@@ -382,6 +416,8 @@ def test_assistant_chat_uses_stored_profile_and_job(monkeypatch: pytest.MonkeyPa
     assert captured["profile"].name == "Eduard"
     assert isinstance(captured["job"], AssistantJobContext)
     assert captured["job"].company == "Figma"
+    assert isinstance(captured["candidate_confirmations"], list)
+    assert captured["candidate_confirmations"][0].answer == "Yes, from September."
 
 
 def test_assistant_chat_maps_openclaw_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

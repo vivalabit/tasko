@@ -190,6 +190,7 @@ type ApplicationWorkspaceProps = {
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const docxContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const confirmationAnswerMaxChars = 1_500;
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -351,6 +352,7 @@ export function ApplicationWorkspace({
   const [advice, setAdvice] = useState("");
   const [advicePrompt, setAdvicePrompt] = useState("");
   const [isLoadingAdvice, setIsLoadingAdvice] = useState(false);
+  const [analysisTab, setAnalysisTab] = useState<"overview" | "evidence" | "strategy">("overview");
 
   useEffect(() => {
     if (!application) return;
@@ -402,6 +404,9 @@ export function ApplicationWorkspace({
   const unansweredBlockingQuestions = clarificationQuestions.filter(
     (question) => question.blocking && !clarificationAnswers[question.id]?.trim(),
   );
+  const hasOversizedConfirmation = clarificationQuestions.some(
+    (question) => (clarificationAnswers[question.id]?.trim().length ?? 0) > confirmationAnswerMaxChars,
+  );
   const vacancyLanguage = application?.job.aiMatch?.applicationGuide?.language || (application ? detectLegacyJobLanguage(application.job) : "");
   const effectiveLanguage = languageMode === "auto" ? vacancyLanguage : languageMode;
 
@@ -411,6 +416,7 @@ export function ApplicationWorkspace({
     setIsCoverSourceManual(false);
     setSelectedResumeSourceId("");
     setSelectedCoverSourceId("");
+    setAnalysisTab("overview");
     if (!application) {
       setClarificationAnswers({});
       return;
@@ -454,13 +460,19 @@ export function ApplicationWorkspace({
   const checklist = [
     { label: "Candidate profile", ready: profileReady },
     { label: "Vacancy analysis", ready: Boolean(applicationGuide) },
-    { label: "Required confirmations", ready: unansweredBlockingQuestions.length === 0 },
+    { label: "Required confirmations", ready: unansweredBlockingQuestions.length === 0 && !hasOversizedConfirmation },
     { label: "Tailored CV", ready: Boolean(latestResume) },
     { label: "Cover letter", ready: Boolean(latestCoverLetter) },
     { label: "Application link", ready: Boolean(jobUrl) },
   ];
   const readyCount = checklist.filter((item) => item.ready).length;
   const progress = Math.round((readyCount / checklist.length) * 100);
+  const preparationSteps = [
+    { label: "Review match", detail: "Positioning and requirements", ready: Boolean(applicationGuide), icon: Target },
+    { label: "Confirm facts", detail: hasOversizedConfirmation ? "Shorten a long answer" : unansweredBlockingQuestions.length ? `${unansweredBlockingQuestions.length} answer${unansweredBlockingQuestions.length === 1 ? "" : "s"} required` : "Evidence confirmed", ready: unansweredBlockingQuestions.length === 0 && !hasOversizedConfirmation, icon: MessageSquareText },
+    { label: "Create documents", detail: latestResume && latestCoverLetter ? "Application pack ready" : "CV and cover letter", ready: Boolean(latestResume && latestCoverLetter), icon: FileText },
+    { label: "Final review", detail: progress === 100 ? "Ready to submit" : `${readyCount} of ${checklist.length} checks ready`, ready: progress === 100, icon: ShieldCheck },
+  ];
 
   function updateClarificationAnswer(questionId: string, value: string) {
     const nextAnswers = { ...clarificationAnswers, [questionId]: value };
@@ -471,7 +483,11 @@ export function ApplicationWorkspace({
     );
   }
 
-  async function askAssistant(message: string, sources: ProfileSourceDocument[] = []) {
+  async function askAssistant(
+    message: string,
+    sources: ProfileSourceDocument[] = [],
+    candidateConfirmations: Array<{ requirement: string; question: string; answer: string }> = [],
+  ) {
     if (!message.trim()) return "";
     const response = await fetch(`${apiBaseUrl}/assistant/chat`, {
       method: "POST",
@@ -489,8 +505,12 @@ export function ApplicationWorkspace({
           job: serializeJob(activeApplication.job),
         },
         sourceDocuments: sources.map(assistantSourcePayload),
+        candidateConfirmations,
       }),
     });
+    if (response.status === 413) {
+      throw new Error("The application context is larger than the assistant can process. Your answers are saved — shorten unusually long confirmations and try again.");
+    }
     if (!response.ok) throw new Error(await readApiError(response, "AI request failed"));
     const payload = await response.json() as { message?: string };
     return payload.message?.trim() ?? "";
@@ -512,23 +532,24 @@ export function ApplicationWorkspace({
       if (unansweredBlockingQuestions.length > 0) {
         throw new Error("Answer the required confirmation questions before generating documents");
       }
-      const improvementPlan = JSON.stringify(
-        {
-          analysis: applicationGuide,
-          candidateConfirmations: clarificationQuestions.map((question) => ({
-            requirement: question.requirement,
-            question: question.question,
-            answer: clarificationAnswers[question.id]?.trim() || "Not answered — do not use the proposed claim",
-          })),
-        },
-        null,
-        2,
-      ).slice(0, 12_000);
+      const oversizedConfirmation = clarificationQuestions.find(
+        (question) => (clarificationAnswers[question.id]?.trim().length ?? 0) > confirmationAnswerMaxChars,
+      );
+      if (oversizedConfirmation) {
+        throw new Error(`Shorten the highlighted confirmation to ${confirmationAnswerMaxChars.toLocaleString()} characters before generating`);
+      }
+      const candidateConfirmations = clarificationQuestions
+        .map((question) => ({
+          requirement: question.requirement,
+          question: question.question,
+          answer: clarificationAnswers[question.id]?.trim() ?? "",
+        }))
+        .filter((confirmation) => confirmation.answer);
       const targetLanguage = effectiveLanguage || selectedSource.language || "English";
       const prompt = isCoverLetter
-        ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy using only verified evidence from my profile, the source document, and explicit candidate confirmations below. Follow the saved vacancy analysis as mandatory guidance, especially its positioning, evidence matrix, risks, and unsupported claims. An unanswered question is not evidence. A negative answer means the skill must be omitted. Preserve truthful facts. Return only the complete letter text without Markdown or commentary, keeping a greeting, focused body paragraphs, and professional closing. Do not invent achievements or metrics.\n\nSAVED ANALYSIS AND CANDIDATE CONFIRMATIONS:\n${improvementPlan}`
-        : `Tailor the selected DOCX resume in ${targetLanguage} to this vacancy while keeping its layout unchanged. Use only verified profile/source evidence and explicit candidate confirmations below. Follow the saved vacancy analysis as mandatory guidance: apply its resume plan and evidence emphasis, and avoid every unsupported claim. An unanswered question is not evidence. A negative answer means the skill must be omitted. Return exactly one plain-text line for every non-empty body text block in the source DOCX, in the identical order and with the identical number of lines. Repeat contact details, section headings, dates, employers, education, and any line that should not change verbatim. Rewrite only existing summary, skill, and achievement lines where truthful evidence supports it. Do not add, remove, merge, split, or reorder lines. Do not use Markdown markers or commentary. Do not invent facts or metrics.\n\nSAVED ANALYSIS AND CANDIDATE CONFIRMATIONS:\n${improvementPlan}`;
-      const content = await askAssistant(prompt, [selectedSource]);
+        ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the guide's positioning, evidence map, risks, and cover-letter plan. Candidate confirmations take precedence over inferred evidence; a negative answer means the claim must be omitted. Use only verified facts and never invent achievements or metrics. Return only the complete letter text without Markdown or commentary, with a greeting, focused body paragraphs, and a professional closing.`
+        : `Tailor the selected DOCX resume in ${targetLanguage} for this vacancy while preserving its layout. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the resume plan and evidence map; candidate confirmations take precedence over inferred evidence. Return exactly one plain-text line for every non-empty body text block in the source DOCX, in the same order and with the same number of lines. Repeat contact details, headings, dates, employers, education, and unchanged lines verbatim. Rewrite only existing summary, skill, and achievement lines supported by verified evidence. Do not add, remove, merge, split, or reorder lines. Do not use Markdown or invent facts or metrics.`;
+      const content = await askAssistant(prompt, [selectedSource], candidateConfirmations);
       if (!content) throw new Error("AI returned an empty document");
 
       const templateId = await ensureSourceTemplate(selectedSource, type);
@@ -649,288 +670,167 @@ export function ApplicationWorkspace({
   }
 
   return (
-    <section className="job-scroll min-w-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4 2xl:px-5 2xl:py-4">
-      <div className="mx-auto max-w-[1280px]">
-        <button type="button" onClick={onBack} className="mb-3 inline-flex items-center gap-1.5 text-xs font-bold text-muted transition hover:text-white">
-          <ArrowLeft className="h-4 w-4" /> Back to jobs
+    <section className="job-scroll application-workspace min-w-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5 xl:px-7">
+      <div className="mx-auto max-w-[1420px]">
+        <button type="button" onClick={onBack} className="mb-4 inline-flex items-center gap-2 text-xs font-semibold text-muted transition hover:text-white">
+          <ArrowLeft className="h-4 w-4" /> Applications
         </button>
 
-        <header className="panel overflow-hidden">
-          <div className="flex flex-col gap-4 p-4 sm:p-5 xl:flex-row xl:items-center xl:justify-between">
+        <header className="application-hero overflow-hidden rounded-2xl border border-white/[0.09]">
+          <div className="relative grid gap-5 px-5 py-6 sm:px-7 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded-md border border-accent/35 bg-accent/10 px-2 py-1 text-[10px] font-black uppercase tracking-[0.1em] text-accent">Application workspace</span>
-                <span className="rounded-md border border-[#2f80ed]/35 bg-[#2f80ed]/10 px-2 py-1 text-[10px] font-bold text-[#8cc7ff]">{application.status === "draft" ? "Preparing" : application.status}</span>
+                <span className="rounded-full border border-accent/30 bg-accent/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-[#ff8b4a]">Application prep</span>
+                <span className="rounded-full border border-white/10 bg-white/[0.045] px-2.5 py-1 text-[10px] font-bold capitalize text-[#cbd3df]">{application.status === "draft" ? "In progress" : application.status}</span>
               </div>
-              <h1 className="mt-3 text-2xl font-bold leading-tight text-white 2xl:text-3xl">{application.job.title}</h1>
-              <p className="mt-1.5 text-sm font-semibold text-muted">{application.job.company} <span className="text-white/30">•</span> {application.job.location} <span className="text-white/30">•</span> {application.job.type}</p>
+              <h1 className="mt-4 max-w-4xl text-2xl font-bold leading-[1.15] tracking-[-0.025em] text-white sm:text-3xl">{application.job.title}</h1>
+              <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-[#aeb7c5]">
+                <span className="text-[#eef1f6]">{application.job.company}</span><span className="text-white/25">/</span><span>{application.job.location}</span><span className="text-white/25">/</span><span>{application.job.type}</span>
+              </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="mr-2 hidden text-right sm:block">
-                <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-muted">AI match</p>
-                <p className="mt-0.5 text-xl font-black text-success">{application.job.match}%</p>
+            <div className="flex flex-wrap items-center gap-2 lg:justify-end">
+              <div className="mr-2 flex h-14 items-center gap-3 rounded-xl border border-success/20 bg-success/[0.07] px-4">
+                <div><p className="text-[9px] font-black uppercase tracking-[0.12em] text-[#9aa5b4]">AI match</p><p className="text-xl font-black text-success">{application.job.match}%</p></div>
+                <CheckCircle2 className="h-5 w-5 text-success/80" />
               </div>
-              <Button variant="ghost" disabled={!jobUrl} onClick={() => jobUrl && window.open(jobUrl, "_blank", "noopener,noreferrer")} className="h-10 rounded-md border border-border bg-white/[0.025] text-xs text-[#e6ebf3] hover:bg-white/[0.06] disabled:opacity-45">
+              <Button variant="ghost" disabled={!jobUrl} onClick={() => jobUrl && window.open(jobUrl, "_blank", "noopener,noreferrer")} className="h-11 rounded-xl border border-white/10 bg-white/[0.035] px-4 text-xs text-[#e6ebf3] hover:bg-white/[0.07] disabled:opacity-45">
                 <ExternalLink className="h-4 w-4" /> View vacancy
               </Button>
-              <Button onClick={() => jobUrl && window.open(jobUrl, "_blank", "noopener,noreferrer")} disabled={!jobUrl} className="h-10 rounded-md bg-accent px-4 text-xs font-bold text-white hover:bg-[#ff6a14] disabled:opacity-45">
-                Open application website <ChevronRight className="h-4 w-4" />
+              <Button onClick={() => jobUrl && window.open(jobUrl, "_blank", "noopener,noreferrer")} disabled={!jobUrl} className="h-11 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_30px_rgba(255,90,0,0.22)] hover:bg-[#ff6a14] disabled:opacity-45">
+                Apply on website <ChevronRight className="h-4 w-4" />
               </Button>
             </div>
           </div>
-          <div className="border-t border-border bg-white/[0.018] px-4 py-3 sm:px-5">
-            <div className="flex items-center justify-between gap-3 text-[11px] font-bold">
-              <span className="text-muted">Application readiness</span>
-              <span className="text-white">{readyCount}/{checklist.length} ready · {progress}%</span>
-            </div>
-            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.08]"><div className="h-full rounded-full bg-gradient-to-r from-accent to-[#ff9f1a] transition-all" style={{ width: `${progress}%` }} /></div>
+          <div className="grid border-t border-white/[0.07] bg-black/15 sm:grid-cols-2 xl:grid-cols-4">
+            {preparationSteps.map((step, index) => {
+              const StepIcon = step.icon;
+              return (
+                <div key={step.label} className={cn("flex min-w-0 items-center gap-3 border-white/[0.07] px-5 py-4 xl:border-r xl:last:border-r-0", index > 0 && "border-t sm:border-t-0", index === 2 && "sm:border-t xl:border-t-0")}>
+                  <span className={cn("grid h-8 w-8 shrink-0 place-items-center rounded-full border text-[11px] font-black", step.ready ? "border-success/25 bg-success/10 text-success" : "border-white/10 bg-white/[0.035] text-[#7f8998]")}>{step.ready ? <Check className="h-4 w-4" /> : <StepIcon className="h-3.5 w-3.5" />}</span>
+                  <div className="min-w-0"><p className={cn("truncate text-xs font-bold", step.ready ? "text-white" : "text-[#bbc3cf]")}>{index + 1}. {step.label}</p><p className="mt-0.5 truncate text-[10px] text-[#7f8998]">{step.detail}</p></div>
+                </div>
+              );
+            })}
           </div>
         </header>
 
-        <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,1fr)_350px]">
-          <main className="space-y-3">
-            <section className="panel overflow-hidden border-accent/25">
-              <div className="flex flex-col gap-3 border-b border-border bg-accent/[0.045] p-4 sm:flex-row sm:items-center sm:justify-between sm:p-5">
+        <div className="mt-5 grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_330px]">
+          <main className="min-w-0 space-y-5">
+            <section className="workspace-card overflow-hidden">
+              <div className="flex flex-col gap-4 border-b border-white/[0.07] px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
                 <div className="flex items-start gap-3">
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-accent/14 text-accent"><Bot className="h-5 w-5" /></span>
-                  <div>
-                    <p className="text-[10px] font-black uppercase tracking-[0.12em] text-accent">Step 1 · Improve before generating</p>
-                    <h2 className="mt-1 text-lg font-bold text-white">What to improve in your CV and application</h2>
-                    <p className="mt-1 text-xs leading-5 text-muted">This plan comes from the saved AI Match. The document generator follows it without analyzing the vacancy again.</p>
-                  </div>
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent"><Target className="h-[18px] w-[18px]" /></span>
+                  <div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">01 · Understand the role</p><h2 className="mt-1 text-lg font-bold tracking-[-0.01em] text-white">Your application angle</h2><p className="mt-1 text-xs leading-5 text-muted">Review the recommendation before generating any documents.</p></div>
                 </div>
-                <div className="flex shrink-0 flex-wrap items-end gap-2">
-                  <label className="grid gap-1">
-                    <span className="text-[9px] font-black uppercase tracking-[0.1em] text-muted">Application language</span>
-                    <select
-                      value={languageMode}
-                      onChange={(event) => {
-                        setLanguageMode(event.target.value as "auto" | "English" | "German");
-                        setIsResumeSourceManual(false);
-                        setIsCoverSourceManual(false);
-                        setSelectedResumeSourceId("");
-                        setSelectedCoverSourceId("");
-                      }}
-                      className="h-9 rounded-md border border-border bg-[#151c24] px-2.5 text-xs font-bold text-white outline-none focus:border-accent/60"
-                    >
-                      <option value="auto">Auto detect</option>
-                      <option value="English">English</option>
-                      <option value="German">German</option>
-                    </select>
-                  </label>
-                  {languageMode === "auto" && vacancyLanguage ? <span className="mb-0.5 rounded-md border border-[#2f80ed]/35 bg-[#2f80ed]/10 px-2 py-1.5 text-[10px] font-bold text-[#8cc7ff]">Detected: {vacancyLanguage}</span> : null}
-                </div>
+                <label className="flex shrink-0 items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.025] p-1.5 pl-3">
+                  <span className="text-[10px] font-bold text-muted">Language</span>
+                  <select value={languageMode} onChange={(event) => { setLanguageMode(event.target.value as "auto" | "English" | "German"); setIsResumeSourceManual(false); setIsCoverSourceManual(false); setSelectedResumeSourceId(""); setSelectedCoverSourceId(""); }} className="h-8 rounded-lg border border-white/[0.08] bg-[#151c24] px-2.5 text-[11px] font-bold text-white outline-none focus:border-accent/60">
+                    <option value="auto">Auto · {vacancyLanguage || "Detect"}</option><option value="English">English</option><option value="German">German</option>
+                  </select>
+                </label>
               </div>
-              <div className="p-4 sm:p-5">
-                {applicationGuide ? (
-                  <div className="space-y-3">
-                    <div className="grid gap-3 lg:grid-cols-[minmax(0,1.25fr)_minmax(260px,0.75fr)]">
-                      <article className="rounded-md border border-accent/25 bg-accent/[0.055] p-4">
-                        <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.1em] text-accent"><Target className="h-4 w-4" /> Core mission</div>
-                        <p className="mt-2 text-sm font-bold leading-6 text-white">{applicationGuide.roleMission || activeApplication.job.overview || `Succeed as ${activeApplication.job.title}.`}</p>
-                        <p className="mt-3 border-t border-accent/15 pt-3 text-xs leading-5 text-[#dfe4ec]"><span className="font-bold text-white">Positioning:</span> {applicationGuide.positioning}</p>
-                      </article>
-                      <article className="rounded-md border border-border bg-[#0c1219] p-4">
-                        <div className="flex items-center justify-between gap-2">
-                          <p className="text-[10px] font-black uppercase tracking-[0.1em] text-muted">Analysis readiness</p>
-                          <span className={cn("rounded border px-2 py-1 text-[9px] font-black uppercase", applicationGuide.readiness === "ready" ? "border-success/35 bg-success/10 text-success" : applicationGuide.readiness === "weak_fit" ? "border-red-400/35 bg-red-500/10 text-red-200" : "border-amber-400/35 bg-amber-400/10 text-amber-200")}>{(applicationGuide.readiness ?? "needs_confirmation").replace("_", " ")}</span>
-                        </div>
-                        <p className="mt-3 text-[11px] leading-5 text-muted">{applicationGuide.hiringPriorities?.length ? applicationGuide.hiringPriorities[0] : "Review the evidence map and confirm any uncertain requirements."}</p>
-                        <div className="mt-3 flex flex-wrap gap-1.5">
-                          {(applicationGuide.keywords ?? []).map((keyword) => <span key={keyword} className="rounded border border-border bg-white/[0.035] px-2 py-1 text-[10px] font-bold text-[#d8dee8]">{keyword}</span>)}
-                        </div>
-                      </article>
-                    </div>
 
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              {applicationGuide ? (
+                <div className="p-5 sm:p-6">
+                  <article className="relative overflow-hidden rounded-2xl border border-accent/20 bg-gradient-to-br from-accent/[0.09] via-white/[0.025] to-transparent p-5 sm:p-6">
+                    <div className="absolute -right-16 -top-20 h-52 w-52 rounded-full bg-accent/10 blur-3xl" />
+                    <div className="relative grid gap-5 lg:grid-cols-[minmax(0,1fr)_240px] lg:items-start">
+                      <div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-[#ff9a63]">Recommended narrative</p><p className="mt-3 text-base font-bold leading-7 text-white sm:text-lg">{applicationGuide.roleMission || activeApplication.job.overview || `Succeed as ${activeApplication.job.title}.`}</p><p className="mt-3 max-w-3xl text-sm leading-6 text-[#c6ced9]">{applicationGuide.positioning}</p></div>
+                      <div className="rounded-xl border border-white/[0.08] bg-black/20 p-4">
+                        <div className="flex items-center justify-between gap-2"><span className="text-[9px] font-black uppercase tracking-[0.1em] text-muted">Analysis status</span><span className={cn("rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-wide", applicationGuide.readiness === "ready" ? "border-success/30 bg-success/10 text-success" : applicationGuide.readiness === "weak_fit" ? "border-red-400/30 bg-red-500/10 text-red-200" : "border-amber-400/30 bg-amber-400/10 text-amber-200")}>{(applicationGuide.readiness ?? "needs_confirmation").replace("_", " ")}</span></div>
+                        <div className="mt-4 flex flex-wrap gap-1.5">{(applicationGuide.keywords ?? []).slice(0, 8).map((keyword) => <span key={keyword} className="rounded-md border border-white/[0.07] bg-white/[0.04] px-2 py-1 text-[9px] font-semibold text-[#cbd3df]">{keyword}</span>)}</div>
+                      </div>
+                    </div>
+                  </article>
+
+                  <div className="mt-5 flex gap-1 overflow-x-auto rounded-xl border border-white/[0.07] bg-black/20 p-1" role="tablist" aria-label="Application analysis">
+                    {[
+                      { id: "overview" as const, label: "Role overview" },
+                      { id: "evidence" as const, label: `Evidence map${applicationGuide.evidenceMatrix?.length ? ` · ${applicationGuide.evidenceMatrix.length}` : ""}` },
+                      { id: "strategy" as const, label: "Document strategy" },
+                    ].map((tab) => <button key={tab.id} type="button" role="tab" aria-selected={analysisTab === tab.id} onClick={() => setAnalysisTab(tab.id)} className={cn("min-w-fit flex-1 rounded-lg px-4 py-2.5 text-[11px] font-bold transition", analysisTab === tab.id ? "bg-white/[0.09] text-white shadow-sm" : "text-muted hover:bg-white/[0.04] hover:text-white")}>{tab.label}</button>)}
+                  </div>
+
+                  {analysisTab === "overview" ? (
+                    <div className="mt-4 grid gap-3 md:grid-cols-2">
                       {[
-                        { label: "Hiring priorities", values: applicationGuide.hiringPriorities, tone: "text-accent" },
+                        { label: "What they care about", values: applicationGuide.hiringPriorities, tone: "text-[#ff9a63]" },
                         { label: "Must have", values: applicationGuide.mustHave, tone: "text-white" },
-                        { label: "Nice to have", values: applicationGuide.niceToHave, tone: "text-[#8cc7ff]" },
-                        { label: "Hard constraints", values: applicationGuide.hardConstraints, tone: "text-amber-200" },
-                      ].map((group) => (
-                        <article key={group.label} className="rounded-md border border-border bg-white/[0.02] p-3">
-                          <h3 className={cn("text-[10px] font-black uppercase tracking-[0.1em]", group.tone)}>{group.label}</h3>
-                          {group.values?.length ? <ul className="mt-2 space-y-1.5 text-[11px] leading-4 text-muted">{group.values.map((value) => <li key={value} className="flex gap-2"><CircleDot className="mt-0.5 h-3 w-3 shrink-0" />{value}</li>)}</ul> : <p className="mt-2 text-[10px] text-muted">None identified</p>}
-                        </article>
-                      ))}
+                        { label: "Advantage", values: applicationGuide.niceToHave, tone: "text-[#8cc7ff]" },
+                        { label: "Constraints to verify", values: applicationGuide.hardConstraints, tone: "text-amber-200" },
+                      ].map((group) => <article key={group.label} className="rounded-xl border border-white/[0.07] bg-white/[0.018] p-4"><h3 className={cn("text-[10px] font-black uppercase tracking-[0.11em]", group.tone)}>{group.label}</h3>{group.values?.length ? <ul className="mt-3 space-y-2 text-xs leading-5 text-[#b8c1cd]">{group.values.map((value) => <li key={value} className="flex gap-2.5"><CircleDot className="mt-1 h-3 w-3 shrink-0 text-[#647080]" /><span>{value}</span></li>)}</ul> : <p className="mt-3 text-xs text-muted">Nothing critical identified.</p>}</article>)}
+                      <article className="rounded-xl border border-success/15 bg-success/[0.035] p-4 md:col-span-2"><h3 className="text-[10px] font-black uppercase tracking-[0.11em] text-success">Why your profile fits</h3><div className="mt-3 grid gap-2 sm:grid-cols-2">{(application.job.aiMatch?.reasons.length ? application.job.aiMatch.reasons : application.job.skills.slice(0, 4).map((skill) => `${skill} aligns with this role.`)).slice(0, 4).map((reason) => <div key={reason} className="flex gap-2 text-xs leading-5 text-[#c8d0da]"><Check className="mt-1 h-3.5 w-3.5 shrink-0 text-success" /><span>{reason}</span></div>)}</div></article>
                     </div>
+                  ) : null}
 
-                    {applicationGuide.evidenceMatrix?.length ? (
-                      <section className="overflow-hidden rounded-md border border-border bg-[#0c1219]">
-                        <div className="border-b border-border px-4 py-3"><h3 className="text-sm font-bold text-white">Requirement → candidate evidence</h3><p className="mt-1 text-[10px] text-muted">Every important vacancy signal is linked to proof, a transferable skill, a question, or an explicit gap.</p></div>
-                        <div className="divide-y divide-border">
-                          {applicationGuide.evidenceMatrix.map((item) => {
-                            const meta = evidenceStatusMeta(item.status);
-                            return <article key={`${item.requirement}-${item.status}`} className="grid gap-2 px-4 py-3 md:grid-cols-[minmax(150px,0.8fr)_minmax(0,1.2fr)_auto] md:items-start">
-                              <div><p className="text-xs font-bold text-white">{item.requirement}</p><p className="mt-1 text-[9px] font-black uppercase text-muted">{item.importance}</p></div>
-                              <div><p className="text-[11px] leading-4 text-[#d8dee8]">{item.evidence || "No verified evidence found in the profile."}</p>{item.action ? <p className="mt-1.5 text-[10px] leading-4 text-muted"><span className="font-bold text-white">Action:</span> {item.action}</p> : null}</div>
-                              <span className={cn("rounded border px-2 py-1 text-[9px] font-black uppercase", meta.className)}>{meta.label}</span>
-                            </article>;
-                          })}
-                        </div>
-                      </section>
-                    ) : null}
-
-                    {clarificationQuestions.length ? (
-                      <section className="rounded-md border border-amber-400/25 bg-amber-400/[0.045] p-4">
-                        <div className="flex items-start gap-3"><MessageSquareText className="mt-0.5 h-5 w-5 shrink-0 text-amber-200" /><div><h3 className="text-sm font-bold text-white">Confirm important missing evidence</h3><p className="mt-1 text-[10px] leading-4 text-muted">Answer with a concrete true example, or write “No”. Proposed claims are never used until you confirm them.</p></div></div>
-                        <div className="mt-3 grid gap-3">
-                          {clarificationQuestions.map((question) => (
-                            <label key={question.id} className="block rounded-md border border-border bg-[#0c1219] p-3">
-                              <span className="flex flex-wrap items-center gap-2"><span className="text-xs font-bold text-white">{question.question}</span>{question.blocking ? <span className="rounded border border-amber-400/30 px-1.5 py-0.5 text-[8px] font-black uppercase text-amber-200">Required</span> : null}</span>
-                              {question.why ? <span className="mt-1 block text-[10px] leading-4 text-muted">Why: {question.why}</span> : null}
-                              {question.claimIfConfirmed ? <span className="mt-1 block text-[10px] leading-4 text-[#b9c2cf]">If confirmed, AI may write: “{question.claimIfConfirmed}”</span> : null}
-                              <textarea value={clarificationAnswers[question.id] ?? ""} onChange={(event) => updateClarificationAnswer(question.id, event.target.value)} rows={2} placeholder="Describe what you actually did, tools/features used, and result — or write No" className="mt-2 w-full resize-y rounded-md border border-border bg-[#151c24] px-3 py-2 text-xs leading-5 text-white outline-none placeholder:text-muted/60 focus:border-amber-400/50" />
-                            </label>
-                          ))}
-                        </div>
-                      </section>
-                    ) : <div className="flex items-center gap-2 rounded-md border border-success/25 bg-success/[0.045] px-3 py-2 text-[11px] text-[#dfe4ec]"><CheckCircle2 className="h-4 w-4 text-success" /> No high-impact candidate confirmations are required.</div>}
-
-                    <div className="grid gap-3 lg:grid-cols-2">
-                      <article className="rounded-md border border-border bg-white/[0.02] p-4"><h3 className="text-sm font-bold text-white">CV strategy</h3><p className="mt-2 text-xs leading-5 text-[#dfe4ec]">{applicationGuide.resumePlan?.summaryFocus || applicationGuide.cvImprovements?.[0]}</p>{applicationGuide.resumePlan?.targetHeadline ? <p className="mt-2 text-[10px] text-muted"><span className="font-bold text-white">Target headline:</span> {applicationGuide.resumePlan.targetHeadline}</p> : null}<ul className="mt-2 space-y-1.5 text-[11px] leading-4 text-muted">{[...(applicationGuide.resumePlan?.evidenceToLead ?? []), ...(applicationGuide.resumePlan?.bulletStrategy ?? []), ...(applicationGuide.cvImprovements ?? [])].slice(0, 6).map((item) => <li key={item} className="flex gap-2"><Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />{item}</li>)}</ul></article>
-                      <article className="rounded-md border border-border bg-white/[0.02] p-4"><h3 className="text-sm font-bold text-white">Cover letter strategy</h3><p className="mt-2 text-xs leading-5 text-[#dfe4ec]">{applicationGuide.coverLetterPlan?.openingAngle || applicationGuide.coverLetterStrategy?.[0]}</p>{applicationGuide.coverLetterPlan?.motivationAngle ? <p className="mt-2 text-[10px] leading-4 text-muted"><span className="font-bold text-white">Motivation:</span> {applicationGuide.coverLetterPlan.motivationAngle}</p> : null}<ul className="mt-2 space-y-1.5 text-[11px] leading-4 text-muted">{[...(applicationGuide.coverLetterPlan?.proofPoints ?? []), ...(applicationGuide.coverLetterStrategy ?? [])].slice(0, 5).map((item) => <li key={item} className="flex gap-2"><Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />{item}</li>)}</ul></article>
+                  {analysisTab === "evidence" ? (
+                    <div className="mt-4 overflow-hidden rounded-xl border border-white/[0.07] bg-black/15">
+                      {applicationGuide.evidenceMatrix?.length ? <div className="divide-y divide-white/[0.07]">{applicationGuide.evidenceMatrix.map((item) => { const meta = evidenceStatusMeta(item.status); return <article key={`${item.requirement}-${item.status}`} className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(150px,0.7fr)_minmax(0,1.3fr)_auto] md:items-start"><div><p className="text-xs font-bold text-white">{item.requirement}</p><p className="mt-1 text-[8px] font-black uppercase tracking-wider text-muted">{item.importance}</p></div><div><p className="text-[11px] leading-5 text-[#c7cfda]">{item.evidence || "No verified evidence found in the profile."}</p>{item.action ? <p className="mt-1 text-[10px] leading-4 text-muted"><span className="font-bold text-[#dfe4ec]">Next:</span> {item.action}</p> : null}</div><span className={cn("w-fit rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-wide", meta.className)}>{meta.label}</span></article>; })}</div> : <p className="p-6 text-center text-xs text-muted">No evidence map is available for this vacancy.</p>}
                     </div>
+                  ) : null}
 
-                    {(applicationGuide.risks ?? []).length ? <div className="rounded-md border border-red-400/25 bg-red-500/[0.045] p-3"><h3 className="flex items-center gap-2 text-xs font-bold text-red-100"><AlertTriangle className="h-4 w-4" /> Do not claim without evidence</h3><ul className="mt-2 space-y-1 text-[10px] leading-4 text-red-100/80">{applicationGuide.risks.map((risk) => <li key={risk}>• {risk}</li>)}</ul></div> : null}
-                  </div>
-                ) : <div className="rounded-md border border-border bg-[#0c1219] py-10 text-center"><Sparkles className="mx-auto h-5 w-5 text-muted" /><p className="mt-2 text-[11px] text-muted">Run AI Match for this vacancy to create the evidence map and document plan.</p></div>}
-                <p className="mt-2 text-[10px] leading-4 text-muted">To refresh this plan, return to Jobs and use Rerun AI Match. That remains the single vacancy analysis.</p>
+                  {analysisTab === "strategy" ? (
+                    <div className="mt-4 space-y-3">
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <article className="rounded-xl border border-white/[0.07] bg-white/[0.018] p-5"><div className="flex items-center gap-2"><FileText className="h-4 w-4 text-accent" /><h3 className="text-sm font-bold text-white">CV direction</h3></div><p className="mt-3 text-xs leading-5 text-[#d0d6df]">{applicationGuide.resumePlan?.summaryFocus || applicationGuide.cvImprovements?.[0]}</p>{applicationGuide.resumePlan?.targetHeadline ? <p className="mt-3 rounded-lg bg-white/[0.035] px-3 py-2 text-[10px] leading-4 text-muted"><span className="font-bold text-white">Headline:</span> {applicationGuide.resumePlan.targetHeadline}</p> : null}<ul className="mt-3 space-y-2 text-[11px] leading-4 text-muted">{[...(applicationGuide.resumePlan?.evidenceToLead ?? []), ...(applicationGuide.resumePlan?.bulletStrategy ?? []), ...(applicationGuide.cvImprovements ?? [])].slice(0, 6).map((item) => <li key={item} className="flex gap-2"><Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />{item}</li>)}</ul></article>
+                        <article className="rounded-xl border border-white/[0.07] bg-white/[0.018] p-5"><div className="flex items-center gap-2"><Mail className="h-4 w-4 text-accent" /><h3 className="text-sm font-bold text-white">Cover letter direction</h3></div><p className="mt-3 text-xs leading-5 text-[#d0d6df]">{applicationGuide.coverLetterPlan?.openingAngle || applicationGuide.coverLetterStrategy?.[0]}</p>{applicationGuide.coverLetterPlan?.motivationAngle ? <p className="mt-3 rounded-lg bg-white/[0.035] px-3 py-2 text-[10px] leading-4 text-muted"><span className="font-bold text-white">Motivation:</span> {applicationGuide.coverLetterPlan.motivationAngle}</p> : null}<ul className="mt-3 space-y-2 text-[11px] leading-4 text-muted">{[...(applicationGuide.coverLetterPlan?.proofPoints ?? []), ...(applicationGuide.coverLetterStrategy ?? [])].slice(0, 5).map((item) => <li key={item} className="flex gap-2"><Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" />{item}</li>)}</ul></article>
+                      </div>
+                      {(applicationGuide.risks ?? []).length ? <div className="rounded-xl border border-red-400/20 bg-red-500/[0.045] p-4"><h3 className="flex items-center gap-2 text-xs font-bold text-red-100"><AlertTriangle className="h-4 w-4" /> Claims to avoid</h3><ul className="mt-2 grid gap-1 text-[10px] leading-4 text-red-100/75 sm:grid-cols-2">{applicationGuide.risks.map((risk) => <li key={risk}>• {risk}</li>)}</ul></div> : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : <div className="m-5 rounded-xl border border-white/[0.07] bg-black/15 py-12 text-center"><Sparkles className="mx-auto h-5 w-5 text-muted" /><p className="mt-2 text-xs text-muted">Run AI Match for this vacancy to create the application plan.</p></div>}
+            </section>
+
+            <section className={cn("workspace-card overflow-hidden", clarificationQuestions.length && (unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation) && "border-amber-300/20")}>
+              <div className="flex items-start gap-3 border-b border-white/[0.07] px-5 py-5 sm:px-6">
+                <span className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-xl", unansweredBlockingQuestions.length || hasOversizedConfirmation ? "bg-amber-400/10 text-amber-200" : "bg-success/10 text-success")}><MessageSquareText className="h-[18px] w-[18px]" /></span>
+                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">02 · Confirm your evidence</p>{hasOversizedConfirmation ? <span className="rounded-full border border-red-400/25 bg-red-500/10 px-2 py-0.5 text-[9px] font-black text-red-200">Shorten long answer</span> : unansweredBlockingQuestions.length ? <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black text-amber-200">{unansweredBlockingQuestions.length} required</span> : <span className="rounded-full border border-success/25 bg-success/10 px-2 py-0.5 text-[9px] font-black text-success">Complete</span>}</div><h2 className="mt-1 text-lg font-bold text-white">Keep every claim accurate</h2><p className="mt-1 text-xs leading-5 text-muted">Only confirmed facts can be used in the generated CV and cover letter.</p></div>
+              </div>
+              <div className="p-5 sm:p-6">
+                {clarificationQuestions.length ? <div className="grid gap-3">{clarificationQuestions.map((question, index) => {
+                  const answerValue = clarificationAnswers[question.id] ?? "";
+                  const answerLength = answerValue.trim().length;
+                  const isAnswered = Boolean(answerLength);
+                  const isOversized = answerLength > confirmationAnswerMaxChars;
+                  return <label key={question.id} className={cn("block rounded-xl border p-4 transition", isOversized ? "border-red-400/30 bg-red-500/[0.035]" : isAnswered ? "border-success/15 bg-success/[0.025]" : "border-white/[0.08] bg-black/15 focus-within:border-amber-400/35")}><span className="flex items-start gap-3"><span className={cn("grid h-6 w-6 shrink-0 place-items-center rounded-full border text-[10px] font-black", isAnswered && !isOversized ? "border-success/25 bg-success/10 text-success" : "border-white/10 text-muted")}>{isAnswered && !isOversized ? <Check className="h-3.5 w-3.5" /> : index + 1}</span><span className="min-w-0"><span className="flex flex-wrap items-center gap-2"><span className="text-xs font-bold leading-5 text-white">{question.question}</span>{question.blocking ? <span className="rounded-full bg-amber-400/10 px-2 py-0.5 text-[8px] font-black uppercase text-amber-200">Required</span> : null}</span>{question.why ? <span className="mt-1 block text-[10px] leading-4 text-muted">Why it matters: {question.why}</span> : null}</span></span><textarea value={answerValue} maxLength={confirmationAnswerMaxChars} onChange={(event) => updateClarificationAnswer(question.id, event.target.value)} rows={2} placeholder="Add a true, concrete example — or write No" className="mt-3 w-full resize-y rounded-xl border border-white/[0.08] bg-[#0b1118] px-3 py-2.5 text-xs leading-5 text-white outline-none placeholder:text-muted/55 focus:border-amber-400/40" /><span className={cn("mt-1.5 block text-right text-[9px]", isOversized ? "font-bold text-red-200" : "text-muted")}>{answerLength.toLocaleString()} / {confirmationAnswerMaxChars.toLocaleString()}</span></label>;
+                })}</div> : <div className="flex items-center gap-3 rounded-xl border border-success/15 bg-success/[0.035] px-4 py-3 text-xs text-[#dfe5ec]"><CheckCircle2 className="h-5 w-5 shrink-0 text-success" /><span>No additional confirmations are required. Your verified profile is enough to continue.</span></div>}
               </div>
             </section>
 
-            <section className="panel p-4 sm:p-5">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.12em] text-accent">Application pack</p>
-                  <h2 className="mt-1 text-lg font-bold text-white">Documents tailored to this vacancy</h2>
-                  <p className="mt-1 text-xs leading-5 text-muted">Choose DOCX originals, then AI changes their text without replacing the design.</p>
-                </div>
-                <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType) || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || unansweredBlockingQuestions.length > 0} className="h-10 shrink-0 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-4 text-xs font-bold text-white shadow-[0_10px_28px_rgba(255,90,0,0.2)] disabled:opacity-45">
-                  {isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-                  {isGeneratingPack ? "Generating pack…" : "Generate application pack"}
-                </Button>
+            <section className="workspace-card overflow-hidden">
+              <div className="flex flex-col gap-4 border-b border-white/[0.07] px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
+                <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent"><Sparkles className="h-[18px] w-[18px]" /></span><div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">03 · Build your application pack</p><h2 className="mt-1 text-lg font-bold text-white">Tailored documents</h2><p className="mt-1 text-xs leading-5 text-muted">Select your originals. Tasko rewrites the content and preserves the DOCX design.</p></div></div>
+                <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType) || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? "Generating pack…" : "Generate both documents"}</Button>
               </div>
-
-              {documentError ? <div className="mt-3 rounded-md border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-200">{documentError}</div> : null}
-              {effectiveLanguage && !resumeSources.some((source) => source.language === effectiveLanguage) ? <div className="mt-3 rounded-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs leading-5 text-amber-200">No {effectiveLanguage} CV DOCX is saved in Profile. Add one or choose another language.</div> : null}
-
-              <div className="mt-4 grid gap-3 lg:grid-cols-2">
-                <DocumentCard
-                  icon={FileText}
-                  label="Tailored CV"
-                  description="Rewrites existing text blocks while keeping the DOCX structure and design."
-                  document={latestResume}
-                  isGenerating={generationType === "tailored_resume"}
-                  onGenerate={() => generateDocument("tailored_resume")}
-                  canGenerate={Boolean(selectedResumeSourceId && applicationReview && unansweredBlockingQuestions.length === 0)}
-                  disabledLabel={!selectedResumeSourceId ? "Select DOCX" : !applicationReview ? "AI Match required" : "Answer required questions"}
-                  sourceControl={(
-                    <SourcePicker
-                      label="Source CV"
-                      sources={resumeSources}
-                      selectedId={selectedResumeSourceId}
-                      onChange={(sourceId) => {
-                        setSelectedResumeSourceId(sourceId);
-                        setIsResumeSourceManual(Boolean(sourceId));
-                      }}
-                      onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")}
-                    />
-                  )}
-                />
-                <DocumentCard
-                  icon={Mail}
-                  label="Cover letter"
-                  description="Tailors the letter inside the selected DOCX without replacing its layout."
-                  document={latestCoverLetter}
-                  isGenerating={generationType === "cover_letter"}
-                  onGenerate={() => generateDocument("cover_letter")}
-                  canGenerate={Boolean(selectedCoverSourceId && applicationReview && unansweredBlockingQuestions.length === 0)}
-                  disabledLabel={!selectedCoverSourceId ? "Select DOCX" : !applicationReview ? "AI Match required" : "Answer required questions"}
-                  sourceControl={(
-                    <SourcePicker
-                      label="Source cover letter"
-                      sources={coverSources}
-                      selectedId={selectedCoverSourceId}
-                      onChange={(sourceId) => {
-                        setSelectedCoverSourceId(sourceId);
-                        setIsCoverSourceManual(Boolean(sourceId));
-                      }}
-                      onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")}
-                    />
-                  )}
-                />
+              <div className="p-5 sm:p-6">
+                {documentError ? <div className="mb-4 rounded-xl border border-red-400/25 bg-red-500/[0.07] px-3 py-2.5 text-xs leading-5 text-red-200">{documentError}</div> : null}
+                {effectiveLanguage && !resumeSources.some((source) => source.language === effectiveLanguage) ? <div className="mb-4 rounded-xl border border-amber-400/25 bg-amber-400/[0.07] px-3 py-2.5 text-xs leading-5 text-amber-200">No {effectiveLanguage} CV DOCX is saved in Profile. Add one or choose another language.</div> : null}
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <DocumentCard icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isGenerating={generationType === "tailored_resume"} onGenerate={() => generateDocument("tailored_resume")} canGenerate={Boolean(selectedResumeSourceId && applicationReview && unansweredBlockingQuestions.length === 0 && !hasOversizedConfirmation)} disabledLabel={!selectedResumeSourceId ? "Select source first" : !applicationReview ? "AI Match required" : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
+                  <DocumentCard icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isGenerating={generationType === "cover_letter"} onGenerate={() => generateDocument("cover_letter")} canGenerate={Boolean(selectedCoverSourceId && applicationReview && unansweredBlockingQuestions.length === 0 && !hasOversizedConfirmation)} disabledLabel={!selectedCoverSourceId ? "Select source first" : !applicationReview ? "AI Match required" : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
+                </div>
               </div>
             </section>
 
-            <section className="panel p-4 sm:p-5">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-[10px] font-black uppercase tracking-[0.12em] text-accent">Final review</p>
-                  <h2 className="mt-1 text-base font-bold text-white">Submission checklist</h2>
-                </div>
-                {application.status === "draft" ? (
-                  <Button onClick={() => onMarkApplied(application.id)} className="h-9 rounded-md bg-success px-3 text-xs font-bold text-[#081006] hover:bg-[#6de046]"><Check className="h-4 w-4" /> Mark as applied</Button>
-                ) : <span className="inline-flex items-center gap-1.5 rounded-md border border-success/35 bg-success/10 px-2.5 py-1.5 text-[11px] font-bold text-success"><Check className="h-3.5 w-3.5" /> Application tracked</span>}
-              </div>
-              <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                {checklist.map((item) => (
-                  <div key={item.label} className="flex items-center gap-2.5 rounded-md border border-border bg-white/[0.025] px-3 py-2.5">
-                    <span className={cn("grid h-5 w-5 place-items-center rounded-full border", item.ready ? "border-success/40 bg-success/12 text-success" : "border-white/20 text-muted")}>
-                      {item.ready ? <Check className="h-3 w-3" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}
-                    </span>
-                    <span className={cn("text-xs font-semibold", item.ready ? "text-[#e4e9f0]" : "text-muted")}>{item.label}</span>
-                    <span className="ml-auto text-[9px] font-bold uppercase text-muted">{item.ready ? "Ready" : "Missing"}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
-
-            <section className="relative overflow-hidden rounded-lg border border-[#7c5cff]/30 bg-gradient-to-br from-[#17142a] via-[#111722] to-[#111821] p-4 sm:p-5">
-              <div className="absolute -right-12 -top-14 h-44 w-44 rounded-full bg-[#7c5cff]/12 blur-3xl" />
-              <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex gap-3">
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-[#9f7aea]/35 bg-[#9f7aea]/15 text-[#c4a7ff]"><Rocket className="h-5 w-5" /></span>
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2"><h2 className="text-base font-bold text-white">Auto Apply</h2><span className="rounded border border-[#9f7aea]/35 bg-[#9f7aea]/12 px-2 py-0.5 text-[9px] font-black uppercase tracking-[0.1em] text-[#c4a7ff]">Coming soon</span></div>
-                    <p className="mt-1 max-w-2xl text-xs leading-5 text-muted">AI will open the employer form, fill approved answers, upload these documents and pause before final submission.</p>
-                    <p className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-bold text-[#b8c0cc]"><ShieldCheck className="h-3.5 w-3.5 text-success" /> You will always review before anything is submitted.</p>
-                  </div>
-                </div>
-                <Button disabled className="h-10 shrink-0 rounded-md border border-[#9f7aea]/30 bg-[#9f7aea]/10 px-4 text-xs font-bold text-[#c4a7ff] opacity-75"><LockKeyhole className="h-4 w-4" /> Auto Apply</Button>
-              </div>
+            <section className="relative overflow-hidden rounded-2xl border border-[#7c5cff]/20 bg-gradient-to-br from-[#17142a] via-[#111722] to-[#111821] p-5 sm:p-6">
+              <div className="absolute -right-12 -top-14 h-44 w-44 rounded-full bg-[#7c5cff]/12 blur-3xl" /><div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[#9f7aea]/25 bg-[#9f7aea]/12 text-[#c4a7ff]"><Rocket className="h-5 w-5" /></span><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-sm font-bold text-white">Auto Apply</h2><span className="rounded-full border border-[#9f7aea]/25 bg-[#9f7aea]/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-wider text-[#c4a7ff]">Coming soon</span></div><p className="mt-1 max-w-2xl text-xs leading-5 text-muted">Tasko will fill the employer form with your approved answers and pause before submission.</p><p className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-bold text-[#b8c0cc]"><ShieldCheck className="h-3.5 w-3.5 text-success" /> You remain in control of the final submission.</p></div></div><Button disabled className="h-10 shrink-0 rounded-xl border border-[#9f7aea]/25 bg-[#9f7aea]/10 px-4 text-xs font-bold text-[#c4a7ff] opacity-70"><LockKeyhole className="h-4 w-4" /> Auto Apply</Button></div>
             </section>
           </main>
 
-          <aside className="space-y-3">
-            <section className="panel overflow-hidden">
-              <div className="border-b border-border p-4">
-                <div className="flex items-center gap-2.5"><span className="grid h-9 w-9 place-items-center rounded-md bg-accent/14 text-accent"><Bot className="h-4 w-4" /></span><div><h2 className="text-sm font-bold text-white">AI Application Coach</h2><p className="mt-0.5 text-[10px] text-muted">Ask follow-ups about the plan or vacancy</p></div></div>
-              </div>
-              <div className="p-4">
-                <div className="grid gap-2">
-                  {[
-                    "What should I emphasize in this application?",
-                    "Review the biggest risks before I apply.",
-                    "Suggest concise answers for likely application questions.",
-                  ].map((prompt) => (
-                    <button key={prompt} type="button" disabled={isLoadingAdvice} onClick={() => requestAdvice(prompt)} className={cn("rounded-md border p-2.5 text-left text-[11px] font-semibold leading-4 transition", advicePrompt === prompt ? "border-accent/45 bg-accent/10 text-white" : "border-border bg-white/[0.025] text-[#d8dee8] hover:border-accent/35 hover:bg-accent/[0.06]")}>{prompt}</button>
-                  ))}
-                </div>
-                <div className="job-scroll mt-3 max-h-[360px] min-h-[150px] overflow-y-auto rounded-md border border-border bg-[#0c1219] p-3">
-                  {isLoadingAdvice ? <div className="flex items-center gap-2 text-xs text-muted"><LoaderCircle className="h-4 w-4 animate-spin text-accent" /> Reviewing your question…</div> : advice ? <p className="whitespace-pre-wrap text-xs leading-5 text-[#dfe4ec]">{advice}</p> : <div className="py-6 text-center"><Sparkles className="mx-auto h-5 w-5 text-muted" /><p className="mt-2 text-[11px] leading-5 text-muted">The full improvement plan is above the document generator. Choose a question for more detail.</p></div>}
-                </div>
-                <Button variant="ghost" onClick={() => onOpenAssistant("Review this application and help me finish it.", application.id)} className="mt-3 h-9 w-full rounded-md border border-border bg-transparent text-xs text-[#e6ebf3] hover:bg-white/[0.06]">Continue in full Assistant <ChevronRight className="h-4 w-4" /></Button>
+          <aside className="space-y-4 xl:sticky xl:top-4">
+            <section className="workspace-card overflow-hidden">
+              <div className="border-b border-white/[0.07] p-5"><div className="flex items-end justify-between"><div><p className="text-[10px] font-black uppercase tracking-[0.13em] text-accent">Readiness</p><h2 className="mt-1 text-base font-bold text-white">Before you apply</h2></div><span className="text-2xl font-black text-white">{progress}<span className="text-sm text-muted">%</span></span></div><div className="mt-4 h-1.5 overflow-hidden rounded-full bg-white/[0.07]"><div className="h-full rounded-full bg-gradient-to-r from-accent to-[#ff9b55] transition-all" style={{ width: `${progress}%` }} /></div></div>
+              <div className="p-4"><div className="space-y-1">{checklist.map((item) => <div key={item.label} className="flex items-center gap-2.5 rounded-lg px-2 py-2"><span className={cn("grid h-5 w-5 place-items-center rounded-full border", item.ready ? "border-success/25 bg-success/10 text-success" : "border-white/10 text-[#687383]")}>{item.ready ? <Check className="h-3 w-3" /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}</span><span className={cn("text-[11px] font-semibold", item.ready ? "text-[#e0e5ec]" : "text-muted")}>{item.label}</span><span className="ml-auto text-[8px] font-black uppercase tracking-wide text-[#687383]">{item.ready ? "Ready" : "Missing"}</span></div>)}</div>
+                {application.status === "draft" ? <Button onClick={() => onMarkApplied(application.id)} className="mt-4 h-11 w-full rounded-xl bg-success text-xs font-black text-[#071006] hover:bg-[#6de046]"><Check className="h-4 w-4" /> Mark as applied</Button> : <div className="mt-4 flex h-11 items-center justify-center gap-2 rounded-xl border border-success/25 bg-success/10 text-xs font-bold text-success"><Check className="h-4 w-4" /> Application tracked</div>}
               </div>
             </section>
 
-            <section className="panel p-4">
-              <h2 className="text-sm font-bold text-white">Why you match</h2>
-              <div className="mt-3 space-y-2">
-                {(application.job.aiMatch?.reasons.length ? application.job.aiMatch.reasons : application.job.skills.slice(0, 4).map((skill) => `${skill} aligns with this role.`)).slice(0, 4).map((reason) => (
-                  <div key={reason} className="flex gap-2 text-[11px] leading-4 text-[#d8dee8]"><Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" /><span>{reason}</span></div>
-                ))}
+            <section className="workspace-card overflow-hidden">
+              <div className="flex items-center gap-3 border-b border-white/[0.07] p-4"><span className="grid h-9 w-9 place-items-center rounded-xl bg-accent/12 text-accent"><Bot className="h-4 w-4" /></span><div><h2 className="text-sm font-bold text-white">Application coach</h2><p className="mt-0.5 text-[10px] text-muted">Ask about this vacancy</p></div></div>
+              <div className="p-4"><div className="grid gap-2">{["What should I emphasize?", "What are the biggest risks?", "Help with application questions"].map((prompt) => <button key={prompt} type="button" disabled={isLoadingAdvice} onClick={() => requestAdvice(prompt)} className={cn("rounded-xl border px-3 py-2.5 text-left text-[11px] font-semibold leading-4 transition", advicePrompt === prompt ? "border-accent/35 bg-accent/10 text-white" : "border-white/[0.07] bg-white/[0.02] text-[#cbd3df] hover:border-accent/25 hover:bg-accent/[0.05]")}>{prompt}</button>)}</div>
+                {(isLoadingAdvice || advice) ? <div className="job-scroll mt-3 max-h-[300px] overflow-y-auto rounded-xl border border-white/[0.07] bg-black/20 p-3">{isLoadingAdvice ? <div className="flex items-center gap-2 text-xs text-muted"><LoaderCircle className="h-4 w-4 animate-spin text-accent" /> Reviewing…</div> : <p className="whitespace-pre-wrap text-[11px] leading-5 text-[#dfe4ec]">{advice}</p>}</div> : null}
+                <Button variant="ghost" onClick={() => onOpenAssistant("Review this application and help me finish it.", application.id)} className="mt-3 h-9 w-full rounded-xl border border-white/[0.07] bg-transparent text-[11px] text-[#e6ebf3] hover:bg-white/[0.05]">Open full Assistant <ChevronRight className="h-4 w-4" /></Button>
               </div>
             </section>
           </aside>
@@ -963,18 +863,18 @@ function DocumentCard({
 }) {
   const content = currentContent(document);
   return (
-    <article className="flex min-h-[360px] flex-col rounded-lg border border-border bg-white/[0.025] p-3.5">
+    <article className="flex flex-col rounded-2xl border border-white/[0.08] bg-black/15 p-4 transition hover:border-white/[0.12]">
       <div className="flex items-start gap-3">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-accent/12 text-accent"><Icon className="h-4 w-4" /></span>
-        <div className="min-w-0 flex-1"><div className="flex items-center justify-between gap-2"><h3 className="text-sm font-bold text-white">{label}</h3>{document ? <span className="inline-flex items-center gap-1 rounded border border-success/35 bg-success/10 px-1.5 py-0.5 text-[9px] font-bold text-success"><FileCheck2 className="h-3 w-3" /> Ready · v{document.currentVersion}</span> : <span className="rounded border border-border px-1.5 py-0.5 text-[9px] font-bold text-muted">Not generated</span>}</div><p className="mt-1 text-[10px] leading-4 text-muted">{description}</p></div>
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/[0.07] bg-white/[0.035] text-accent"><Icon className="h-[18px] w-[18px]" /></span>
+        <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-bold text-white">{label}</h3>{document ? <span className="inline-flex items-center gap-1 rounded-full border border-success/25 bg-success/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-success"><FileCheck2 className="h-3 w-3" /> Ready · v{document.currentVersion}</span> : <span className="rounded-full border border-white/[0.08] bg-white/[0.025] px-2 py-1 text-[8px] font-black uppercase tracking-wide text-muted">Not generated</span>}</div><p className="mt-1 text-[10px] leading-4 text-muted">{description}</p></div>
       </div>
       {sourceControl}
-      <div className="mt-3 min-h-[180px] flex-1 overflow-hidden rounded-md border border-border bg-[#f6f4ef] p-4 text-[#20242a] shadow-inner">
-        {isGenerating ? <div className="grid h-full min-h-[150px] place-items-center text-center"><div><LoaderCircle className="mx-auto h-5 w-5 animate-spin text-[#ff5a00]" /><p className="mt-2 text-[11px] font-semibold text-[#646b74]">Writing an evidence-based version…</p></div></div> : content ? <p className="line-clamp-[10] whitespace-pre-wrap font-serif text-[10px] leading-[1.55]">{content}</p> : <div className="grid h-full min-h-[150px] place-items-center text-center"><div><Icon className="mx-auto h-6 w-6 text-[#a4a8ad]" /><p className="mt-2 text-[11px] font-semibold text-[#767c84]">Your document preview will appear here.</p></div></div>}
+      <div className={cn("mt-3 min-h-[132px] overflow-hidden rounded-xl border p-4", content ? "border-white/[0.09] bg-[#f6f4ef] text-[#20242a] shadow-inner" : "border-dashed border-white/[0.1] bg-white/[0.015]")}>
+        {isGenerating ? <div className="grid min-h-[100px] place-items-center text-center"><div><LoaderCircle className="mx-auto h-5 w-5 animate-spin text-accent" /><p className="mt-2 text-[11px] font-semibold text-muted">Writing an evidence-based version…</p></div></div> : content ? <p className="line-clamp-[7] whitespace-pre-wrap font-serif text-[9px] leading-[1.55]">{content}</p> : <div className="grid min-h-[100px] place-items-center text-center"><div><Icon className="mx-auto h-5 w-5 text-[#606b79]" /><p className="mt-2 text-[10px] font-semibold text-[#7f8998]">Preview will appear after generation</p></div></div>}
       </div>
       <div className="mt-3 flex gap-2">
-        <Button type="button" disabled={isGenerating || !canGenerate} onClick={onGenerate} className="h-9 flex-1 rounded-md bg-accent px-3 text-[11px] font-bold text-white hover:bg-[#ff6a14] disabled:opacity-45">{isGenerating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : document ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}{isGenerating ? "Generating…" : !canGenerate ? disabledLabel : document ? "Regenerate" : "Generate"}</Button>
-        {document ? <a href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download`} download={documentFileName(document)} className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border px-3 text-[11px] font-bold text-[#e6ebf3] transition hover:bg-white/[0.06]"><Download className="h-3.5 w-3.5" /> DOCX</a> : null}
+        <Button type="button" disabled={isGenerating || !canGenerate} onClick={onGenerate} className="h-10 flex-1 rounded-xl bg-accent px-3 text-[11px] font-bold text-white hover:bg-[#ff6a14] disabled:opacity-40">{isGenerating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : document ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}{isGenerating ? "Generating…" : !canGenerate ? disabledLabel : document ? "Regenerate" : `Generate ${label}`}</Button>
+        {document ? <a href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download`} download={documentFileName(document)} className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-white/[0.09] px-3 text-[11px] font-bold text-[#e6ebf3] transition hover:bg-white/[0.05]"><Download className="h-3.5 w-3.5" /> DOCX</a> : null}
       </div>
     </article>
   );
@@ -994,11 +894,11 @@ function SourcePicker({
   onAttach: (file: File | undefined) => void;
 }) {
   return (
-    <div className="mt-3 rounded-md border border-border bg-black/10 p-2.5">
+    <div className="mt-4 rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-[10px] font-bold uppercase tracking-wide text-muted">{label}</p>
-        <label className="inline-flex cursor-pointer items-center gap-1 text-[10px] font-bold text-accent hover:text-white">
-          <Upload className="h-3.5 w-3.5" /> Attach for this application
+        <p className="text-[9px] font-black uppercase tracking-[0.1em] text-muted">{label}</p>
+        <label className="inline-flex cursor-pointer items-center gap-1 text-[9px] font-bold text-accent hover:text-white">
+          <Upload className="h-3.5 w-3.5" /> Upload DOCX
           <input
             type="file"
             accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -1010,11 +910,11 @@ function SourcePicker({
           />
         </label>
       </div>
-      <select value={selectedId} onChange={(event) => onChange(event.target.value)} className="mt-2 h-8 w-full rounded-md border border-border bg-[#151c24] px-2 text-[11px] font-semibold text-white outline-none focus:border-accent/60">
+      <select value={selectedId} onChange={(event) => onChange(event.target.value)} className="mt-2 h-9 w-full rounded-lg border border-white/[0.08] bg-[#111821] px-2.5 text-[10px] font-semibold text-white outline-none focus:border-accent/60">
         <option value="">Select DOCX source</option>
         {sources.map((source) => <option key={source.id} value={source.id}>{source.language ? `${source.language} · ` : ""}{source.title} · {source.file_name}</option>)}
       </select>
-      <p className="mt-2 text-[9px] leading-4 text-muted">{sources.length ? "The selected DOCX is copied and keeps its layout, styles, images, header and footer." : "No DOCX source in Profile yet. Add one there or attach it for this application."}</p>
+      <p className="mt-2 text-[9px] leading-4 text-muted">{sources.length ? "Layout, styles, images, header and footer stay intact." : "No DOCX found. Upload one here or add it to Profile."}</p>
     </div>
   );
 }
