@@ -1,5 +1,6 @@
 import base64
 import re
+from datetime import datetime
 from io import BytesIO
 from uuid import uuid4
 
@@ -25,6 +26,7 @@ from app.models.documents import (
     DocumentTemplatePayload,
     DocumentTemplateRecord,
     DocumentUpdateRequest,
+    DocumentVersionGenerationProvenanceRecord,
     DocumentVersionPayload,
     DocumentVersionRecord,
     utc_now,
@@ -90,23 +92,26 @@ def create_document(
                 created_at=now,
             )
         )
-        provenance_fields_present = (
-            request.generation_fingerprint is not None,
-            bool(request.generation_model and request.generation_model.strip()),
-            bool(request.input_versions),
+        has_provenance = validate_generation_provenance(
+            request.generation_fingerprint,
+            request.generation_model,
+            request.input_versions,
         )
-        if any(provenance_fields_present) and not all(provenance_fields_present):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="Generation fingerprint, model, and input versions must be provided together",
+        if has_provenance:
+            set_current_generation_provenance(
+                record,
+                request.generation_fingerprint or "",
+                request.generation_model or "",
+                request.input_versions,
+                now,
             )
-        if all(provenance_fields_present):
-            record.generation_provenance = DocumentGenerationProvenanceRecord(
-                document_id=document_id,
-                generation_fingerprint=request.generation_fingerprint or "",
-                generation_model=(request.generation_model or "").strip(),
-                input_versions=request.input_versions,
-                created_at=now,
+            append_version_generation_provenance(
+                record,
+                1,
+                request.generation_fingerprint or "",
+                request.generation_model or "",
+                request.input_versions,
+                now,
             )
         db.add(record)
         db.flush()
@@ -169,13 +174,39 @@ def update_document(
     try:
         record = require_document(db, document_id)
         fields = request.model_fields_set
+        has_provenance = validate_generation_provenance(
+            request.generation_fingerprint,
+            request.generation_model,
+            request.input_versions,
+        )
+        if (has_provenance or "template_id" in fields) and (
+            "content" not in fields or request.content is None
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Generation provenance and template require document content",
+            )
         if "title" in fields and request.title is not None:
             record.title = request.title.strip()
         if "job_id" in fields:
             record.job_id = request.job_id
         if "content" in fields and request.content is not None:
             current = current_version_record(record)
-            if current.content != request.content:
+            if current.content != request.content or has_provenance or "template_id" in fields:
+                now = utc_now()
+                current_provenance = record.generation_provenance
+                if current_provenance and not any(
+                    provenance.version == record.current_version
+                    for provenance in record.version_generation_provenance
+                ):
+                    append_version_generation_provenance(
+                        record,
+                        record.current_version,
+                        current_provenance.generation_fingerprint,
+                        current_provenance.generation_model,
+                        current_provenance.input_versions,
+                        now,
+                    )
                 next_version = record.current_version + 1
                 record.versions.append(
                     DocumentVersionRecord(
@@ -183,12 +214,21 @@ def update_document(
                         document_id=record.id,
                         version=next_version,
                         content=request.content,
-                        created_at=utc_now(),
+                        created_at=now,
                     )
                 )
                 current_file = document_file_record(db, record.id, record.current_version)
-                if current_file and current_file.template_id:
-                    template = require_template(db, current_file.template_id)
+                if "template_id" in fields:
+                    template_id = request.template_id
+                else:
+                    template_id = current_file.template_id if current_file else None
+                if template_id:
+                    template = require_template(db, template_id)
+                    if template.type != record.type:
+                        raise HTTPException(
+                            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                            detail="Document template type does not match document type",
+                        )
                     try:
                         rendered_content = build_document_from_template(
                             template_content=template.content,
@@ -207,8 +247,26 @@ def update_document(
                             version=next_version,
                             template_id=template.id,
                             content=rendered_content,
-                            created_at=utc_now(),
+                            created_at=now,
                         )
+                    )
+                if has_provenance:
+                    set_current_generation_provenance(
+                        record,
+                        request.generation_fingerprint or "",
+                        request.generation_model or "",
+                        request.input_versions,
+                        now,
+                    )
+                current_provenance = record.generation_provenance
+                if current_provenance:
+                    append_version_generation_provenance(
+                        record,
+                        next_version,
+                        current_provenance.generation_fingerprint,
+                        current_provenance.generation_model,
+                        current_provenance.input_versions,
+                        now,
                     )
                 record.current_version = next_version
         record.updated_at = utc_now()
@@ -239,6 +297,7 @@ def restore_document_version(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Document version not found",
             )
+        now = utc_now()
         next_version = record.current_version + 1
         record.versions.append(
             DocumentVersionRecord(
@@ -246,7 +305,7 @@ def restore_document_version(
                 document_id=record.id,
                 version=next_version,
                 content=source.content,
-                created_at=utc_now(),
+                created_at=now,
             )
         )
         source_file = document_file_record(db, record.id, source.version)
@@ -258,11 +317,37 @@ def restore_document_version(
                     version=next_version,
                     template_id=source_file.template_id,
                     content=source_file.content,
-                    created_at=utc_now(),
+                    created_at=now,
                 )
             )
+        source_provenance = next(
+            (
+                provenance
+                for provenance in record.version_generation_provenance
+                if provenance.version == source.version
+            ),
+            None,
+        )
+        if source_provenance:
+            set_current_generation_provenance(
+                record,
+                source_provenance.generation_fingerprint,
+                source_provenance.generation_model,
+                source_provenance.input_versions,
+                now,
+            )
+            append_version_generation_provenance(
+                record,
+                next_version,
+                source_provenance.generation_fingerprint,
+                source_provenance.generation_model,
+                source_provenance.input_versions,
+                now,
+            )
+        else:
+            record.generation_provenance = None
         record.current_version = next_version
-        record.updated_at = utc_now()
+        record.updated_at = now
         db.commit()
         return document_payload(require_document(db, document_id))
     except HTTPException:
@@ -461,6 +546,61 @@ def delete_document(document_id: str, db: Session = Depends(get_db)) -> None:
         raise database_unavailable(exc) from exc
 
 
+def validate_generation_provenance(
+    generation_fingerprint: str | None,
+    generation_model: str | None,
+    input_versions: dict[str, object],
+) -> bool:
+    fields_present = (
+        generation_fingerprint is not None,
+        bool(generation_model and generation_model.strip()),
+        bool(input_versions),
+    )
+    if any(fields_present) and not all(fields_present):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Generation fingerprint, model, and input versions must be provided together",
+        )
+    return all(fields_present)
+
+
+def set_current_generation_provenance(
+    record: DocumentRecord,
+    generation_fingerprint: str,
+    generation_model: str,
+    input_versions: dict[str, object],
+    created_at: datetime,
+) -> None:
+    provenance = record.generation_provenance
+    if provenance is None:
+        provenance = DocumentGenerationProvenanceRecord(document_id=record.id)
+        record.generation_provenance = provenance
+    provenance.generation_fingerprint = generation_fingerprint
+    provenance.generation_model = generation_model.strip()
+    provenance.input_versions = input_versions
+    provenance.created_at = created_at
+
+
+def append_version_generation_provenance(
+    record: DocumentRecord,
+    version: int,
+    generation_fingerprint: str,
+    generation_model: str,
+    input_versions: dict[str, object],
+    created_at: datetime,
+) -> None:
+    record.version_generation_provenance.append(
+        DocumentVersionGenerationProvenanceRecord(
+            document_id=record.id,
+            version=version,
+            generation_fingerprint=generation_fingerprint,
+            generation_model=generation_model.strip(),
+            input_versions=input_versions,
+            created_at=created_at,
+        )
+    )
+
+
 def require_document(db: Session, document_id: str) -> DocumentRecord:
     record = db.scalar(
         select(DocumentRecord)
@@ -469,6 +609,7 @@ def require_document(db: Session, document_id: str) -> DocumentRecord:
             selectinload(DocumentRecord.versions),
             selectinload(DocumentRecord.attachments),
             selectinload(DocumentRecord.generation_provenance),
+            selectinload(DocumentRecord.version_generation_provenance),
         )
     )
     if not record:

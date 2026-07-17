@@ -15,6 +15,7 @@ from app.models.applications import StoredApplicationRecord
 from app.models.documents import (
     DocumentAttachmentRecord,
     DocumentGenerationProvenanceRecord,
+    DocumentVersionGenerationProvenanceRecord,
     DocumentVersionRecord,
 )
 
@@ -69,7 +70,15 @@ def test_document_versions_download_and_application_attachments() -> None:
         document_id = created.json()["id"]
         updated = client.patch(
             f"/documents/{document_id}",
-            json={"content": "Dear Hiring Team,\n\nUpdated evidence-based letter."},
+            json={
+                "content": "Dear Hiring Team,\n\nUpdated evidence-based letter.",
+                "generationFingerprint": "b" * 64,
+                "generationModel": "openai/gpt-5.7",
+                "inputVersions": {
+                    "fingerprintVersion": "generation-fingerprint-v1",
+                    "vacancy": "vacancy-v2",
+                },
+            },
         )
         restored = client.post(
             f"/documents/{document_id}/restore",
@@ -90,6 +99,11 @@ def test_document_versions_download_and_application_attachments() -> None:
             provenance_count = db.scalar(
                 select(func.count()).select_from(DocumentGenerationProvenanceRecord)
             )
+            version_provenance_count = db.scalar(
+                select(func.count()).select_from(
+                    DocumentVersionGenerationProvenanceRecord
+                )
+            )
     finally:
         app.dependency_overrides.clear()
 
@@ -100,11 +114,18 @@ def test_document_versions_download_and_application_attachments() -> None:
     assert created.json()["generationModel"] == "openai/gpt-5.6-terra"
     assert created.json()["inputVersions"]["applicationGuide"] == "guide-v3"
     assert updated.status_code == 200
+    assert updated.json()["id"] == document_id
     assert updated.json()["currentVersion"] == 2
     assert len(updated.json()["versions"]) == 2
+    assert updated.json()["applicationIds"] == ["application-one"]
+    assert updated.json()["generationFingerprint"] == "b" * 64
+    assert updated.json()["generationModel"] == "openai/gpt-5.7"
     assert restored.status_code == 200
+    assert restored.json()["id"] == document_id
     assert restored.json()["currentVersion"] == 3
     assert restored.json()["versions"][-1]["content"].startswith("Dear Hiring Team")
+    assert restored.json()["applicationIds"] == ["application-one"]
+    assert restored.json()["generationFingerprint"] == "a" * 64
     assert listed.status_code == 200
     assert listed.json()[0]["jobId"] == "job-figma"
     assert listed.json()[0]["generationFingerprint"] == "a" * 64
@@ -121,6 +142,7 @@ def test_document_versions_download_and_application_attachments() -> None:
     assert version_count == 0
     assert attachment_count == 0
     assert provenance_count == 0
+    assert version_provenance_count == 0
 
 
 def test_document_attachment_requires_existing_application() -> None:

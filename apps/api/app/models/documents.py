@@ -41,6 +41,13 @@ class DocumentRecord(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    version_generation_provenance: Mapped[
+        list["DocumentVersionGenerationProvenanceRecord"]
+    ] = relationship(
+        back_populates="document",
+        cascade="all, delete-orphan",
+        order_by="DocumentVersionGenerationProvenanceRecord.version",
+    )
 
 
 class DocumentVersionRecord(Base):
@@ -97,6 +104,24 @@ class DocumentGenerationProvenanceRecord(Base):
     input_versions: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     document: Mapped[DocumentRecord] = relationship(back_populates="generation_provenance")
+
+
+class DocumentVersionGenerationProvenanceRecord(Base):
+    __tablename__ = "document_version_generation_provenance"
+
+    document_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    generation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    generation_model: Mapped[str] = mapped_column(String(160), nullable=False)
+    input_versions: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    document: Mapped[DocumentRecord] = relationship(
+        back_populates="version_generation_provenance"
+    )
 
 
 class DocumentTemplateRecord(Base):
@@ -200,6 +225,21 @@ class DocumentUpdateRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=240)
     content: str | None = Field(default=None, min_length=1, max_length=200_000)
     job_id: str | None = Field(default=None, max_length=160, alias="jobId")
+    template_id: str | None = Field(default=None, max_length=36, alias="templateId")
+    generation_fingerprint: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        pattern=r"^[a-f0-9]{64}$",
+        alias="generationFingerprint",
+    )
+    generation_model: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        alias="generationModel",
+    )
+    input_versions: dict[str, Any] = Field(default_factory=dict, alias="inputVersions")
 
     model_config = {"populate_by_name": True}
 

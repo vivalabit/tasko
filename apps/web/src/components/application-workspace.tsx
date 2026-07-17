@@ -224,9 +224,15 @@ function currentContent(document: GeneratedDocument | undefined) {
   return document.versions.find((version) => version.version === document.currentVersion)?.content ?? "";
 }
 
-function documentFileName(document: GeneratedDocument) {
+function documentFileName(document: GeneratedDocument, version = document.currentVersion) {
   const base = document.title.trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "") || "tasko-document";
-  return `${base}-v${document.currentVersion}.docx`;
+  return `${base}-v${version}.docx`;
+}
+
+function formatVersionTimestamp(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
 function generationFingerprintInputs(
@@ -403,6 +409,7 @@ export function ApplicationWorkspace({
   isAnalysisRefreshing,
 }: ApplicationWorkspaceProps) {
   const [documents, setDocuments] = useState<GeneratedDocument[]>([]);
+  const [documentsLoaded, setDocumentsLoaded] = useState(false);
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [selectedResumeSourceId, setSelectedResumeSourceId] = useState("");
   const [selectedCoverSourceId, setSelectedCoverSourceId] = useState("");
@@ -412,6 +419,7 @@ export function ApplicationWorkspace({
   const [temporarySources, setTemporarySources] = useState<ProfileSourceDocument[]>([]);
   const [generationType, setGenerationType] = useState<GeneratedDocument["type"] | "">("");
   const [isGeneratingPack, setIsGeneratingPack] = useState(false);
+  const [restoringVersionKey, setRestoringVersionKey] = useState("");
   const [currentGenerationFingerprints, setCurrentGenerationFingerprints] = useState<Partial<Record<GeneratedDocument["type"], string>>>({});
   const [documentError, setDocumentError] = useState("");
   const [candidateConfirmations, setCandidateConfirmations] = useState<Record<string, CandidateConfirmation>>({});
@@ -425,6 +433,8 @@ export function ApplicationWorkspace({
 
   useEffect(() => {
     if (!application) return;
+    setDocumentsLoaded(false);
+    setDocuments([]);
     const controller = new AbortController();
     Promise.all([
       fetch(`${apiBaseUrl}/documents?applicationId=${encodeURIComponent(application.id)}`, { signal: controller.signal }),
@@ -436,6 +446,7 @@ export function ApplicationWorkspace({
         const loadedTemplates = await templatesResponse.json() as DocumentTemplate[];
         setDocuments(loadedDocuments);
         setTemplates(loadedTemplates);
+        setDocumentsLoaded(true);
       })
       .catch((error) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -775,6 +786,7 @@ export function ApplicationWorkspace({
     setGenerationType(type);
     setDocumentError("");
     try {
+      if (!documentsLoaded) throw new Error("Document history is still loading");
       const isCoverLetter = type === "cover_letter";
       const selectedSourceId = isCoverLetter ? selectedCoverSourceId : selectedResumeSourceId;
       const selectedSource = profileSources.find((source) => source.id === selectedSourceId);
@@ -824,21 +836,29 @@ export function ApplicationWorkspace({
       const templateId = await ensureSourceTemplate(selectedSource, type);
 
       const title = `${isCoverLetter ? "Cover letter" : "Tailored CV"} · ${activeApplication.job.title} · ${activeApplication.job.company}`;
-      const response = await fetch(`${apiBaseUrl}/documents`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type,
-          title,
-          content,
-          jobId: activeApplication.job.id,
-          applicationId: activeApplication.id,
-          templateId,
-          generationFingerprint: provenance.generationFingerprint,
-          generationModel: assistantResult.model,
-          inputVersions: provenance.inputVersions,
-        }),
-      });
+      const existingDocument = isCoverLetter ? latestCoverLetter : latestResume;
+      const response = await fetch(
+        existingDocument
+          ? `${apiBaseUrl}/documents/${encodeURIComponent(existingDocument.id)}`
+          : `${apiBaseUrl}/documents`,
+        {
+          method: existingDocument ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            content,
+            templateId,
+            generationFingerprint: provenance.generationFingerprint,
+            generationModel: assistantResult.model,
+            inputVersions: provenance.inputVersions,
+            ...(existingDocument ? {} : {
+              type,
+              title,
+              jobId: activeApplication.job.id,
+              applicationId: activeApplication.id,
+            }),
+          }),
+        },
+      );
       if (!response.ok) throw new Error(await readApiError(response, "Document save failed"));
       const saved = await response.json() as GeneratedDocument;
       setDocuments((current) => [saved, ...current.filter((document) => document.id !== saved.id)]);
@@ -868,6 +888,40 @@ export function ApplicationWorkspace({
     const resumeReady = await generateDocument("tailored_resume");
     if (resumeReady) await generateDocument("cover_letter");
     setIsGeneratingPack(false);
+  }
+
+  async function restoreDocumentVersion(document: GeneratedDocument, version: number) {
+    const restoreKey = `${document.id}:${version}`;
+    setRestoringVersionKey(restoreKey);
+    setDocumentError("");
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/restore`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ version }),
+        },
+      );
+      if (!response.ok) throw new Error(await readApiError(response, "Document version could not be restored"));
+      const restored = await response.json() as GeneratedDocument;
+      setDocuments((current) => [
+        restored,
+        ...current.filter((currentDocument) => currentDocument.id !== restored.id),
+      ]);
+      onDocumentAttached(activeApplication.id, {
+        artifactId: restored.id,
+        title: restored.title,
+        fileName: documentFileName(restored),
+        fileType: docxContentType,
+        uploadedAt: restored.updatedAt,
+        dataUrl: `${apiBaseUrl}/documents/${encodeURIComponent(restored.id)}/download`,
+      });
+    } catch (error) {
+      setDocumentError(error instanceof Error ? error.message : "Document version could not be restored");
+    } finally {
+      setRestoringVersionKey("");
+    }
   }
 
   async function ensureSourceTemplate(source: ProfileSourceDocument, type: GeneratedDocument["type"]) {
@@ -1089,14 +1143,14 @@ export function ApplicationWorkspace({
             <section className="workspace-card overflow-hidden">
               <div className="flex flex-col gap-4 border-b border-white/[0.07] px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
                 <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent"><Sparkles className="h-[18px] w-[18px]" /></span><div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">03 · Build your application pack</p><h2 className="mt-1 text-lg font-bold text-white">Tailored documents</h2><p className="mt-1 text-xs leading-5 text-muted">Select your originals. Tasko rewrites the content and preserves the DOCX design.</p></div></div>
-                <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType) || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? "Generating pack…" : "Generate both documents"}</Button>
+                <Button onClick={generatePack} disabled={isGeneratingPack || Boolean(generationType) || !documentsLoaded || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? "Generating pack…" : "Generate both documents"}</Button>
               </div>
               <div className="p-5 sm:p-6">
                 {documentError ? <div className="mb-4 rounded-xl border border-red-400/25 bg-red-500/[0.07] px-3 py-2.5 text-xs leading-5 text-red-200">{documentError}</div> : null}
                 {effectiveLanguage && !resumeSources.some((source) => source.language === effectiveLanguage) ? <div className="mb-4 rounded-xl border border-amber-400/25 bg-amber-400/[0.07] px-3 py-2.5 text-xs leading-5 text-amber-200">No {effectiveLanguage} CV DOCX is saved in Profile. Add one or choose another language.</div> : null}
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <DocumentCard icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} onGenerate={() => generateDocument("tailored_resume")} canGenerate={Boolean(selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={!selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
-                  <DocumentCard icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} onGenerate={() => generateDocument("cover_letter")} canGenerate={Boolean(selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={!selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
+                  <DocumentCard icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} onGenerate={() => generateDocument("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} canGenerate={Boolean(documentsLoaded && selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={!documentsLoaded ? "Loading history…" : !selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
+                  <DocumentCard icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} onGenerate={() => generateDocument("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} canGenerate={Boolean(documentsLoaded && selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={!documentsLoaded ? "Loading history…" : !selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
                 </div>
               </div>
             </section>
@@ -1135,7 +1189,9 @@ function DocumentCard({
   document,
   isOutdated,
   isGenerating,
+  restoringVersionKey,
   onGenerate,
+  onRestore,
   canGenerate,
   disabledLabel,
   sourceControl,
@@ -1146,12 +1202,15 @@ function DocumentCard({
   document: GeneratedDocument | undefined;
   isOutdated: boolean;
   isGenerating: boolean;
+  restoringVersionKey: string;
   onGenerate: () => void;
+  onRestore: (version: number) => void;
   canGenerate: boolean;
   disabledLabel: string;
   sourceControl?: React.ReactNode;
 }) {
   const content = currentContent(document);
+  const isRestoringDocument = Boolean(document && restoringVersionKey.startsWith(`${document.id}:`));
   return (
     <article className="flex flex-col rounded-2xl border border-white/[0.08] bg-black/15 p-4 transition hover:border-white/[0.12]">
       <div className="flex items-start gap-3">
@@ -1163,9 +1222,33 @@ function DocumentCard({
         {isGenerating ? <div className="grid min-h-[100px] place-items-center text-center"><div><LoaderCircle className="mx-auto h-5 w-5 animate-spin text-accent" /><p className="mt-2 text-[11px] font-semibold text-muted">Writing an evidence-based version…</p></div></div> : content ? <p className="line-clamp-[7] whitespace-pre-wrap font-serif text-[9px] leading-[1.55]">{content}</p> : <div className="grid min-h-[100px] place-items-center text-center"><div><Icon className="mx-auto h-5 w-5 text-[#606b79]" /><p className="mt-2 text-[10px] font-semibold text-[#7f8998]">Preview will appear after generation</p></div></div>}
       </div>
       <div className="mt-3 flex gap-2">
-        <Button type="button" disabled={isGenerating || !canGenerate} onClick={onGenerate} className="h-10 flex-1 rounded-xl bg-accent px-3 text-[11px] font-bold text-white hover:bg-[#ff6a14] disabled:opacity-40">{isGenerating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : document ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}{isGenerating ? "Generating…" : !canGenerate ? disabledLabel : document ? "Regenerate" : `Generate ${label}`}</Button>
+        <Button type="button" disabled={isGenerating || isRestoringDocument || !canGenerate} onClick={onGenerate} className="h-10 flex-1 rounded-xl bg-accent px-3 text-[11px] font-bold text-white hover:bg-[#ff6a14] disabled:opacity-40">{isGenerating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : document ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}{isGenerating ? "Generating…" : !canGenerate ? disabledLabel : document ? "Regenerate" : `Generate ${label}`}</Button>
         {document ? <a href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download`} download={documentFileName(document)} className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-white/[0.09] px-3 text-[11px] font-bold text-[#e6ebf3] transition hover:bg-white/[0.05]"><Download className="h-3.5 w-3.5" /> DOCX</a> : null}
       </div>
+      {document ? (
+        <details className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.018]">
+          <summary className="cursor-pointer px-3 py-2.5 text-[10px] font-bold text-[#cbd3df] marker:text-muted">
+            Version history · {document.versions.length}
+          </summary>
+          <div className="border-t border-white/[0.07] px-3 py-2">
+            {[...document.versions].sort((left, right) => right.version - left.version).map((version) => {
+              const isCurrent = version.version === document.currentVersion;
+              const restoreKey = `${document.id}:${version.version}`;
+              const isRestoring = restoringVersionKey === restoreKey;
+              return (
+                <div key={version.id} className="flex items-center gap-2 border-b border-white/[0.05] py-2 last:border-0">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[10px] font-bold text-white">v{version.version}{isCurrent ? <span className="ml-1.5 text-[8px] uppercase tracking-wide text-success">Current</span> : null}</p>
+                    <p className="mt-0.5 text-[9px] text-muted">{formatVersionTimestamp(version.createdAt)}</p>
+                  </div>
+                  <a href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download?version=${version.version}`} download={documentFileName(document, version.version)} className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] px-2 text-[9px] font-bold text-[#dbe2eb] hover:bg-white/[0.05]"><Download className="h-3 w-3" /> DOCX</a>
+                  {!isCurrent ? <button type="button" disabled={Boolean(restoringVersionKey) || isGenerating} onClick={() => onRestore(version.version)} className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] px-2 text-[9px] font-bold text-[#dbe2eb] transition hover:border-accent/30 hover:text-white disabled:opacity-40">{isRestoring ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />} Restore</button> : null}
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      ) : null}
     </article>
   );
 }
