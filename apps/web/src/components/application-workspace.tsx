@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -243,6 +243,7 @@ type DocumentTemplate = {
 };
 
 type PendingAiGeneration = GeneratedDocument["type"] | "pack" | null;
+type CurrentGenerationFingerprints = Partial<Record<GeneratedDocument["type"], string>>;
 
 type ApplicationWorkspaceProps = {
   application: WorkspaceApplication | null;
@@ -296,6 +297,16 @@ function currentContent(document: GeneratedDocument | undefined) {
   } catch {
     return content;
   }
+}
+
+function generationFingerprintsEqual(
+  current: CurrentGenerationFingerprints,
+  next: CurrentGenerationFingerprints,
+) {
+  return (
+    current.tailored_resume === next.tailored_resume
+    && current.cover_letter === next.cover_letter
+  );
 }
 
 function documentFileName(document: GeneratedDocument, version = document.currentVersion) {
@@ -536,7 +547,13 @@ export function ApplicationWorkspace({
   const [packPersistenceMode, setPackPersistenceMode] = useState<PackPersistenceMode>("atomic");
   const [packProgress, setPackProgress] = useState<PackProgress | null>(null);
   const [restoringVersionKey, setRestoringVersionKey] = useState("");
-  const [currentGenerationFingerprints, setCurrentGenerationFingerprints] = useState<Partial<Record<GeneratedDocument["type"], string>>>({});
+  const [currentGenerationFingerprints, setCurrentGenerationFingerprints] = useState<CurrentGenerationFingerprints>({});
+  const currentGenerationFingerprintsRef = useRef<CurrentGenerationFingerprints>({});
+  const updateCurrentGenerationFingerprints = useCallback((next: CurrentGenerationFingerprints) => {
+    if (generationFingerprintsEqual(currentGenerationFingerprintsRef.current, next)) return;
+    currentGenerationFingerprintsRef.current = next;
+    setCurrentGenerationFingerprints(next);
+  }, []);
   const [documentError, setDocumentError] = useState("");
   const [candidateConfirmations, setCandidateConfirmations] = useState<Record<string, CandidateConfirmation>>({});
   const [confirmationsDirty, setConfirmationsDirty] = useState(false);
@@ -609,7 +626,7 @@ export function ApplicationWorkspace({
   const applicationGuide = hasCurrentAnalysis ? application?.job.aiMatch?.applicationGuide : undefined;
   const clarificationQuestions = useMemo(
     () => applicationGuide?.clarificationQuestions ?? [],
-    [applicationGuide],
+    [applicationGuide?.clarificationQuestions],
   );
   const unansweredBlockingQuestions = clarificationQuestions.filter(
     (question) => question.blocking && !isCandidateConfirmationComplete(question, candidateConfirmations[question.id]),
@@ -620,6 +637,13 @@ export function ApplicationWorkspace({
   );
   const vacancyLanguage = applicationGuide?.language || (application ? detectLegacyJobLanguage(application.job) : "");
   const effectiveLanguage = languageMode === "auto" ? vacancyLanguage : languageMode;
+  const fingerprintSources = useMemo<Array<[GeneratedDocument["type"], ProfileSourceDocument | undefined]>>(
+    () => [
+      ["tailored_resume", profileSources.find((source) => source.id === selectedResumeSourceId)],
+      ["cover_letter", profileSources.find((source) => source.id === selectedCoverSourceId)],
+    ],
+    [profileSources, selectedCoverSourceId, selectedResumeSourceId],
+  );
 
   useEffect(() => {
     setLanguageMode("auto");
@@ -769,16 +793,12 @@ export function ApplicationWorkspace({
   }, [coverSources, effectiveLanguage, isCoverSourceManual, isResumeSourceManual, resumeSources]);
 
   useEffect(() => {
-    setCurrentGenerationFingerprints({});
+    updateCurrentGenerationFingerprints({});
     if (!application || !applicationGuide || !effectiveLanguage) return;
 
     let cancelled = false;
     const timeoutId = window.setTimeout(async () => {
-      const selectedSources: Array<[GeneratedDocument["type"], ProfileSourceDocument | undefined]> = [
-        ["tailored_resume", profileSources.find((source) => source.id === selectedResumeSourceId)],
-        ["cover_letter", profileSources.find((source) => source.id === selectedCoverSourceId)],
-      ];
-      const fingerprints = await Promise.all(selectedSources.map(async ([type, source]) => {
+      const fingerprints = await Promise.all(fingerprintSources.map(async ([type, source]) => {
         if (!source) return [type, undefined] as const;
         const provenance = await createGenerationProvenance(generationFingerprintInputs(
           application,
@@ -792,9 +812,10 @@ export function ApplicationWorkspace({
         return [type, provenance.generationFingerprint] as const;
       }));
       if (!cancelled) {
-        setCurrentGenerationFingerprints(Object.fromEntries(
+        const nextFingerprints = Object.fromEntries(
           fingerprints.filter((entry): entry is [GeneratedDocument["type"], string] => Boolean(entry[1])),
-        ));
+        );
+        updateCurrentGenerationFingerprints(nextFingerprints);
       }
     }, 120);
 
@@ -802,7 +823,7 @@ export function ApplicationWorkspace({
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [application, applicationGuide, candidateConfirmations, clarificationQuestions, effectiveLanguage, profile, profileSources, selectedCoverSourceId, selectedResumeSourceId]);
+  }, [application, applicationGuide, candidateConfirmations, clarificationQuestions, effectiveLanguage, fingerprintSources, profile, updateCurrentGenerationFingerprints]);
 
   if (!application) {
     return (

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   createLegacyWorkspaceApplication,
   createV3WorkspaceApplication,
+  createWorkspaceApplicationWithoutGuide,
   installApplicationWorkspaceApiMock,
   renderApplicationWorkspace,
 } from "@/test/application-workspace-harness";
@@ -59,5 +60,22 @@ describe("ApplicationWorkspace", () => {
         screen.getAllByRole("button", { name: "Select source first" }),
       ).toHaveLength(2);
     });
+  });
+
+  it("does not loop fingerprint updates when the application guide is missing", async () => {
+    const fetchMock = installApplicationWorkspaceApiMock();
+
+    renderApplicationWorkspace(createWorkspaceApplicationWithoutGuide());
+
+    expect(
+      screen.getByText(/does not have a complete application guide v3/),
+    ).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(
+        screen.getAllByRole("button", { name: "Select source first" }),
+      ).toHaveLength(2);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

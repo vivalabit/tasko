@@ -136,6 +136,24 @@ export function createV3WorkspaceApplication(
   });
 }
 
+export function createWorkspaceApplicationWithoutGuide(
+  overrides: ApplicationOverrides = {},
+): WorkspaceApplication {
+  return createWorkspaceApplication({
+    ...overrides,
+    id: overrides.id ?? "application-without-guide",
+    job: {
+      ...overrides.job,
+      aiMatch: overrides.job?.aiMatch ?? {
+        version: "ai-match-v3",
+        reasons: ["Relevant product design experience"],
+        gaps: ["Application guide has not been generated"],
+        updatedAt: "2026-07-16T10:00:00.000Z",
+      },
+    },
+  });
+}
+
 function createWorkspaceApplication(
   overrides: ApplicationOverrides,
 ): WorkspaceApplication {
