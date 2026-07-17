@@ -5,7 +5,9 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: >-
+      sh -c "python -m app.core.openclaw_state &&
+      exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     environment:
       APP_ENV: docker
       DATABASE_URL: postgresql+psycopg://tasko:tasko@postgres:5432/tasko
@@ -28,6 +30,8 @@ services:
     volumes:
       - .:/workspace
       - ${HOME}/.openclaw:/root/.openclaw
+      - ${HOME}/.openclaw/state:/root/.openclaw-shared-state:ro
+      - openclaw-tasko-state:/root/.openclaw/state
       - ${HOME}/.openclaw/npm:${HOME}/.openclaw/npm
       - ${HOME}/.openclaw/workspace-tasko-assistant:${HOME}/.openclaw/workspace-tasko-assistant
       - ${HOME}/.openclaw/agents/tasko-assistant:${HOME}/.openclaw/agents/tasko-assistant
@@ -116,3 +120,4 @@ volumes:
   web-root-node-modules:
   web-app-node-modules:
   web-next-cache:
+  openclaw-tasko-state:

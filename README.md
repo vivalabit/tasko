@@ -26,6 +26,12 @@ selects `openai/gpt-5.6-terra`, disables reasoning, caps answers at 1,200
 tokens, and disables all external skills and tools. Tasko conversations and
 memory are therefore kept separate from the personal assistant.
 
+Docker Compose keeps OpenClaw's mutable SQLite plugin state in the dedicated
+`openclaw-tasko-state` volume. On its first start, the API seeds that volume
+from the host OpenClaw state and rebuilds the plugin-state index. This avoids
+sharing a WAL database between macOS and the Linux container while preserving
+the host configuration, Codex plugin registration, and provider credentials.
+
 GPT-5.6 Terra requires OpenClaw 2026.7.1 or newer.
 It runs through OpenClaw's native Codex harness while retaining the isolated
 Tasko workspace, memory, token cap, and disabled tool policy.
