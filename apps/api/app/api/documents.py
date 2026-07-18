@@ -67,6 +67,7 @@ def list_documents(
                 selectinload(DocumentRecord.attachments),
                 selectinload(DocumentRecord.generation_provenance),
                 selectinload(DocumentRecord.version_validations),
+                selectinload(DocumentRecord.files),
             )
             .order_by(DocumentRecord.updated_at.desc())
         )
@@ -1058,6 +1059,7 @@ def require_document(db: Session, document_id: str) -> DocumentRecord:
             selectinload(DocumentRecord.generation_provenance),
             selectinload(DocumentRecord.version_generation_provenance),
             selectinload(DocumentRecord.version_validations),
+            selectinload(DocumentRecord.files),
         )
     )
     if not record:
@@ -1128,6 +1130,7 @@ def current_version_record(record: DocumentRecord) -> DocumentVersionRecord:
 
 def document_payload(record: DocumentRecord) -> DocumentPayload:
     provenance = record.generation_provenance
+    rendered_versions = {file.version for file in record.files}
     validations_by_version = {
         validation.version: validation for validation in record.version_validations
     }
@@ -1149,6 +1152,7 @@ def document_payload(record: DocumentRecord) -> DocumentPayload:
                 version=version.version,
                 content=version.content,
                 created_at=version.created_at,
+                has_rendered_docx=version.version in rendered_versions,
                 factual_validation=(
                     validations_by_version[version.version].factual_report
                     if version.version in validations_by_version

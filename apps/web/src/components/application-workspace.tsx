@@ -45,6 +45,10 @@ import {
   type GenerationFingerprintInputs,
   type GenerationInputVersions,
 } from "@/lib/generation-provenance";
+import {
+  getDocumentVersionDownloadWarnings,
+  getGeneratedDocumentReadiness,
+} from "@/lib/document-readiness";
 import { cn } from "@/lib/utils";
 
 type WorkspaceJob = {
@@ -165,6 +169,7 @@ type GeneratedDocumentVersion = {
   version: number;
   content: string;
   createdAt: string;
+  hasRenderedDocx?: boolean;
   factualValidation: {
     status?: string;
     checkedChanges?: number;
@@ -312,6 +317,17 @@ function generationFingerprintsEqual(
 function documentFileName(document: GeneratedDocument, version = document.currentVersion) {
   const base = document.title.trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "") || "tasko-document";
   return `${base}-v${version}.docx`;
+}
+
+function confirmDocumentDownload(
+  event: React.MouseEvent<HTMLAnchorElement>,
+  warnings: string[],
+) {
+  if (warnings.length === 0) return;
+  const confirmed = window.confirm(
+    `Warning: ${warnings.join("; ")}. This file may not be ready to submit. Download anyway?`,
+  );
+  if (!confirmed) event.preventDefault();
 }
 
 function formatVersionTimestamp(value: string) {
@@ -850,8 +866,8 @@ export function ApplicationWorkspace({
     latestCoverLetter.generationFingerprint,
     currentGenerationFingerprints.cover_letter,
   ));
-  const resumeReady = Boolean(latestResume && !isResumeOutdated);
-  const coverLetterReady = Boolean(latestCoverLetter && !isCoverLetterOutdated);
+  const resumeReady = getGeneratedDocumentReadiness(latestResume, isResumeOutdated).ready;
+  const coverLetterReady = getGeneratedDocumentReadiness(latestCoverLetter, isCoverLetterOutdated).ready;
   const checklist = [
     { label: "Candidate profile", ready: profileReady },
     { label: "Vacancy analysis", ready: hasCurrentAnalysis },
@@ -1557,6 +1573,7 @@ function DocumentCard({
 }) {
   const content = currentContent(document);
   const currentVersion = document?.versions.find((version) => version.version === document.currentVersion);
+  const readiness = getGeneratedDocumentReadiness(document, isOutdated);
   const isValidated = currentVersion?.factualValidation.status === "passed"
     && currentVersion.visualValidation.status === "passed";
   const isRestoringDocument = Boolean(document && restoringVersionKey.startsWith(`${document.id}:`));
@@ -1564,7 +1581,7 @@ function DocumentCard({
     <article className="flex flex-col rounded-2xl border border-white/[0.08] bg-black/15 p-4 transition hover:border-white/[0.12]">
       <div className="flex items-start gap-3">
         <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/[0.07] bg-white/[0.035] text-accent"><Icon className="h-[18px] w-[18px]" /></span>
-        <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-bold text-white">{label}</h3>{document ? isOutdated ? <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-amber-200"><AlertTriangle className="h-3 w-3" /> Outdated · v{document.currentVersion}</span> : <span className="inline-flex items-center gap-1 rounded-full border border-success/25 bg-success/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-success"><FileCheck2 className="h-3 w-3" /> Ready · v{document.currentVersion}</span> : <span className="rounded-full border border-white/[0.08] bg-white/[0.025] px-2 py-1 text-[8px] font-black uppercase tracking-wide text-muted">Not generated</span>}</div><p className="mt-1 text-[10px] leading-4 text-muted">{description}</p></div>
+        <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-bold text-white">{label}</h3>{document ? readiness.ready ? <span className="inline-flex items-center gap-1 rounded-full border border-success/25 bg-success/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-success"><FileCheck2 className="h-3 w-3" /> Ready · v{document.currentVersion}</span> : <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-amber-200"><AlertTriangle className="h-3 w-3" /> {readiness.label} · v{document.currentVersion}</span> : <span className="rounded-full border border-white/[0.08] bg-white/[0.025] px-2 py-1 text-[8px] font-black uppercase tracking-wide text-muted">Not generated</span>}</div><p className="mt-1 text-[10px] leading-4 text-muted">{description}</p></div>
       </div>
       {sourceControl}
       <div className={cn("mt-3 min-h-[132px] overflow-hidden rounded-xl border p-4", content ? "border-white/[0.09] bg-[#f6f4ef] text-[#20242a] shadow-inner" : "border-dashed border-white/[0.1] bg-white/[0.015]")}>
@@ -1586,7 +1603,7 @@ function DocumentCard({
       ) : null}
       <div className="mt-3 flex gap-2">
         <Button type="button" disabled={isGenerating || isRestoringDocument || !canGenerate} onClick={onGenerate} className="h-10 flex-1 rounded-xl bg-accent px-3 text-[11px] font-bold text-white hover:bg-[#ff6a14] disabled:opacity-40">{isGenerating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : document ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}{isGenerating ? "Generating…" : !canGenerate ? disabledLabel : document ? "Regenerate" : `Generate ${label}`}</Button>
-        {document ? <a href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download`} download={documentFileName(document)} className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-white/[0.09] px-3 text-[11px] font-bold text-[#e6ebf3] transition hover:bg-white/[0.05]"><Download className="h-3.5 w-3.5" /> DOCX</a> : null}
+        {document ? <a href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download`} download={documentFileName(document)} onClick={(event) => confirmDocumentDownload(event, readiness.warnings)} className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-white/[0.09] px-3 text-[11px] font-bold text-[#e6ebf3] transition hover:bg-white/[0.05]"><Download className="h-3.5 w-3.5" /> DOCX</a> : null}
       </div>
       {document ? (
         <details className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.018]">
@@ -1598,13 +1615,14 @@ function DocumentCard({
               const isCurrent = version.version === document.currentVersion;
               const restoreKey = `${document.id}:${version.version}`;
               const isRestoring = restoringVersionKey === restoreKey;
+              const downloadWarnings = getDocumentVersionDownloadWarnings(version, isCurrent && isOutdated);
               return (
                 <div key={version.id} className="flex items-center gap-2 border-b border-white/[0.05] py-2 last:border-0">
                   <div className="min-w-0 flex-1">
                     <p className="text-[10px] font-bold text-white">v{version.version}{isCurrent ? <span className="ml-1.5 text-[8px] uppercase tracking-wide text-success">Current</span> : null}</p>
                     <p className="mt-0.5 text-[9px] text-muted">{formatVersionTimestamp(version.createdAt)}</p>
                   </div>
-                  <a href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download?version=${version.version}`} download={documentFileName(document, version.version)} className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] px-2 text-[9px] font-bold text-[#dbe2eb] hover:bg-white/[0.05]"><Download className="h-3 w-3" /> DOCX</a>
+                  <a href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download?version=${version.version}`} download={documentFileName(document, version.version)} onClick={(event) => confirmDocumentDownload(event, downloadWarnings)} className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] px-2 text-[9px] font-bold text-[#dbe2eb] hover:bg-white/[0.05]"><Download className="h-3 w-3" /> DOCX</a>
                   {!isCurrent ? <button type="button" disabled={Boolean(restoringVersionKey) || isGenerating} onClick={() => onRestore(version.version)} className="inline-flex h-7 items-center gap-1 rounded-md border border-white/[0.08] px-2 text-[9px] font-bold text-[#dbe2eb] transition hover:border-accent/30 hover:text-white disabled:opacity-40">{isRestoring ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />} Restore</button> : null}
                 </div>
               );

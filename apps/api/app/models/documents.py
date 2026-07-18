@@ -226,6 +226,7 @@ class DocumentVersionPayload(BaseModel):
     version: int
     content: str
     created_at: datetime = Field(alias="createdAt")
+    has_rendered_docx: bool = Field(default=False, alias="hasRenderedDocx")
     factual_validation: dict[str, Any] = Field(
         default_factory=dict,
         alias="factualValidation",

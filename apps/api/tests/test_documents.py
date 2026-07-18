@@ -115,6 +115,7 @@ def test_document_versions_download_and_application_attachments() -> None:
     assert created.json()["generationFingerprint"] == "a" * 64
     assert created.json()["generationModel"] == "openai/gpt-5.6-terra"
     assert created.json()["inputVersions"]["applicationGuide"] == "guide-v3"
+    assert created.json()["versions"][0]["hasRenderedDocx"] is False
     assert updated.status_code == 200
     assert updated.json()["id"] == document_id
     assert updated.json()["currentVersion"] == 2
@@ -471,6 +472,7 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
 
     assert uploaded.status_code == 201
     assert created.status_code == 201
+    assert created.json()["versions"][0]["hasRenderedDocx"] is True
     assert created.json()["versions"][0]["factualValidation"]["status"] == "passed"
     assert created.json()["versions"][0]["visualValidation"]["renderedPageCount"] == 1
     assert created.json()["versions"][0]["diff"] == expected_diff
