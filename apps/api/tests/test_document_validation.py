@@ -1,5 +1,7 @@
+import base64
 import json
 import shutil
+from collections import Counter
 from io import BytesIO
 
 import pytest
@@ -7,11 +9,13 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.opc.constants import RELATIONSHIP_TYPE
+from docx.shared import Inches
 
 from app.services.document_validation import (
     DocumentValidationError,
     build_authoritative_evidence_catalog,
     build_document_diff,
+    compare_rendered_geometry,
     detect_table_overflow,
     render_and_count_pages,
     validate_evidence_id_references,
@@ -26,6 +30,40 @@ def document_bytes(document: Document) -> bytes:
     output = BytesIO()
     document.save(output)
     return output.getvalue()
+
+
+def pdf_geometry(
+    *,
+    pages: int = 1,
+    text: str = "Portfolio Python",
+    link_target: str = "external:https://example.com/profile",
+) -> dict[str, object]:
+    return {
+        "pageCount": pages,
+        "pageSizes": [{"width": 600.0, "height": 800.0} for _ in range(pages)],
+        "textBoxes": [
+            {
+                "page": 1,
+                "x": 50.0,
+                "y": 50.0,
+                "width": 120.0,
+                "height": 14.0,
+                "text": text,
+            }
+        ],
+        "imageBoxes": [],
+        "linkBoxes": [
+            {
+                "page": 1,
+                "x": 50.0,
+                "y": 70.0,
+                "width": 80.0,
+                "height": 12.0,
+                "target": link_target,
+            }
+        ],
+        "text": text,
+    }
 
 
 def add_hyperlink(document: Document, target: str) -> None:
@@ -179,7 +217,7 @@ def test_generated_resume_validation_rejects_unknown_evidence_before_success(
     }
     monkeypatch.setattr(
         "app.services.document_validation.validate_visual_output",
-        lambda _source, _rendered: ({"status": "passed"}, []),
+        lambda _source, _rendered, **_kwargs: ({"status": "passed"}, []),
     )
 
     with pytest.raises(
@@ -247,21 +285,23 @@ def test_visual_validation_preserves_links_and_detects_table_overflow(monkeypatc
     rendered.tables[0].cell(0, 0).text = "Python"
 
     monkeypatch.setattr(
-        "app.services.document_validation.render_and_count_pages",
-        lambda _source, _rendered: (1, 1),
+        "app.services.document_validation.render_and_inspect_documents",
+        lambda _source, _rendered: (
+            pdf_geometry(text="Portfolio profile Python"),
+            pdf_geometry(text="Portfolio profile Python"),
+        ),
     )
     report, issues = validate_visual_output(document_bytes(source), document_bytes(rendered))
 
     assert issues == []
-    assert report == {
-        "status": "passed",
-        "sourcePageCount": 1,
-        "renderedPageCount": 1,
-        "linksPreserved": True,
-        "sourceLinkCount": 1,
-        "renderedLinkCount": 1,
-        "tableOverflow": False,
-    }
+    assert report["status"] == "passed"
+    assert report["sourcePageCount"] == report["renderedPageCount"] == 1
+    assert report["missingTextCount"] == 0
+    assert report["textGeometryChangedCount"] == 0
+    assert report["missingSourceImageCount"] == 0
+    assert report["linkLocationChangedCount"] == 0
+    assert report["linksPreserved"] is True
+    assert report["issues"] == []
 
     rendered.tables[0].cell(0, 0).text = "X" * 220
     overflow = detect_table_overflow(document_bytes(source), document_bytes(rendered))
@@ -274,7 +314,7 @@ def test_visual_validation_preserves_links_and_detects_table_overflow(monkeypatc
         document_bytes(source),
         document_bytes(removed_link),
     )
-    assert "hyperlinks changed or were removed" in removed_link_issues
+    assert any("hyperlink count or targets changed" in issue for issue in removed_link_issues)
 
     changed_links = Document()
     add_hyperlink(changed_links, "https://example.com/different")
@@ -283,25 +323,115 @@ def test_visual_validation_preserves_links_and_detects_table_overflow(monkeypatc
         document_bytes(source),
         document_bytes(changed_links),
     )
-    assert "hyperlinks changed or were removed" in link_issues
+    assert any("hyperlink count or targets changed" in issue for issue in link_issues)
 
 
-def test_visual_validation_allows_new_links_and_rejects_extra_pages(monkeypatch) -> None:
+def test_visual_validation_rejects_link_count_changes_and_page_changes(monkeypatch) -> None:
     source = Document()
     add_hyperlink(source, "https://example.com/original")
     rendered = Document(BytesIO(document_bytes(source)))
     add_hyperlink(rendered, "https://example.com/new")
     monkeypatch.setattr(
-        "app.services.document_validation.render_and_count_pages",
-        lambda _source, _rendered: (1, 2),
+        "app.services.document_validation.render_and_inspect_documents",
+        lambda _source, _rendered: (pdf_geometry(), pdf_geometry(pages=2)),
     )
 
     report, issues = validate_visual_output(document_bytes(source), document_bytes(rendered))
 
-    assert report["linksPreserved"] is True
+    assert report["linksPreserved"] is False
     assert report["sourceLinkCount"] == 1
     assert report["renderedLinkCount"] == 2
-    assert "page count increased from 1 to 2" in issues
+    assert report["addedLinkCount"] == 1
+    assert "page count changed from 1 to 2" in issues
+    assert any("hyperlink count or targets changed" in issue for issue in issues)
+
+    monkeypatch.setattr(
+        "app.services.document_validation.render_and_inspect_documents",
+        lambda _source, _rendered: (pdf_geometry(pages=2), pdf_geometry()),
+    )
+    _, fewer_page_issues = validate_visual_output(
+        document_bytes(source),
+        document_bytes(source),
+    )
+    assert "page count changed from 2 to 1" in fewer_page_issues
+
+
+def test_geometry_comparison_reports_missing_content_boxes_links_and_overflow() -> None:
+    source = pdf_geometry(text="Stable source")
+    source["imageBoxes"] = [
+        {
+            "page": 1,
+            "x": 40.0,
+            "y": 100.0,
+            "width": 80.0,
+            "height": 60.0,
+            "digest": "image-a",
+        }
+    ]
+    rendered = pdf_geometry(text="Stable source")
+    rendered["textBoxes"][0]["x"] = 300.0
+    rendered["textBoxes"].append(
+        {
+            "page": 1,
+            "x": 590.0,
+            "y": 200.0,
+            "width": 40.0,
+            "height": 14.0,
+            "text": "Outside",
+        }
+    )
+    rendered["text"] = "Stable source Outside"
+    rendered["imageBoxes"] = [
+        {
+            "page": 1,
+            "x": 300.0,
+            "y": 100.0,
+            "width": 80.0,
+            "height": 60.0,
+            "digest": "image-a",
+        }
+    ]
+    rendered["linkBoxes"][0]["x"] = 300.0
+
+    report, issues = compare_rendered_geometry(
+        source,
+        rendered,
+        expected_rendered_text="Stable source text Outside",
+        source_image_digests=Counter({"source-image": 1}),
+        rendered_image_digests=Counter(),
+    )
+
+    assert report["missingTextCount"] == 1
+    assert report["missingTextSamples"] == ["text"]
+    assert report["textGeometryChangedCount"] == 1
+    assert report["textOutsidePageCount"] == 1
+    assert report["missingSourceImageCount"] == 1
+    assert report["imageGeometryChangedCount"] == 1
+    assert report["linkLocationChangedCount"] == 1
+    assert any("rendered text tokens are missing" in issue for issue in issues)
+    assert any("text boxes extend outside" in issue for issue in issues)
+    assert any("source images are missing" in issue for issue in issues)
+    assert any("image boxes moved" in issue for issue in issues)
+    assert any("hyperlink bounding boxes moved" in issue for issue in issues)
+
+
+def test_geometry_comparison_allows_changed_text_but_rejects_unexpected_disappearance() -> None:
+    source = pdf_geometry(text="Protected header Original body")
+    rendered = pdf_geometry(text="Replacement body")
+
+    report, issues = compare_rendered_geometry(
+        source,
+        rendered,
+        expected_rendered_text="Replacement body",
+        allowed_removed_text="Original body",
+        source_image_digests=Counter(),
+        rendered_image_digests=Counter(),
+    )
+
+    assert report["missingTextCount"] == 0
+    assert report["disappearedSourceTextCount"] == 2
+    assert report["disappearedSourceTextSamples"] == ["protected", "header"]
+    assert any("source text tokens disappeared unexpectedly" in issue for issue in issues)
 
 
 @pytest.mark.skipif(
@@ -317,3 +447,47 @@ def test_docx_is_really_rendered_to_count_pages() -> None:
     rendered.add_paragraph("Second rendered page")
 
     assert render_and_count_pages(source_content, document_bytes(rendered)) == (1, 2)
+
+
+@pytest.mark.skipif(
+    not (shutil.which("soffice") or shutil.which("libreoffice")),
+    reason="LibreOffice is not installed",
+)
+def test_identical_docx_geometry_is_reported_without_regressions() -> None:
+    document = Document()
+    document.add_heading("Geometry fixture", level=1)
+    document.add_paragraph("Stable text inside the page.")
+    add_hyperlink(document, "https://example.com/profile")
+    document.add_picture(
+        BytesIO(
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
+                "x8AAusB9Y9ZJYQAAAAASUVORK5CYII="
+            )
+        ),
+        width=Inches(0.5),
+    )
+    document.add_table(rows=1, cols=1).cell(0, 0).text = "Stable table cell"
+    content = document_bytes(document)
+
+    report, issues = validate_visual_output(content, content)
+
+    assert issues == []
+    assert report["pageCountChanged"] is False
+    assert report["missingTextCount"] == 0
+    assert report["textGeometryChangedCount"] == 0
+    assert report["textOutsidePageCount"] == 0
+    assert report["sourceImageCount"] == report["renderedImageCount"] == 1
+    assert report["missingSourceImageCount"] == 0
+    assert report["missingPdfImageCount"] == 0
+    assert report["imageGeometryChangedCount"] == 0
+    assert report["linkLocationChangedCount"] == 0
+
+    rendered = Document(BytesIO(content))
+    rendered.paragraphs[1].text = "Updated text inside the page."
+    changed_report, changed_issues = validate_visual_output(
+        content,
+        document_bytes(rendered),
+    )
+    assert changed_issues == []
+    assert changed_report["missingTextCount"] == 0

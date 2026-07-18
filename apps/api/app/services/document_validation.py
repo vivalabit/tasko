@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import shutil
@@ -142,6 +143,9 @@ TITLE_PATTERN = re.compile(
     r"\s+(?:at|bei)\b",
 )
 RENDER_TIMEOUT_SECONDS = 90
+GEOMETRY_POSITION_TOLERANCE = 0.03
+GEOMETRY_SIZE_TOLERANCE = 0.25
+PAGE_BOUNDARY_TOLERANCE = 1.5
 
 
 class DocumentValidationError(ValueError):
@@ -188,7 +192,11 @@ def validate_generated_document(
         allowed_text = f"{source_text}\n{evidence_text}"
         factual_issues = validate_factual_changes(diff, allowed_text)
         checked_evidence_characters = len(allowed_text)
-    visual_report, visual_issues = validate_visual_output(template_content, rendered_content)
+    visual_report, visual_issues = validate_visual_output(
+        template_content,
+        rendered_content,
+        allowed_removed_text="\n".join(str(change["original"]) for change in diff),
+    )
     issues = [*factual_issues, *visual_issues]
     if issues:
         raise DocumentValidationError("Document validation failed: " + "; ".join(issues[:8]))
@@ -385,38 +393,72 @@ def validate_factual_change_against_text(
 def validate_visual_output(
     template_content: bytes,
     rendered_content: bytes,
+    *,
+    allowed_removed_text: str | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     issues: list[str] = []
     source_links = Counter(extract_hyperlink_targets(template_content))
     rendered_links = Counter(extract_hyperlink_targets(rendered_content))
-    links_preserved = all(
-        rendered_links[target] >= count for target, count in source_links.items()
-    )
-    if not links_preserved:
-        issues.append("hyperlinks changed or were removed")
+    missing_links = source_links - rendered_links
+    added_links = rendered_links - source_links
+    if missing_links or added_links:
+        issues.append(
+            "hyperlink count or targets changed "
+            f"({sum(source_links.values())} source, {sum(rendered_links.values())} rendered)"
+        )
 
     table_issues = detect_table_overflow(template_content, rendered_content)
     issues.extend(table_issues)
-    source_pages, rendered_pages = render_and_count_pages(template_content, rendered_content)
-    if rendered_pages > source_pages:
-        issues.append(
-            f"page count increased from {source_pages} to {rendered_pages}"
-        )
+    cell_overflow_count = sum(
+        "possible table overflow" in issue for issue in table_issues
+    )
+    source_geometry, rendered_geometry = render_and_inspect_documents(
+        template_content,
+        rendered_content,
+    )
+    geometry_report, geometry_issues = compare_rendered_geometry(
+        source_geometry,
+        rendered_geometry,
+        expected_rendered_text=extract_docx_rendered_text(rendered_content),
+        allowed_removed_text=allowed_removed_text,
+        source_image_digests=extract_docx_image_digests(template_content),
+        rendered_image_digests=extract_docx_image_digests(rendered_content),
+    )
+    issues.extend(geometry_issues)
+    links_preserved = (
+        not missing_links
+        and not added_links
+        and geometry_report["missingPdfLinkCount"] == 0
+        and geometry_report["addedPdfLinkCount"] == 0
+        and geometry_report["linkLocationChangedCount"] == 0
+    )
     return (
         {
             "status": "passed" if not issues else "failed",
-            "sourcePageCount": source_pages,
-            "renderedPageCount": rendered_pages,
+            **geometry_report,
             "linksPreserved": links_preserved,
             "sourceLinkCount": sum(source_links.values()),
             "renderedLinkCount": sum(rendered_links.values()),
+            "missingLinkCount": sum(missing_links.values()),
+            "addedLinkCount": sum(added_links.values()),
             "tableOverflow": bool(table_issues),
+            "cellOverflowCount": cell_overflow_count,
+            "tableStructureIssueCount": len(table_issues) - cell_overflow_count,
+            "issues": issues,
         },
         issues,
     )
 
 
 def render_and_count_pages(source: bytes, rendered: bytes) -> tuple[int, int]:
+    source_geometry, rendered_geometry = render_and_inspect_documents(source, rendered)
+    return source_geometry["pageCount"], rendered_geometry["pageCount"]
+
+
+def render_and_inspect_documents(
+    source: bytes,
+    rendered: bytes,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     executable = shutil.which("soffice") or shutil.which("libreoffice")
     if not executable:
         raise DocumentValidationError(
@@ -483,12 +525,16 @@ def render_and_count_pages(source: bytes, rendered: bytes) -> tuple[int, int]:
                 raise DocumentValidationError(
                     f"Document validation failed: DOCX rendering failed ({detail[:240]})"
                 )
-        source_pdf = workdir / "source.pdf"
-        rendered_pdf = workdir / "rendered.pdf"
         try:
-            source_pages = len(PdfReader(source_pdf).pages)
-            rendered_pages = len(PdfReader(rendered_pdf).pages)
+            source_geometry = inspect_pdf_geometry(workdir / "source.pdf", workdir, "source")
+            rendered_geometry = inspect_pdf_geometry(
+                workdir / "rendered.pdf",
+                workdir,
+                "rendered",
+            )
         except Exception as exc:
+            if isinstance(exc, DocumentValidationError):
+                raise
             raise DocumentValidationError(
                 "Document validation failed: rendered PDF could not be inspected"
             ) from exc
@@ -499,7 +545,14 @@ def render_and_count_pages(source: bytes, rendered: bytes) -> tuple[int, int]:
             )
         try:
             raster_result = subprocess.run(
-                [rasterizer, "-png", "-r", "96", str(rendered_pdf), str(workdir / "page")],
+                [
+                    rasterizer,
+                    "-png",
+                    "-r",
+                    "96",
+                    str(workdir / "rendered.pdf"),
+                    str(workdir / "page"),
+                ],
                 capture_output=True,
                 text=True,
                 timeout=RENDER_TIMEOUT_SECONDS,
@@ -513,7 +566,7 @@ def render_and_count_pages(source: bytes, rendered: bytes) -> tuple[int, int]:
         rendered_images = sorted(workdir.glob("page-*.png"))
         if (
             raster_result.returncode != 0
-            or len(rendered_images) != rendered_pages
+            or len(rendered_images) != rendered_geometry["pageCount"]
             or any(image.stat().st_size == 0 for image in rendered_images)
         ):
             detail = (
@@ -522,7 +575,424 @@ def render_and_count_pages(source: bytes, rendered: bytes) -> tuple[int, int]:
             raise DocumentValidationError(
                 f"Document validation failed: rendered page inspection failed ({detail[:240]})"
             )
-        return source_pages, rendered_pages
+        return source_geometry, rendered_geometry
+
+
+def inspect_pdf_geometry(
+    pdf_path: Path,
+    workdir: Path,
+    label: str,
+) -> dict[str, Any]:
+    converter = shutil.which("pdftohtml")
+    if not converter:
+        raise DocumentValidationError(
+            "Document validation failed: pdftohtml is required for geometry validation"
+        )
+    xml_path = workdir / f"{label}-geometry.xml"
+    try:
+        result = subprocess.run(
+            [
+                converter,
+                "-q",
+                "-xml",
+                "-hidden",
+                "-noroundcoord",
+                "-zoom",
+                "1.0",
+                str(pdf_path),
+                str(xml_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=RENDER_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DocumentValidationError(
+            "Document validation failed: PDF geometry inspection timed out"
+        ) from exc
+    if result.returncode != 0 or not xml_path.exists():
+        detail = (result.stderr or result.stdout or "missing geometry XML").strip()
+        raise DocumentValidationError(
+            f"Document validation failed: PDF geometry inspection failed ({detail[:240]})"
+        )
+
+    root = etree.parse(str(xml_path)).getroot()
+    page_sizes: list[dict[str, float]] = []
+    text_boxes: list[dict[str, Any]] = []
+    image_boxes: list[dict[str, Any]] = []
+    for page_index, page in enumerate(root.findall(".//page"), start=1):
+        page_top = xml_float(page.get("top"))
+        page_sizes.append(
+            {
+                "width": xml_float(page.get("width")),
+                "height": xml_float(page.get("height")),
+            }
+        )
+        for text_node in page.findall(".//text"):
+            text = "".join(text_node.itertext()).strip()
+            if not text:
+                continue
+            text_boxes.append(
+                geometry_box(text_node, page_index, page_top, text=text)
+            )
+        for image_node in page.findall(".//image"):
+            image_path = xml_path.parent / str(image_node.get("src") or "")
+            digest = ""
+            if image_path.is_file():
+                digest = hashlib.sha256(image_path.read_bytes()).hexdigest()
+            image_boxes.append(
+                geometry_box(image_node, page_index, page_top, digest=digest)
+            )
+
+    reader = PdfReader(pdf_path)
+    link_boxes = extract_pdf_link_boxes(reader)
+    return {
+        "pageCount": len(reader.pages),
+        "pageSizes": page_sizes,
+        "textBoxes": text_boxes,
+        "imageBoxes": image_boxes,
+        "linkBoxes": link_boxes,
+        "text": "\n".join(box["text"] for box in text_boxes),
+    }
+
+
+def xml_float(value: str | None) -> float:
+    try:
+        return float(value or 0)
+    except ValueError:
+        return 0.0
+
+
+def geometry_box(
+    node: Any,
+    page: int,
+    page_top: float,
+    **extra: Any,
+) -> dict[str, Any]:
+    return {
+        "page": page,
+        "x": xml_float(node.get("left")),
+        "y": xml_float(node.get("top")) - page_top,
+        "width": xml_float(node.get("width")),
+        "height": xml_float(node.get("height")),
+        **extra,
+    }
+
+
+def extract_pdf_link_boxes(reader: PdfReader) -> list[dict[str, Any]]:
+    boxes: list[dict[str, Any]] = []
+    for page_index, page in enumerate(reader.pages, start=1):
+        page_width = float(page.mediabox.width)
+        page_height = float(page.mediabox.height)
+        for annotation_reference in page.get("/Annots", []):
+            annotation = annotation_reference.get_object()
+            if str(annotation.get("/Subtype")) != "/Link":
+                continue
+            rectangle = annotation.get("/Rect")
+            if not rectangle or len(rectangle) != 4:
+                continue
+            action = annotation.get("/A")
+            action = action.get_object() if hasattr(action, "get_object") else action
+            uri = action.get("/URI") if isinstance(action, dict) else None
+            destination = annotation.get("/Dest")
+            if uri:
+                target = f"external:{uri}"
+            elif destination is not None:
+                target = f"internal:{destination}"
+            else:
+                target = "unknown"
+            left, bottom, right, top = (float(value) for value in rectangle)
+            boxes.append(
+                {
+                    "page": page_index,
+                    "x": min(left, right),
+                    "y": page_height - max(bottom, top),
+                    "width": abs(right - left),
+                    "height": abs(top - bottom),
+                    "target": target,
+                    "pageWidth": page_width,
+                    "pageHeight": page_height,
+                }
+            )
+    return boxes
+
+
+def compare_rendered_geometry(
+    source: dict[str, Any],
+    rendered: dict[str, Any],
+    *,
+    expected_rendered_text: str,
+    allowed_removed_text: str | None = None,
+    source_image_digests: Counter[str],
+    rendered_image_digests: Counter[str],
+) -> tuple[dict[str, Any], list[str]]:
+    issues: list[str] = []
+    source_pages = int(source["pageCount"])
+    rendered_pages = int(rendered["pageCount"])
+    page_count_changed = source_pages != rendered_pages
+    if page_count_changed:
+        issues.append(f"page count changed from {source_pages} to {rendered_pages}")
+
+    expected_tokens = Counter(geometry_text_tokens(expected_rendered_text))
+    rendered_tokens = Counter(geometry_text_tokens(str(rendered.get("text") or "")))
+    missing_text = expected_tokens - rendered_tokens
+    missing_text_count = sum(missing_text.values())
+    missing_text_samples = list(missing_text.elements())[:8]
+    if missing_text_count:
+        issues.append(
+            f"{missing_text_count} rendered text tokens are missing from PDF"
+            + (f": {', '.join(missing_text_samples)}" if missing_text_samples else "")
+        )
+
+    disappeared_source_text = Counter()
+    if allowed_removed_text is not None:
+        source_pdf_tokens = Counter(geometry_text_tokens(str(source.get("text") or "")))
+        disappeared_source_text = (
+            source_pdf_tokens - rendered_tokens
+        ) - Counter(geometry_text_tokens(allowed_removed_text))
+        disappeared_source_text_count = sum(disappeared_source_text.values())
+        if disappeared_source_text_count:
+            issues.append(
+                f"{disappeared_source_text_count} source text tokens disappeared unexpectedly"
+            )
+    else:
+        disappeared_source_text_count = 0
+
+    text_geometry_changed = count_changed_box_geometry(
+        source,
+        rendered,
+        source.get("textBoxes", []),
+        rendered.get("textBoxes", []),
+        key="text",
+    )
+    if text_geometry_changed:
+        issues.append(
+            f"{text_geometry_changed} unchanged text boxes moved or resized significantly"
+        )
+
+    source_text_outside = count_boxes_outside_pages(source, source.get("textBoxes", []))
+    rendered_text_outside = count_boxes_outside_pages(
+        rendered,
+        rendered.get("textBoxes", []),
+    )
+    if rendered_text_outside:
+        issues.append(
+            f"{rendered_text_outside} text boxes extend outside rendered page bounds"
+        )
+
+    missing_source_images = source_image_digests - rendered_image_digests
+    missing_source_image_count = sum(missing_source_images.values())
+    if missing_source_image_count:
+        issues.append(f"{missing_source_image_count} source images are missing")
+
+    source_pdf_images = Counter(
+        box["digest"] for box in source.get("imageBoxes", []) if box.get("digest")
+    )
+    rendered_pdf_images = Counter(
+        box["digest"] for box in rendered.get("imageBoxes", []) if box.get("digest")
+    )
+    missing_pdf_image_count = sum((source_pdf_images - rendered_pdf_images).values())
+    if not source_pdf_images and not rendered_pdf_images:
+        missing_pdf_image_count = max(
+            0,
+            len(source.get("imageBoxes", [])) - len(rendered.get("imageBoxes", [])),
+        )
+    if missing_pdf_image_count:
+        issues.append(f"{missing_pdf_image_count} source image boxes are missing from PDF")
+
+    image_geometry_changed = count_changed_box_geometry(
+        source,
+        rendered,
+        source.get("imageBoxes", []),
+        rendered.get("imageBoxes", []),
+        key="digest",
+    )
+    if image_geometry_changed:
+        issues.append(
+            f"{image_geometry_changed} image boxes moved or resized significantly"
+        )
+    source_images_outside = count_boxes_outside_pages(source, source.get("imageBoxes", []))
+    rendered_images_outside = count_boxes_outside_pages(
+        rendered,
+        rendered.get("imageBoxes", []),
+    )
+    if rendered_images_outside:
+        issues.append(
+            f"{rendered_images_outside} image boxes extend outside rendered page bounds"
+        )
+
+    source_pdf_links = Counter(box.get("target") for box in source.get("linkBoxes", []))
+    rendered_pdf_links = Counter(box.get("target") for box in rendered.get("linkBoxes", []))
+    missing_pdf_links = source_pdf_links - rendered_pdf_links
+    added_pdf_links = rendered_pdf_links - source_pdf_links
+    missing_pdf_link_count = sum(missing_pdf_links.values())
+    added_pdf_link_count = sum(added_pdf_links.values())
+    if missing_pdf_link_count or added_pdf_link_count:
+        issues.append(
+            "PDF hyperlink count or targets changed "
+            f"({sum(source_pdf_links.values())} source, "
+            f"{sum(rendered_pdf_links.values())} rendered)"
+        )
+    link_location_changed = count_changed_box_geometry(
+        source,
+        rendered,
+        source.get("linkBoxes", []),
+        rendered.get("linkBoxes", []),
+        key="target",
+    )
+    if link_location_changed:
+        issues.append(
+            f"{link_location_changed} hyperlink bounding boxes moved significantly"
+        )
+
+    return (
+        {
+            "sourcePageCount": source_pages,
+            "renderedPageCount": rendered_pages,
+            "pageCountChanged": page_count_changed,
+            "sourceTextBoxCount": len(source.get("textBoxes", [])),
+            "renderedTextBoxCount": len(rendered.get("textBoxes", [])),
+            "missingTextCount": missing_text_count,
+            "missingTextSamples": missing_text_samples,
+            "disappearedSourceTextCount": disappeared_source_text_count,
+            "disappearedSourceTextSamples": list(disappeared_source_text.elements())[:8],
+            "textGeometryChangedCount": text_geometry_changed,
+            "sourceTextOutsidePageCount": source_text_outside,
+            "textOutsidePageCount": rendered_text_outside,
+            "sourceImageCount": sum(source_image_digests.values()),
+            "renderedImageCount": sum(rendered_image_digests.values()),
+            "sourceImageBoxCount": len(source.get("imageBoxes", [])),
+            "renderedImageBoxCount": len(rendered.get("imageBoxes", [])),
+            "missingSourceImageCount": missing_source_image_count,
+            "missingPdfImageCount": missing_pdf_image_count,
+            "imageGeometryChangedCount": image_geometry_changed,
+            "sourceImageOutsidePageCount": source_images_outside,
+            "imageOutsidePageCount": rendered_images_outside,
+            "sourcePdfLinkCount": len(source.get("linkBoxes", [])),
+            "renderedPdfLinkCount": len(rendered.get("linkBoxes", [])),
+            "missingPdfLinkCount": missing_pdf_link_count,
+            "addedPdfLinkCount": added_pdf_link_count,
+            "linkLocationChangedCount": link_location_changed,
+        },
+        issues,
+    )
+
+
+def geometry_text_tokens(text: str) -> list[str]:
+    return re.findall(r"[^\W_]+", text.casefold())
+
+
+def count_changed_box_geometry(
+    source_document: dict[str, Any],
+    rendered_document: dict[str, Any],
+    source_boxes: list[dict[str, Any]],
+    rendered_boxes: list[dict[str, Any]],
+    *,
+    key: str,
+) -> int:
+    source_by_key: dict[str, list[dict[str, Any]]] = {}
+    rendered_by_key: dict[str, list[dict[str, Any]]] = {}
+    for box in source_boxes:
+        value = normalize_geometry_key(box.get(key))
+        if value:
+            source_by_key.setdefault(value, []).append(box)
+    for box in rendered_boxes:
+        value = normalize_geometry_key(box.get(key))
+        if value:
+            rendered_by_key.setdefault(value, []).append(box)
+
+    changed = 0
+    for value in source_by_key.keys() & rendered_by_key.keys():
+        source_matches = source_by_key[value]
+        rendered_matches = rendered_by_key[value]
+        for source_box, rendered_box in zip(source_matches, rendered_matches):
+            if box_geometry_changed(
+                source_document,
+                rendered_document,
+                source_box,
+                rendered_box,
+            ):
+                changed += 1
+    return changed
+
+
+def normalize_geometry_key(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return re.sub(r"\s+", " ", value.casefold()).strip()
+
+
+def box_geometry_changed(
+    source_document: dict[str, Any],
+    rendered_document: dict[str, Any],
+    source_box: dict[str, Any],
+    rendered_box: dict[str, Any],
+) -> bool:
+    if source_box["page"] != rendered_box["page"]:
+        return True
+    source_size = page_size(source_document, int(source_box["page"]))
+    rendered_size = page_size(rendered_document, int(rendered_box["page"]))
+    if not all((*source_size, *rendered_size)):
+        return True
+    source_center = (
+        (source_box["x"] + source_box["width"] / 2) / source_size[0],
+        (source_box["y"] + source_box["height"] / 2) / source_size[1],
+    )
+    rendered_center = (
+        (rendered_box["x"] + rendered_box["width"] / 2) / rendered_size[0],
+        (rendered_box["y"] + rendered_box["height"] / 2) / rendered_size[1],
+    )
+    moved = any(
+        abs(source_value - rendered_value) > GEOMETRY_POSITION_TOLERANCE
+        for source_value, rendered_value in zip(source_center, rendered_center, strict=True)
+    )
+    resized = any(
+        relative_change(float(source_box[dimension]), float(rendered_box[dimension]))
+        > GEOMETRY_SIZE_TOLERANCE
+        for dimension in ("width", "height")
+    )
+    return moved or resized
+
+
+def relative_change(source: float, rendered: float) -> float:
+    if source == rendered:
+        return 0.0
+    return abs(rendered - source) / max(abs(source), 1.0)
+
+
+def count_boxes_outside_pages(
+    document: dict[str, Any],
+    boxes: list[dict[str, Any]],
+) -> int:
+    outside = 0
+    for box in boxes:
+        width, height = page_size(document, int(box["page"]))
+        if (
+            box["x"] < -PAGE_BOUNDARY_TOLERANCE
+            or box["y"] < -PAGE_BOUNDARY_TOLERANCE
+            or box["x"] + box["width"] > width + PAGE_BOUNDARY_TOLERANCE
+            or box["y"] + box["height"] > height + PAGE_BOUNDARY_TOLERANCE
+        ):
+            outside += 1
+    return outside
+
+
+def page_size(document: dict[str, Any], page: int) -> tuple[float, float]:
+    sizes = document.get("pageSizes", [])
+    if not 1 <= page <= len(sizes):
+        return 0.0, 0.0
+    size = sizes[page - 1]
+    return float(size.get("width") or 0), float(size.get("height") or 0)
+
+
+def extract_docx_image_digests(content: bytes) -> Counter[str]:
+    with zipfile.ZipFile(BytesIO(content)) as archive:
+        return Counter(
+            hashlib.sha256(archive.read(name)).hexdigest()
+            for name in archive.namelist()
+            if name.startswith("word/media/") and not name.endswith("/")
+        )
 
 
 def detect_table_overflow(source: bytes, rendered: bytes) -> list[str]:
@@ -656,6 +1126,35 @@ def extract_hyperlink_targets(content: bytes) -> list[str]:
 
 def extract_docx_text(content: bytes) -> str:
     return "\n".join(extract_docx_paragraphs(content))
+
+
+def extract_docx_rendered_text(content: bytes) -> str:
+    document = Document(BytesIO(content))
+    texts = extract_container_text(document)
+    seen_parts: set[str] = set()
+    for section in document.sections:
+        for container in (
+            section.header,
+            section.first_page_header,
+            section.even_page_header,
+            section.footer,
+            section.first_page_footer,
+            section.even_page_footer,
+        ):
+            part_name = str(container.part.partname)
+            if part_name in seen_parts:
+                continue
+            seen_parts.add(part_name)
+            texts.extend(extract_container_text(container))
+    return "\n".join(texts)
+
+
+def extract_container_text(container: Any) -> list[str]:
+    texts = [paragraph.text.strip() for paragraph in container.paragraphs]
+    for table in container.tables:
+        for row in table.rows:
+            texts.extend(cell.text.strip() for cell in row.cells)
+    return [text for text in texts if text]
 
 
 def extract_docx_paragraphs(content: bytes) -> list[str]:

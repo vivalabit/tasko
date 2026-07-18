@@ -220,10 +220,35 @@ describe("ApplicationWorkspace", () => {
                 status: "passed",
                 sourcePageCount: 2,
                 renderedPageCount: 2,
+                pageCountChanged: false,
+                sourceTextBoxCount: 48,
+                renderedTextBoxCount: 49,
+                missingTextCount: 0,
+                disappearedSourceTextCount: 0,
+                textGeometryChangedCount: 0,
+                textOutsidePageCount: 0,
+                sourceImageCount: 2,
+                renderedImageCount: 2,
+                sourceImageBoxCount: 2,
+                renderedImageBoxCount: 2,
+                missingSourceImageCount: 0,
+                missingPdfImageCount: 0,
+                imageGeometryChangedCount: 0,
+                imageOutsidePageCount: 0,
                 sourceLinkCount: 3,
                 renderedLinkCount: 3,
+                missingLinkCount: 0,
+                addedLinkCount: 0,
+                sourcePdfLinkCount: 3,
+                renderedPdfLinkCount: 3,
+                missingPdfLinkCount: 0,
+                addedPdfLinkCount: 0,
+                linkLocationChangedCount: 0,
                 linksPreserved: true,
                 tableOverflow: false,
+                cellOverflowCount: 0,
+                tableStructureIssueCount: 0,
+                issues: [],
               },
               diff: [],
             },
@@ -236,12 +261,13 @@ describe("ApplicationWorkspace", () => {
 
     expect(await screen.findByText("CV change list")).toBeInTheDocument();
     expect(screen.getByText(/not a visual DOCX preview/)).toBeInTheDocument();
-    expect(screen.getByText("Automated structural checks")).toBeInTheDocument();
-    expect(screen.getByText("2 source → 2 rendered")).toBeInTheDocument();
-    expect(
-      screen.getByText("3 source → 3 rendered · preserved"),
-    ).toBeInTheDocument();
-    expect(screen.getByText("No overflow detected")).toBeInTheDocument();
+    expect(screen.getByText("Rendered geometry checks")).toBeInTheDocument();
+    expect(screen.getByText("2 source → 2 rendered · unchanged")).toBeInTheDocument();
+    expect(screen.getByText("48 → 49 boxes · 0 PDF missing · 0 source lost · 0 moved · 0 outside")).toBeInTheDocument();
+    expect(screen.getByText("DOCX 2 → 2 · PDF boxes 2 → 2 · 0 DOCX missing · 0 PDF missing · 0 moved · 0 outside")).toBeInTheDocument();
+    expect(screen.getByText("DOCX 3 → 3 · PDF 3 → 3 · 0 moved")).toBeInTheDocument();
+    expect(screen.getByText("0 page · 0 cell overflow · 0 table structure")).toBeInTheDocument();
+    expect(screen.getByText("0 issues")).toBeInTheDocument();
     expect(screen.queryByText(/Visual validation/i)).not.toBeInTheDocument();
   });
 

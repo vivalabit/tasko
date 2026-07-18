@@ -173,10 +173,37 @@ type GeneratedDocumentVersion = {
     status?: string;
     sourcePageCount?: number;
     renderedPageCount?: number;
+    pageCountChanged?: boolean;
     linksPreserved?: boolean;
     sourceLinkCount?: number;
     renderedLinkCount?: number;
+    missingLinkCount?: number;
+    addedLinkCount?: number;
+    sourcePdfLinkCount?: number;
+    renderedPdfLinkCount?: number;
+    missingPdfLinkCount?: number;
+    addedPdfLinkCount?: number;
+    linkLocationChangedCount?: number;
+    sourceTextBoxCount?: number;
+    renderedTextBoxCount?: number;
+    missingTextCount?: number;
+    missingTextSamples?: string[];
+    disappearedSourceTextCount?: number;
+    disappearedSourceTextSamples?: string[];
+    textGeometryChangedCount?: number;
+    textOutsidePageCount?: number;
+    sourceImageCount?: number;
+    renderedImageCount?: number;
+    sourceImageBoxCount?: number;
+    renderedImageBoxCount?: number;
+    missingSourceImageCount?: number;
+    missingPdfImageCount?: number;
+    imageGeometryChangedCount?: number;
+    imageOutsidePageCount?: number;
     tableOverflow?: boolean;
+    cellOverflowCount?: number;
+    tableStructureIssueCount?: number;
+    issues?: string[];
   };
   diff: Array<{
     blockId: string;
@@ -1422,15 +1449,23 @@ function DocumentCard({
   const readiness = getGeneratedDocumentReadiness(document, isOutdated);
   const factualValidationStatus = currentVersion?.factualValidation.status ?? "not run";
   const structuralChecksStatus = currentVersion?.visualValidation.status ?? "not run";
+  const visualValidation = currentVersion?.visualValidation;
   const pageCheck = currentVersion && (currentVersion.visualValidation.sourcePageCount !== undefined || currentVersion.visualValidation.renderedPageCount !== undefined)
-    ? `${currentVersion.visualValidation.sourcePageCount ?? "?"} source → ${currentVersion.visualValidation.renderedPageCount ?? "?"} rendered`
+    ? `${currentVersion.visualValidation.sourcePageCount ?? "?"} source → ${currentVersion.visualValidation.renderedPageCount ?? "?"} rendered · ${currentVersion.visualValidation.pageCountChanged === true ? "changed" : "unchanged"}`
     : "Not reported";
   const linkCheck = currentVersion && (currentVersion.visualValidation.sourceLinkCount !== undefined || currentVersion.visualValidation.renderedLinkCount !== undefined)
-    ? `${currentVersion.visualValidation.sourceLinkCount ?? "?"} source → ${currentVersion.visualValidation.renderedLinkCount ?? "?"} rendered${currentVersion.visualValidation.linksPreserved === true ? " · preserved" : currentVersion.visualValidation.linksPreserved === false ? " · changed" : ""}`
+    ? `DOCX ${currentVersion.visualValidation.sourceLinkCount ?? "?"} → ${currentVersion.visualValidation.renderedLinkCount ?? "?"} · PDF ${currentVersion.visualValidation.sourcePdfLinkCount ?? "?"} → ${currentVersion.visualValidation.renderedPdfLinkCount ?? "?"} · ${currentVersion.visualValidation.linkLocationChangedCount ?? 0} moved`
     : currentVersion?.visualValidation.linksPreserved === true ? "Preserved" : currentVersion?.visualValidation.linksPreserved === false ? "Changed" : "Not reported";
-  const tableCheck = currentVersion?.visualValidation.tableOverflow === false
-    ? "No overflow detected"
-    : currentVersion?.visualValidation.tableOverflow === true ? "Overflow detected" : "Not reported";
+  const textCheck = visualValidation?.renderedTextBoxCount !== undefined
+    ? `${visualValidation.sourceTextBoxCount ?? "?"} → ${visualValidation.renderedTextBoxCount} boxes · ${visualValidation.missingTextCount ?? 0} PDF missing · ${visualValidation.disappearedSourceTextCount ?? 0} source lost · ${visualValidation.textGeometryChangedCount ?? 0} moved · ${visualValidation.textOutsidePageCount ?? 0} outside`
+    : "Not reported";
+  const imageCheck = visualValidation?.renderedImageCount !== undefined
+    ? `DOCX ${visualValidation.sourceImageCount ?? "?"} → ${visualValidation.renderedImageCount} · PDF boxes ${visualValidation.sourceImageBoxCount ?? "?"} → ${visualValidation.renderedImageBoxCount ?? "?"} · ${visualValidation.missingSourceImageCount ?? 0} DOCX missing · ${visualValidation.missingPdfImageCount ?? 0} PDF missing · ${visualValidation.imageGeometryChangedCount ?? 0} moved · ${visualValidation.imageOutsidePageCount ?? 0} outside`
+    : "Not reported";
+  const overflowCheck = visualValidation?.cellOverflowCount !== undefined || visualValidation?.textOutsidePageCount !== undefined
+    ? `${visualValidation?.textOutsidePageCount ?? 0} page · ${visualValidation?.cellOverflowCount ?? 0} cell overflow · ${visualValidation?.tableStructureIssueCount ?? 0} table structure`
+    : currentVersion?.visualValidation.tableOverflow === false ? "No overflow detected" : currentVersion?.visualValidation.tableOverflow === true ? "Overflow detected" : "Not reported";
+  const geometryIssueCount = visualValidation?.issues?.length ?? (structuralChecksStatus === "passed" ? 0 : undefined);
   const isResume = documentType === "tailored_resume";
   const isRestoringDocument = Boolean(document && restoringVersionKey.startsWith(`${document.id}:`));
   return (
@@ -1450,12 +1485,17 @@ function DocumentCard({
           <div className="job-scroll max-h-72 space-y-2 overflow-y-auto border-t border-white/[0.07] p-3">
             <div className="flex flex-wrap gap-1.5"><span className={cn("rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-wide", factualValidationStatus === "passed" ? "border-success/25 bg-success/10 text-success" : "border-amber-400/25 bg-amber-400/10 text-amber-200")}>Factual validation · {factualValidationStatus}</span></div>
             <div className="rounded-lg border border-white/[0.07] bg-black/20 p-2.5">
-              <div className="flex items-center justify-between gap-2"><p className="text-[9px] font-black uppercase tracking-wide text-[#cbd3df]">Automated structural checks</p><span className={cn("rounded-full border px-2 py-0.5 text-[8px] font-black uppercase tracking-wide", structuralChecksStatus === "passed" ? "border-success/25 bg-success/10 text-success" : "border-amber-400/25 bg-amber-400/10 text-amber-200")}>{structuralChecksStatus}</span></div>
-              <div className="mt-2 grid gap-1.5 text-[9px] sm:grid-cols-3">
-                <span className="rounded-md border border-white/[0.07] bg-white/[0.025] px-2 py-1.5 text-muted"><strong className="text-[#dfe5ec]">Pages</strong><span className="mt-0.5 block">{pageCheck}</span></span>
+              <div className="flex items-center justify-between gap-2"><p className="text-[9px] font-black uppercase tracking-wide text-[#cbd3df]">Rendered geometry checks</p><span className={cn("rounded-full border px-2 py-0.5 text-[8px] font-black uppercase tracking-wide", structuralChecksStatus === "passed" ? "border-success/25 bg-success/10 text-success" : "border-amber-400/25 bg-amber-400/10 text-amber-200")}>{geometryIssueCount === undefined ? structuralChecksStatus : `${geometryIssueCount} issue${geometryIssueCount === 1 ? "" : "s"}`}</span></div>
+              <div className="mt-2 grid gap-1.5 text-[9px] sm:grid-cols-2">
+                <span className={cn("rounded-md border px-2 py-1.5", visualValidation?.pageCountChanged ? "border-red-400/20 bg-red-500/[0.04] text-red-200" : "border-white/[0.07] bg-white/[0.025] text-muted")}><strong className="text-[#dfe5ec]">Pages</strong><span className="mt-0.5 block">{pageCheck}</span></span>
+                <span className={cn("rounded-md border px-2 py-1.5", (visualValidation?.missingTextCount ?? 0) > 0 || (visualValidation?.disappearedSourceTextCount ?? 0) > 0 || (visualValidation?.textGeometryChangedCount ?? 0) > 0 ? "border-red-400/20 bg-red-500/[0.04] text-red-200" : "border-white/[0.07] bg-white/[0.025] text-muted")}><strong className="text-[#dfe5ec]">Text geometry</strong><span className="mt-0.5 block">{textCheck}</span></span>
+                <span className={cn("rounded-md border px-2 py-1.5", (visualValidation?.missingSourceImageCount ?? 0) > 0 || (visualValidation?.missingPdfImageCount ?? 0) > 0 || (visualValidation?.imageGeometryChangedCount ?? 0) > 0 ? "border-red-400/20 bg-red-500/[0.04] text-red-200" : "border-white/[0.07] bg-white/[0.025] text-muted")}><strong className="text-[#dfe5ec]">Images</strong><span className="mt-0.5 block">{imageCheck}</span></span>
                 <span className={cn("rounded-md border px-2 py-1.5", currentVersion.visualValidation.linksPreserved === false ? "border-red-400/20 bg-red-500/[0.04] text-red-200" : "border-white/[0.07] bg-white/[0.025] text-muted")}><strong className="text-[#dfe5ec]">Links</strong><span className="mt-0.5 block">{linkCheck}</span></span>
-                <span className={cn("rounded-md border px-2 py-1.5", currentVersion.visualValidation.tableOverflow === true ? "border-red-400/20 bg-red-500/[0.04] text-red-200" : "border-white/[0.07] bg-white/[0.025] text-muted")}><strong className="text-[#dfe5ec]">Tables</strong><span className="mt-0.5 block">{tableCheck}</span></span>
+                <span className={cn("rounded-md border px-2 py-1.5 sm:col-span-2", currentVersion.visualValidation.tableOverflow === true || (visualValidation?.textOutsidePageCount ?? 0) > 0 ? "border-red-400/20 bg-red-500/[0.04] text-red-200" : "border-white/[0.07] bg-white/[0.025] text-muted")}><strong className="text-[#dfe5ec]">Overflow</strong><span className="mt-0.5 block">{overflowCheck}</span></span>
               </div>
+              {visualValidation?.missingTextSamples?.length ? <p className="mt-2 text-[9px] text-red-200">Missing text: {visualValidation.missingTextSamples.join(", ")}</p> : null}
+              {visualValidation?.disappearedSourceTextSamples?.length ? <p className="mt-2 text-[9px] text-red-200">Unexpectedly removed: {visualValidation.disappearedSourceTextSamples.join(", ")}</p> : null}
+              {visualValidation?.issues?.length ? <ul className="mt-2 list-disc space-y-1 pl-4 text-[9px] text-red-200">{visualValidation.issues.map((issue) => <li key={issue}>{issue}</li>)}</ul> : null}
             </div>
             {currentVersion.diff.length ? currentVersion.diff.map((change) => <article key={`${change.blockId}-${change.spanId ?? change.original}`} className="rounded-lg border border-white/[0.07] bg-black/20 p-2.5"><div className="flex items-center justify-between gap-2"><p className="text-[9px] font-black uppercase tracking-wide text-[#9aa5b4]">{change.blockId}{change.spanId ? ` · ${change.spanId}` : ""} · {change.type}</p><p className="text-[8px] text-muted">{change.reason}</p></div><p className="mt-2 whitespace-pre-wrap text-[10px] leading-4 text-red-200/75 line-through">{change.original || "Added paragraph"}</p><p className="mt-1 whitespace-pre-wrap text-[10px] leading-4 text-emerald-200">{change.replacement || "Removed paragraph"}</p></article>) : <p className="rounded-lg border border-success/15 bg-success/[0.04] px-3 py-2 text-[9px] font-bold text-success">No factual content changes</p>}
           </div>
