@@ -1,5 +1,6 @@
 from collections.abc import Generator
 import base64
+from datetime import UTC, datetime
 from io import BytesIO
 import json
 import zipfile
@@ -12,7 +13,7 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base, get_db
 from app.main import app
-from app.models.applications import StoredApplicationRecord
+from app.models.applications import CandidateConfirmationRecord, StoredApplicationRecord
 from app.models.documents import (
     DocumentAttachmentRecord,
     DocumentGenerationProvenanceRecord,
@@ -20,6 +21,10 @@ from app.models.documents import (
     DocumentVersionRecord,
     DocumentVersionValidationRecord,
 )
+from app.models.jobs import JobMatchRecord, StoredJobRecord
+from app.models.profile import ProfileRecord
+from app.services.ai_match import MATCHER_VERSION
+from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
 
 
 def test_document_versions_download_and_application_attachments() -> None:
@@ -407,7 +412,10 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
         "reason": "Generated cover-letter paragraph update",
     }]
 
-    def fake_validation(**_kwargs):
+    captured_evidence = {}
+
+    def fake_validation(**kwargs):
+        captured_evidence.update(kwargs["evidence"])
         return {
             "factual": {"status": "passed", "checkedChanges": 1},
             "visual": {
@@ -421,6 +429,81 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
         }
 
     monkeypatch.setattr("app.api.documents.validate_generated_document", fake_validation)
+
+    with testing_session_local() as db:
+        db.add_all(
+            [
+                StoredApplicationRecord(
+                    id="application-validated",
+                    data={
+                        "id": "application-validated",
+                        "status": "draft",
+                        "job": {
+                            "id": "job-validated",
+                            "aiMatch": {
+                                "applicationGuide": {
+                                    "language": "Client-controlled language"
+                                }
+                            },
+                        },
+                    },
+                ),
+                StoredJobRecord(
+                    id="job-validated",
+                    data={
+                        "id": "job-validated",
+                        "title": "Backend Engineer",
+                        "company": "Acme",
+                    },
+                ),
+                ProfileRecord(
+                    id="default",
+                    data={
+                        "name": "Alex",
+                        "skills": "Python",
+                        "experience": "Built a Python service at Acme in 2023.",
+                    },
+                ),
+                JobMatchRecord(
+                    id="match-validated",
+                    job_id="job-validated",
+                    profile_hash="profile-validated",
+                    matcher_version=MATCHER_VERSION,
+                    cache_key="cache-validated",
+                    score=90,
+                    source="openclaw",
+                    confidence="high",
+                    breakdown={
+                        APPLICATION_GUIDE_STORAGE_KEY: {
+                            "language": "German",
+                            "clarificationQuestions": [
+                                {
+                                    "id": "production-python",
+                                    "requirement": "Production Python",
+                                    "question": "Have you used Python in production?",
+                                    "blocking": True,
+                                }
+                            ],
+                            "evidenceMatrix": [],
+                        }
+                    },
+                    reasons=[],
+                    gaps=[],
+                    heuristic_score=90,
+                    created_at=datetime.now(UTC),
+                ),
+                CandidateConfirmationRecord(
+                    application_id="application-validated",
+                    question_id="production-python",
+                    requirement="Client-controlled requirement",
+                    response="yes",
+                    example_text="Built a Python service at Acme in 2023.",
+                    blocking=False,
+                    updated_at=datetime.now(UTC),
+                ),
+            ]
+        )
+        db.commit()
 
     template = Document()
     template.add_paragraph("Dear Hiring Team,")
@@ -455,11 +538,13 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
                     "Built a Python service at Acme in 2023.\n\n"
                     "Kind regards,"
                 ),
+                "applicationId": "application-validated",
+                "jobId": "job-validated",
                 "templateId": uploaded.json()["id"],
                 "generationFingerprint": "f" * 64,
                 "generationModel": "test-model",
                 "inputVersions": {"profile": "profile-v1"},
-                "validationEvidence": {"profile": "Python, Acme, 2023"},
+                "validationEvidence": {"profile": "Client-controlled evidence"},
             },
         )
         listed = client.get("/documents")
@@ -478,3 +563,12 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
     assert created.json()["versions"][0]["diff"] == expected_diff
     assert listed.json()[0]["versions"][0]["diff"] == expected_diff
     assert validation_count == 1
+    assert captured_evidence["language"] == "German"
+    assert captured_evidence["profile"]["experience"].startswith("Built a Python service")
+    assert captured_evidence["confirmations"] == [
+        {
+            "requirement": "Production Python",
+            "response": "yes",
+            "exampleText": "Built a Python service at Acme in 2023.",
+        }
+    ]

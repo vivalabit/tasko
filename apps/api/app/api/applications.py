@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -19,27 +18,22 @@ from app.models.applications import (
     StoredApplicationRecord,
     StoredApplicationsRequest,
 )
-from app.models.jobs import JobMatchRecord
-from app.services.ai_match import MATCHER_VERSION
-from app.services.job_match_store import match_record_to_ai_match
+from app.services.generation_context import (
+    ClarificationQuestion,
+    GenerationContextError,
+    clarification_questions,
+    load_stored_application_guide,
+    meaningful_confirmation,
+)
 
 router = APIRouter()
 
 
-@dataclass(frozen=True)
-class StoredClarificationQuestion:
-    requirement: str
-    blocking: bool
-
-
 def is_meaningful_confirmation(confirmation: CandidateConfirmationInput) -> bool:
-    if confirmation.response == "no":
-        return True
-    normalized = " ".join(confirmation.example_text.split())
-    words = [
-        word for word in normalized.split(" ") if any(character.isalnum() for character in word)
-    ]
-    return len(normalized) >= 10 and len(words) >= 2
+    return meaningful_confirmation(
+        response=confirmation.response,
+        example_text=confirmation.example_text,
+    )
 
 
 def confirmation_payload(record: CandidateConfirmationRecord) -> CandidateConfirmationPayload:
@@ -56,7 +50,7 @@ def confirmation_payload(record: CandidateConfirmationRecord) -> CandidateConfir
 def stored_clarification_questions(
     db: Session,
     application: StoredApplicationRecord,
-) -> dict[str, StoredClarificationQuestion]:
+) -> dict[str, ClarificationQuestion]:
     application_data = application.data if isinstance(application.data, dict) else {}
     job = application_data.get("job")
     job_id = str(job.get("id") or "").strip() if isinstance(job, dict) else ""
@@ -66,51 +60,17 @@ def stored_clarification_questions(
             detail="Application does not reference a job with a stored ai-match-v3",
         )
 
-    match_record = (
-        db.query(JobMatchRecord)
-        .filter(
-            JobMatchRecord.job_id == job_id,
-            JobMatchRecord.matcher_version == MATCHER_VERSION,
-        )
-        .order_by(JobMatchRecord.created_at.desc(), JobMatchRecord.id.desc())
-        .first()
-    )
-    if not match_record:
+    try:
+        application_guide = load_stored_application_guide(db, job_id=job_id)
+        return {
+            question.question_id: question
+            for question in clarification_questions(application_guide)
+        }
+    except GenerationContextError as exc:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Stored ai-match-v3 is required before saving candidate confirmations",
-        )
-
-    application_guide = match_record_to_ai_match(match_record).get("applicationGuide")
-    if not isinstance(application_guide, dict):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Stored ai-match-v3 application guide is unavailable",
-        )
-
-    raw_questions = application_guide.get("clarificationQuestions")
-    questions: dict[str, StoredClarificationQuestion] = {}
-    if not isinstance(raw_questions, list):
-        return questions
-
-    for raw_question in raw_questions:
-        if not isinstance(raw_question, dict):
-            continue
-        question_id = str(raw_question.get("id") or "").strip()
-        question_text = str(raw_question.get("question") or "").strip()
-        requirement = str(raw_question.get("requirement") or question_text).strip()[:500]
-        if not question_id or not requirement:
-            continue
-        if question_id in questions:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="Stored ai-match-v3 contains duplicate clarification question IDs",
-            )
-        questions[question_id] = StoredClarificationQuestion(
-            requirement=requirement,
-            blocking=bool(raw_question.get("blocking")),
-        )
-    return questions
+            status_code=exc.status_code,
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("", response_model=list[StoredApplicationPayload])

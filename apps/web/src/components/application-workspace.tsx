@@ -219,7 +219,6 @@ type GeneratedDocumentDraft = {
   generationFingerprint: string;
   generationModel: string;
   inputVersions: GenerationInputVersions;
-  validationEvidence: ReturnType<typeof documentValidationEvidence>;
 };
 
 type DocumentPackResponse = {
@@ -371,38 +370,6 @@ function generationFingerprintInputs(
         exampleText: confirmation.exampleText.trim(),
       }];
     }),
-  };
-}
-
-function documentValidationEvidence(
-  profile: WorkspaceProfile,
-  applicationGuide: ApplicationGuide | undefined,
-  clarificationQuestions: NonNullable<ApplicationGuide["clarificationQuestions"]>,
-  candidateConfirmations: Record<string, CandidateConfirmation>,
-) {
-  return {
-    profile: {
-      name: profile.name,
-      currentRole: profile.current_role,
-      desiredRole: profile.desired_role,
-      location: profile.location,
-      headline: profile.headline,
-      skills: profile.skills,
-      experience: profile.experience,
-      education: profile.education,
-    },
-    confirmations: clarificationQuestions.flatMap((question) => {
-      const confirmation = candidateConfirmations[question.id];
-      if (!confirmation || confirmation.response === "no") return [];
-      return [{
-        requirement: question.requirement,
-        response: confirmation.response,
-        exampleText: confirmation.exampleText.trim(),
-      }];
-    }),
-    verifiedGuideEvidence: applicationGuide?.evidenceMatrix
-      ?.filter((item) => item.status === "verified" || item.status === "transferable")
-      .map((item) => ({ requirement: item.requirement, evidence: item.evidence })) ?? [],
   };
 }
 
@@ -1009,12 +976,6 @@ export function ApplicationWorkspace({
       generationFingerprint: provenance.generationFingerprint,
       generationModel: assistantResult.model,
       inputVersions: provenance.inputVersions,
-      validationEvidence: documentValidationEvidence(
-        profile,
-        applicationGuide,
-        clarificationQuestions,
-        candidateConfirmations,
-      ),
     };
   }
 
@@ -1059,10 +1020,10 @@ export function ApplicationWorkspace({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ...draft,
+            applicationId: activeApplication.id,
             ...(existingDocument ? { documentId: undefined } : {
               type,
               jobId: activeApplication.job.id,
-              applicationId: activeApplication.id,
             }),
           }),
         },
@@ -1154,7 +1115,7 @@ export function ApplicationWorkspace({
       updateProgress("resume_validation", "active", "Rendering and validating CV");
       const resumeValidationResponse = await postPackRequest(
         "/documents/packs/validate-resume",
-        resumeDraft,
+        { applicationId: activeApplication.id, resume: resumeDraft },
         "resume_validation",
         "CV validation failed",
       );

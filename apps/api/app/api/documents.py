@@ -26,6 +26,7 @@ from app.models.documents import (
     DocumentPackPayload,
     DocumentPackRequest,
     DocumentPackStagePayload,
+    DocumentPackValidationRequest,
     DocumentPackValidationPayload,
     DocumentPayload,
     DocumentRecord,
@@ -41,6 +42,11 @@ from app.models.documents import (
     utc_now,
 )
 from app.services.document_export import build_document_docx, build_document_from_template
+from app.services.generation_context import (
+    AuthoritativeGenerationContext,
+    GenerationContextError,
+    load_authoritative_generation_context,
+)
 from app.services.document_security import DocumentSecurityError, validate_docx_package
 from app.services.document_validation import (
     DocumentValidationError,
@@ -88,13 +94,32 @@ def create_document(
     db: Session = Depends(get_db),
 ) -> DocumentPayload:
     try:
+        has_provenance = validate_generation_provenance(
+            request.generation_fingerprint,
+            request.generation_model,
+            request.input_versions,
+        )
+        generation_context = None
+        if request.template_id and has_provenance:
+            if not request.application_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Application ID is required for generated documents",
+                )
+            generation_context = load_generation_context_or_http(
+                db,
+                application_id=request.application_id,
+                template_id=request.template_id,
+                document_type=request.type,
+                expected_job_id=request.job_id,
+            )
         now = utc_now()
         document_id = str(uuid4())
         record = DocumentRecord(
             id=document_id,
             type=request.type,
             title=request.title.strip(),
-            job_id=request.job_id,
+            job_id=generation_context.job_id if generation_context else request.job_id,
             current_version=1,
             created_at=now,
             updated_at=now,
@@ -107,11 +132,6 @@ def create_document(
                 content=request.content,
                 created_at=now,
             )
-        )
-        has_provenance = validate_generation_provenance(
-            request.generation_fingerprint,
-            request.generation_model,
-            request.input_versions,
         )
         if has_provenance:
             set_current_generation_provenance(
@@ -132,7 +152,11 @@ def create_document(
         db.add(record)
         db.flush()
         if request.template_id:
-            template = require_template(db, request.template_id)
+            template = (
+                generation_context.template
+                if generation_context
+                else require_template(db, request.template_id)
+            )
             if template.type != request.type:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -150,17 +174,13 @@ def create_document(
                     detail=str(exc),
                 ) from exc
             if has_provenance:
-                if not request.validation_evidence:
-                    raise HTTPException(
-                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                        detail="Validation evidence is required for generated documents",
-                    )
+                assert generation_context is not None
                 validation = validate_document_or_422(
                     template_content=template.content,
                     rendered_content=rendered_content,
                     generated_content=request.content,
                     document_type=request.type,
-                    evidence=request.validation_evidence,
+                    evidence=generation_context.validation_evidence(),
                 )
                 append_document_validation(record, 1, validation, now)
             db.add(
@@ -190,16 +210,19 @@ def create_document(
     response_model=DocumentPackValidationPayload,
 )
 def validate_resume_pack_item(
-    request: DocumentPackItemRequest,
+    request: DocumentPackValidationRequest,
     db: Session = Depends(get_db),
 ) -> DocumentPackValidationPayload:
     try:
         _, _, validation = prepare_pack_document(
             db,
-            request,
+            request.resume,
             "tailored_resume",
+            application_id=request.application_id,
         )
         return DocumentPackValidationPayload(validation=validation)
+    except GenerationContextError as exc:
+        raise pack_validation_failed("resume_validation", exc) from exc
     except DocumentValidationError as exc:
         raise pack_validation_failed("resume_validation", exc) from exc
     except ValueError as exc:
@@ -228,11 +251,6 @@ def create_document_pack(
                 )
             return document_pack_payload(existing_job, db)
 
-        if not db.get(StoredApplicationRecord, request.application_id):
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Application not found",
-            )
         if request.persistence_mode == "atomic" and request.cover_letter is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -244,15 +262,24 @@ def create_document_pack(
             )
 
         try:
-            resume_template, resume_content, resume_validation = prepare_pack_document(
+            resume_context, resume_content, resume_validation = prepare_pack_document(
                 db,
                 request.resume,
                 "tailored_resume",
+                application_id=request.application_id,
+                expected_job_id=request.job_id,
             )
-        except (DocumentValidationError, ValueError) as exc:
+        except (DocumentValidationError, GenerationContextError, ValueError) as exc:
             raise pack_validation_failed("resume_validation", exc) from exc
 
-        cover_prepared: tuple[DocumentTemplateRecord, bytes, dict[str, object]] | None = None
+        cover_prepared: (
+            tuple[
+                AuthoritativeGenerationContext,
+                bytes,
+                dict[str, object],
+            ]
+            | None
+        ) = None
         cover_failure = ""
         if request.cover_letter is not None:
             try:
@@ -260,8 +287,10 @@ def create_document_pack(
                     db,
                     request.cover_letter,
                     "cover_letter",
+                    application_id=request.application_id,
+                    expected_job_id=request.job_id,
                 )
-            except (DocumentValidationError, ValueError) as exc:
+            except (DocumentValidationError, GenerationContextError, ValueError) as exc:
                 cover_failure = str(exc)
                 if request.persistence_mode == "atomic":
                     raise pack_validation_failed("cover_letter_validation", exc) from exc
@@ -274,10 +303,10 @@ def create_document_pack(
                 db=db,
                 item=request.resume,
                 document_type="tailored_resume",
-                template=resume_template,
+                template=resume_context.template,
                 rendered_content=resume_content,
                 validation=resume_validation,
-                job_id=request.job_id,
+                job_id=resume_context.job_id,
                 application_id=request.application_id,
                 created_at=now,
             )
@@ -292,16 +321,16 @@ def create_document_pack(
         pack_status = "partial"
         message = cover_failure
         if request.cover_letter is not None and cover_prepared is not None:
-            cover_template, cover_content, cover_validation = cover_prepared
+            cover_context, cover_content, cover_validation = cover_prepared
             document_ids.append(
                 persist_pack_document(
                     db=db,
                     item=request.cover_letter,
                     document_type="cover_letter",
-                    template=cover_template,
+                    template=cover_context.template,
                     rendered_content=cover_content,
                     validation=cover_validation,
-                    job_id=request.job_id,
+                    job_id=cover_context.job_id,
                     application_id=request.application_id,
                     created_at=now,
                 )
@@ -425,7 +454,30 @@ def update_document(
                 else:
                     template_id = current_file.template_id if current_file else None
                 if template_id:
-                    template = require_template(db, template_id)
+                    generation_context = None
+                    if has_provenance:
+                        application_id = request.application_id or single_attachment_application_id(
+                            record
+                        )
+                        if not application_id:
+                            raise HTTPException(
+                                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                                detail="Application ID is required for generated documents",
+                            )
+                        generation_context = load_generation_context_or_http(
+                            db,
+                            application_id=application_id,
+                            template_id=template_id,
+                            document_type=record.type,
+                            expected_job_id=(
+                                request.job_id if "job_id" in fields else record.job_id
+                            ),
+                        )
+                    template = (
+                        generation_context.template
+                        if generation_context
+                        else require_template(db, template_id)
+                    )
                     if template.type != record.type:
                         raise HTTPException(
                             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -443,17 +495,13 @@ def update_document(
                             detail=str(exc),
                         ) from exc
                     if has_provenance:
-                        if not request.validation_evidence:
-                            raise HTTPException(
-                                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                                detail="Validation evidence is required for generated documents",
-                            )
+                        assert generation_context is not None
                         validation = validate_document_or_422(
                             template_content=template.content,
                             rendered_content=rendered_content,
                             generated_content=request.content,
                             document_type=record.type,
-                            evidence=request.validation_evidence,
+                            evidence=generation_context.validation_evidence(),
                         )
                         append_document_validation(
                             record,
@@ -471,6 +519,9 @@ def update_document(
                             created_at=now,
                         )
                     )
+                    if generation_context:
+                        record.job_id = generation_context.job_id
+                        attach_document_record(db, record, generation_context.application_id)
                 if has_provenance:
                     set_current_generation_provenance(
                         record,
@@ -916,27 +967,32 @@ def prepare_pack_document(
     db: Session,
     item: DocumentPackItemRequest,
     document_type: str,
-) -> tuple[DocumentTemplateRecord, bytes, dict[str, object]]:
+    *,
+    application_id: str,
+    expected_job_id: str | None = None,
+) -> tuple[AuthoritativeGenerationContext, bytes, dict[str, object]]:
     if not item.input_versions:
         raise DocumentValidationError("Generation input versions are required")
-    if not item.validation_evidence:
-        raise DocumentValidationError("Validation evidence is required")
-    template = require_template(db, item.template_id)
-    if template.type != document_type:
-        raise DocumentValidationError("Document template type does not match pack item type")
+    context = load_authoritative_generation_context(
+        db,
+        application_id=application_id,
+        template_id=item.template_id,
+        document_type=document_type,
+        expected_job_id=expected_job_id,
+    )
     rendered_content = build_document_from_template(
-        template_content=template.content,
+        template_content=context.template.content,
         content=item.content,
         document_type=document_type,
     )
     validation = validate_generated_document(
-        template_content=template.content,
+        template_content=context.template.content,
         rendered_content=rendered_content,
         generated_content=item.content,
         document_type=document_type,
-        evidence=item.validation_evidence,
+        evidence=context.validation_evidence(),
     )
-    return template, rendered_content, validation
+    return context, rendered_content, validation
 
 
 def persist_pack_document(
@@ -1078,6 +1134,33 @@ def require_template(db: Session, template_id: str) -> DocumentTemplateRecord:
             detail="Document template not found",
         )
     return record
+
+
+def load_generation_context_or_http(
+    db: Session,
+    *,
+    application_id: str,
+    template_id: str,
+    document_type: str,
+    expected_job_id: str | None = None,
+) -> AuthoritativeGenerationContext:
+    try:
+        return load_authoritative_generation_context(
+            db,
+            application_id=application_id,
+            template_id=template_id,
+            document_type=document_type,
+            expected_job_id=expected_job_id,
+        )
+    except GenerationContextError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+def single_attachment_application_id(record: DocumentRecord) -> str | None:
+    application_ids = {attachment.application_id for attachment in record.attachments}
+    if len(application_ids) != 1:
+        return None
+    return next(iter(application_ids))
 
 
 def document_file_record(

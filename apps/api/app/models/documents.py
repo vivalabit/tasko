@@ -278,10 +278,6 @@ class DocumentCreateRequest(BaseModel):
         alias="generationModel",
     )
     input_versions: dict[str, Any] = Field(default_factory=dict, alias="inputVersions")
-    validation_evidence: dict[str, Any] = Field(
-        default_factory=dict,
-        alias="validationEvidence",
-    )
 
     model_config = {"populate_by_name": True}
 
@@ -290,6 +286,7 @@ class DocumentUpdateRequest(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=240)
     content: str | None = Field(default=None, min_length=1, max_length=200_000)
     job_id: str | None = Field(default=None, max_length=160, alias="jobId")
+    application_id: str | None = Field(default=None, max_length=160, alias="applicationId")
     template_id: str | None = Field(default=None, max_length=36, alias="templateId")
     generation_fingerprint: str | None = Field(
         default=None,
@@ -305,10 +302,6 @@ class DocumentUpdateRequest(BaseModel):
         alias="generationModel",
     )
     input_versions: dict[str, Any] = Field(default_factory=dict, alias="inputVersions")
-    validation_evidence: dict[str, Any] = Field(
-        default_factory=dict,
-        alias="validationEvidence",
-    )
 
     model_config = {"populate_by_name": True}
 
@@ -330,7 +323,13 @@ class DocumentPackItemRequest(BaseModel):
         alias="generationModel",
     )
     input_versions: dict[str, Any] = Field(alias="inputVersions")
-    validation_evidence: dict[str, Any] = Field(alias="validationEvidence")
+
+    model_config = {"populate_by_name": True}
+
+
+class DocumentPackValidationRequest(BaseModel):
+    application_id: str = Field(min_length=1, max_length=160, alias="applicationId")
+    resume: DocumentPackItemRequest
 
     model_config = {"populate_by_name": True}
 

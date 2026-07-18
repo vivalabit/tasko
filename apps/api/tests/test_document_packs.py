@@ -1,5 +1,6 @@
 from collections.abc import Generator
 import base64
+from datetime import UTC, datetime
 from io import BytesIO
 import json
 
@@ -20,7 +21,11 @@ from app.models.documents import (
     DocumentRecord,
     DocumentVersionRecord,
 )
+from app.models.jobs import JobMatchRecord, StoredJobRecord
+from app.models.profile import ProfileRecord
+from app.services.ai_match import MATCHER_VERSION
 from app.services.document_validation import DocumentValidationError
+from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
 
 
 @pytest.fixture
@@ -38,11 +43,61 @@ def pack_client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, N
             yield db
 
     with testing_session_local() as db:
-        db.add(
-            StoredApplicationRecord(
-                id="application-pack",
-                data={"id": "application-pack", "status": "draft"},
-            )
+        db.add_all(
+            [
+                StoredApplicationRecord(
+                    id="application-pack",
+                    data={
+                        "id": "application-pack",
+                        "status": "draft",
+                        "job": {"id": "vacancy-1"},
+                    },
+                ),
+                StoredJobRecord(
+                    id="vacancy-1",
+                    data={
+                        "id": "vacancy-1",
+                        "title": "Backend Engineer",
+                        "company": "Acme",
+                        "overview": "Build Python services.",
+                    },
+                ),
+                ProfileRecord(
+                    id="default",
+                    data={
+                        "name": "Alex",
+                        "experience": "Python delivery at Acme in 2023",
+                        "skills": "Python",
+                    },
+                ),
+                JobMatchRecord(
+                    id="match-pack",
+                    job_id="vacancy-1",
+                    profile_hash="profile-pack",
+                    matcher_version=MATCHER_VERSION,
+                    cache_key="cache-pack",
+                    score=90,
+                    source="openclaw",
+                    confidence="high",
+                    breakdown={
+                        APPLICATION_GUIDE_STORAGE_KEY: {
+                            "language": "English",
+                            "clarificationQuestions": [],
+                            "evidenceMatrix": [
+                                {
+                                    "requirement": "Python delivery",
+                                    "status": "verified",
+                                    "evidence": "Python delivery at Acme in 2023",
+                                }
+                            ],
+                        }
+                    },
+                    reasons=[],
+                    gaps=[],
+                    heuristic_score=90,
+                    created_at=datetime.now(UTC),
+                ),
+            ]
         )
         db.commit()
 
@@ -99,7 +154,6 @@ def pack_request(
     persistence_mode: str = "atomic",
     include_cover: bool = True,
 ) -> dict[str, object]:
-    evidence = {"profile": "Python delivery at Acme in 2023"}
     resume = {
         "title": "Tailored CV",
         "content": json.dumps({"replacements": []}),
@@ -107,7 +161,6 @@ def pack_request(
         "generationFingerprint": "a" * 64,
         "generationModel": "test-model",
         "inputVersions": {"profile": "profile-v1"},
-        "validationEvidence": evidence,
     }
     cover = {
         "title": "Cover letter",
@@ -116,7 +169,6 @@ def pack_request(
         "generationFingerprint": "b" * 64,
         "generationModel": "test-model",
         "inputVersions": {"profile": "profile-v1"},
-        "validationEvidence": evidence,
     }
     return {
         "packJobId": "pack-job-1",
@@ -194,7 +246,10 @@ def test_resume_preflight_validates_without_saving(pack_client, monkeypatch) -> 
 
     response = client.post(
         "/documents/packs/validate-resume",
-        json=request["resume"],
+        json={
+            "applicationId": request["applicationId"],
+            "resume": request["resume"],
+        },
     )
 
     with testing_session_local() as db:
