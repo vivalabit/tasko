@@ -331,16 +331,11 @@ def test_resume_template_rewrites_blocks_without_rebuilding_design() -> None:
                         "replacements": [
                             {
                                 "blockId": "block-0002",
+                                "spanId": "block-0002-span-0001",
                                 "original": "Original professional summary with verified delivery experience.",
                                 "replacement": "Backend engineer focused on FastAPI",
                                 "reason": "Matches the target role with verified profile evidence",
-                            },
-                            {
-                                "blockId": "block-0004",
-                                "original": "Original achievement",
-                                "replacement": "Built a verified production service",
-                                "reason": "Uses a verified achievement",
-                            },
+                            }
                         ]
                     }
                 ),
@@ -374,7 +369,7 @@ def test_resume_template_rewrites_blocks_without_rebuilding_design() -> None:
     assert rendered.paragraphs[1].text == "Backend engineer focused on FastAPI"
     assert rendered.tables[0].style.name == "Table Grid"
     assert rendered.tables[0].cell(0, 0).text == "Python"
-    assert rendered.tables[0].cell(0, 1).text == "Built a verified production service"
+    assert rendered.tables[0].cell(0, 1).text == "Original achievement"
 
 
 def test_generated_template_document_exposes_validation_and_diff(monkeypatch) -> None:

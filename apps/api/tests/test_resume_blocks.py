@@ -10,6 +10,7 @@ from docx.opc.constants import RELATIONSHIP_TYPE
 from lxml import etree
 
 from app.services.document_export import build_document_from_template
+from app.services.document_validation import build_document_diff
 from app.services.resume_blocks import extract_resume_blocks_from_docx, paragraph_text
 
 
@@ -89,6 +90,16 @@ def test_docx_is_parsed_into_stable_typed_resume_blocks() -> None:
         "contact",
         "table cell",
     }
+    for block in blocks:
+        expected_editable = block["type"] in {"summary", "skill", "achievement"}
+        assert block["editable"] is expected_editable
+        assert all(
+            span["editable"] is expected_editable
+            for span in block["spans"]
+            if span["type"] == "text"
+        )
+        if block["type"] in {"heading", "contact", "immutable", "table cell"}:
+            assert all(span["editable"] is False for span in block["spans"])
 
 
 def test_german_resume_sections_are_classified(german_resume_docx: bytes) -> None:
@@ -137,14 +148,15 @@ def test_german_sections_inside_tables_follow_rows_and_columns(
     assert types_by_text["MSc Informatik, Universität Zürich"] == "table cell"
 
 
-def test_resume_renderer_applies_partial_json_replacements_without_line_count() -> None:
+def test_resume_renderer_applies_editable_span_replacements() -> None:
     template = resume_template()
     content = json.dumps(
         {
             "replacements": [
-                {
-                    "blockId": "block-0003",
-                    "original": "Original professional profile backed by delivery evidence.",
+                    {
+                        "blockId": "block-0003",
+                        "spanId": "block-0003-span-0001",
+                        "original": "Original professional profile backed by delivery evidence.",
                     "replacement": "Backend engineer delivering verified FastAPI services.",
                     "reason": "Aligns verified delivery evidence with the vacancy",
                 }
@@ -158,20 +170,37 @@ def test_resume_renderer_applies_partial_json_replacements_without_line_count() 
         document_type="tailored_resume",
     )
     document = Document(BytesIO(rendered))
+    diff = build_document_diff(
+        template,
+        content,
+        "tailored_resume",
+        rendered_content=rendered,
+    )
 
     assert document.paragraphs[2].text == "Backend engineer delivering verified FastAPI services."
     assert document.paragraphs[6].text == "Acme · 2024"
     assert document.tables[0].cell(0, 0).text == "German B2"
+    assert diff == [
+        {
+            "blockId": "block-0003",
+            "spanId": "block-0003-span-0001",
+            "type": "summary",
+            "original": "Original professional profile backed by delivery evidence.",
+            "replacement": "Backend engineer delivering verified FastAPI services.",
+            "reason": "Aligns verified delivery evidence with the vacancy",
+        }
+    ]
 
 
-def test_resume_renderer_rejects_immutable_and_mismatched_blocks() -> None:
+def test_resume_renderer_rejects_immutable_and_mismatched_spans() -> None:
     template = resume_template()
     immutable_replacement = json.dumps(
         {
             "replacements": [
-                {
-                    "blockId": "block-0007",
-                    "original": "Acme · 2024",
+                    {
+                        "blockId": "block-0007",
+                        "spanId": "block-0007-span-0001",
+                        "original": "Acme · 2024",
                     "replacement": "Different employer · 2025",
                     "reason": "Unsafe invented change",
                 }
@@ -181,9 +210,10 @@ def test_resume_renderer_rejects_immutable_and_mismatched_blocks() -> None:
     mismatched_original = json.dumps(
         {
             "replacements": [
-                {
-                    "blockId": "block-0003",
-                    "original": "A different original",
+                    {
+                        "blockId": "block-0003",
+                        "spanId": "block-0003-span-0001",
+                        "original": "A different original",
                     "replacement": "Backend engineer",
                     "reason": "Stale model response",
                 }
@@ -191,16 +221,35 @@ def test_resume_renderer_rejects_immutable_and_mismatched_blocks() -> None:
         }
     )
 
-    with pytest.raises(ValueError, match="Immutable resume block cannot be changed"):
+    with pytest.raises(ValueError, match="Immutable resume span cannot be changed"):
         build_document_from_template(
             template_content=template,
             content=immutable_replacement,
             document_type="tailored_resume",
         )
-    with pytest.raises(ValueError, match="original does not match template"):
+    with pytest.raises(ValueError, match="Resume span original does not match template"):
         build_document_from_template(
             template_content=template,
             content=mismatched_original,
+            document_type="tailored_resume",
+        )
+
+    legacy_block_replacement = json.dumps(
+        {
+            "replacements": [
+                {
+                    "blockId": "block-0003",
+                    "original": "Original professional profile backed by delivery evidence.",
+                    "replacement": "Legacy whole-block replacement",
+                    "reason": "Old resume-blocks-v1 contract",
+                }
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="blockId, spanId, original"):
+        build_document_from_template(
+            template_content=template,
+            content=legacy_block_replacement,
             document_type="tailored_resume",
         )
 
@@ -257,7 +306,7 @@ def complex_resume_template() -> tuple[bytes, str]:
     first = paragraph.add_run("Original ")
     first.bold = True
     second = paragraph.add_run("profile")
-    second.italic = True
+    second.bold = True
     relationship_id = add_hyperlink(paragraph, " site", "https://example.com/profile")
     final = paragraph.add_run()
     final.add_tab()
@@ -278,8 +327,21 @@ def document_root(content: bytes):
         return etree.fromstring(archive.read("word/document.xml"))
 
 
-def test_complex_docx_preserves_runs_hyperlinks_controls_tabs_and_breaks() -> None:
+def test_v2_spans_preserve_runs_hyperlinks_controls_and_structural_cells() -> None:
     template, relationship_id = complex_resume_template()
+    source_blocks = extract_resume_blocks_from_docx(template)
+    source_spans = source_blocks[1]["spans"]
+    assert [(span["type"], span["editable"]) for span in source_spans] == [
+        ("text", True),
+        ("hyperlink", False),
+        ("tab", False),
+        ("text", True),
+        ("lineBreak", False),
+        ("text", True),
+    ]
+    assert source_blocks[2]["type"] == "table cell"
+    assert source_blocks[2]["editable"] is False
+    assert all(span["editable"] is False for span in source_blocks[2]["spans"])
     template_root = document_root(template)
     template_paragraph = template_root.findall(".//" + qn("w:p"))[1]
     original_run_properties = [
@@ -289,21 +351,31 @@ def test_complex_docx_preserves_runs_hyperlinks_controls_tabs_and_breaks() -> No
     content = json.dumps(
         {
             "replacements": [
-                {
-                    "blockId": "block-0002",
-                    "original": "Original profile site\tRemote\nDelivery",
-                    "replacement": "Targeted summary link\tHybrid\nDelivery proof",
-                    "reason": "Tailors the summary while retaining inline structure",
-                },
-                {
-                    "blockId": "block-0003",
-                    "original": "Original table achievement",
-                    "replacement": "Verified table achievement",
-                    "reason": "Uses verified evidence in the existing table cell",
-                },
-                {
-                    "blockId": "block-0004",
-                    "original": "Original controlled summary",
+                    {
+                        "blockId": "block-0002",
+                        "spanId": "block-0002-span-0001",
+                        "original": "Original profile",
+                        "replacement": "Targeted summary",
+                        "reason": "Tailors the editable text before the protected hyperlink",
+                    },
+                    {
+                        "blockId": "block-0002",
+                        "spanId": "block-0002-span-0004",
+                        "original": "Remote",
+                        "replacement": "Hybrid",
+                        "reason": "Updates an editable text span between protected controls",
+                    },
+                    {
+                        "blockId": "block-0002",
+                        "spanId": "block-0002-span-0006",
+                        "original": "Delivery",
+                        "replacement": "Delivery proof",
+                        "reason": "Updates the final editable text span",
+                    },
+                    {
+                        "blockId": "block-0004",
+                        "spanId": "block-0004-span-0001",
+                        "original": "Original controlled summary",
                     "replacement": "Verified controlled summary",
                     "reason": "Updates a supported plain-text content control",
                 },
@@ -331,11 +403,12 @@ def test_complex_docx_preserves_runs_hyperlinks_controls_tabs_and_breaks() -> No
         ".//" + qn("w:sdt") + "/" + qn("w:sdtContent") + "//" + qn("w:rPr") + "/" + qn("w:i")
     )
 
-    assert paragraph_text(rendered_paragraph) == "Targeted summary link\tHybrid\nDelivery proof"
+    assert paragraph_text(rendered_paragraph) == "Targeted summary site\tHybrid\nDelivery proof"
     assert original_run_properties == rendered_run_properties
     assert hyperlink is not None
     assert hyperlink.get(qn("r:id")) == relationship_id
-    assert len([node for node in text_nodes if node.text]) >= 3
+    assert text_nodes[0].text == "Targeted summary"
+    assert text_nodes[1].text in {None, ""}
     assert len(rendered_paragraph.findall(".//" + qn("w:tab"))) == 1
     assert len(rendered_paragraph.findall(".//" + qn("w:br"))) == 1
     assert controlled_text is not None and controlled_text.text == "Verified controlled summary"
@@ -343,30 +416,66 @@ def test_complex_docx_preserves_runs_hyperlinks_controls_tabs_and_breaks() -> No
     rendered_document = Document(BytesIO(rendered))
     assert rendered_document.part.rels[relationship_id].target_ref == "https://example.com/profile"
     assert rendered_document.tables[0].style.name == "Table Grid"
-    assert rendered_document.tables[0].cell(0, 0).text == "Verified table achievement"
+    assert rendered_document.tables[0].cell(0, 0).text == "Original table achievement"
 
 
-def test_complex_docx_rejects_changed_inline_controls_and_word_fields() -> None:
+def test_v2_rejects_protected_spans_ambiguous_formatting_and_word_fields() -> None:
     template, _ = complex_resume_template()
-    changed_controls = json.dumps(
+    for block_id, span_id, original in (
+        ("block-0002", "block-0002-span-0002", " site"),
+        ("block-0002", "block-0002-span-0003", "\t"),
+        ("block-0002", "block-0002-span-0005", "\n"),
+        ("block-0003", "block-0003-span-0001", "Original table achievement"),
+    ):
+        protected_replacement = json.dumps(
+            {
+                "replacements": [
+                    {
+                        "blockId": block_id,
+                        "spanId": span_id,
+                        "original": original,
+                        "replacement": "Changed protected content",
+                        "reason": "Invalid protected span change",
+                    }
+                ]
+            }
+        )
+        with pytest.raises(ValueError, match="Immutable resume span cannot be changed"):
+            build_document_from_template(
+                template_content=template,
+                content=protected_replacement,
+                document_type="tailored_resume",
+            )
+
+    control_in_text = json.dumps(
         {
             "replacements": [
                 {
                     "blockId": "block-0002",
-                    "original": "Original profile site\tRemote\nDelivery",
-                    "replacement": "Targeted summary without controls",
-                    "reason": "Invalid structural change",
+                    "spanId": "block-0002-span-0001",
+                    "original": "Original profile",
+                    "replacement": "Targeted\nsummary",
+                    "reason": "Invalid control insertion",
                 }
             ]
         }
     )
-
-    with pytest.raises(ValueError, match="preserve the original tabs and line breaks"):
+    with pytest.raises(ValueError, match="cannot contain tabs or line breaks"):
         build_document_from_template(
             template_content=template,
-            content=changed_controls,
+            content=control_in_text,
             document_type="tailored_resume",
         )
+
+    mixed = Document()
+    mixed.add_paragraph("SUMMARY", style="Heading 1")
+    mixed_paragraph = mixed.add_paragraph()
+    mixed_paragraph.add_run("Bold fragment").bold = True
+    mixed_paragraph.add_run(" and italic fragment").italic = True
+    mixed_output = BytesIO()
+    mixed.save(mixed_output)
+    with pytest.raises(ValueError, match="ambiguous mixed formatting"):
+        extract_resume_blocks_from_docx(mixed_output.getvalue())
 
     unsupported = Document()
     paragraph = unsupported.add_paragraph("Total ")

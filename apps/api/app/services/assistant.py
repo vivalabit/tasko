@@ -43,6 +43,7 @@ from app.services.resume_blocks import (
     UnsupportedResumeStructureError,
     extract_resume_blocks_from_docx,
     find_unsupported_word_constructions,
+    parse_resume_blocks,
 )
 
 
@@ -450,9 +451,7 @@ def build_source_document_context(
         if remaining_chars <= 0:
             break
         try:
-            is_resume_docx = source.file_name.lower().endswith(".docx") and any(
-                token in source.category.lower() for token in ("cv", "resume")
-            )
+            is_resume_docx = is_resume_source_document(source)
             if is_resume_docx:
                 _, binary_content = decode_resume_data_url(source.data_url)
                 blocks = extract_resume_blocks_from_docx(binary_content)
@@ -461,7 +460,7 @@ def build_source_document_context(
                     "title": source.title,
                     "category": source.category,
                     "file_name": source.file_name,
-                    "format": "resume-blocks-v1",
+                    "format": "resume-blocks-v2",
                     "blocks": [],
                 }
                 for block in blocks:
@@ -542,7 +541,8 @@ def preflight_source_documents(
                 f"{source.file_name}: DOCX has no document body",
                 code="invalid_document",
             )
-        for issue in find_unsupported_word_constructions(body):
+        document_issues = find_unsupported_word_constructions(body)
+        for issue in document_issues:
             unsupported_elements.append(
                 {
                     "documentId": source.id,
@@ -551,6 +551,19 @@ def preflight_source_documents(
                     "description": issue.description,
                 }
             )
+        if not document_issues and is_resume_source_document(source):
+            try:
+                parse_resume_blocks(body)
+            except UnsupportedResumeStructureError as exc:
+                description = str(exc).removeprefix("Unsupported DOCX construction: ")
+                unsupported_elements.append(
+                    {
+                        "documentId": source.id,
+                        "fileName": source.file_name,
+                        "element": "mixedFormat",
+                        "description": description,
+                    }
+                )
 
     if unsupported_elements:
         descriptions = ", ".join(
@@ -563,6 +576,12 @@ def preflight_source_documents(
             code="unsupported_document",
             unsupported_elements=unsupported_elements,
         )
+
+
+def is_resume_source_document(source: AssistantSourceDocument) -> bool:
+    return source.file_name.lower().endswith(".docx") and any(
+        token in source.category.lower() for token in ("cv", "resume")
+    )
 
 
 def compact_conversation_history(

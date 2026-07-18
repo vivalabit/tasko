@@ -29,9 +29,11 @@ from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.assistant import (
     OpenClawAssistantError,
     OpenClawAssistantTimeoutError,
+    SourceDocumentPreflightError,
     build_openclaw_assistant_prompt,
     compact_conversation_history,
     extract_openclaw_assistant_text,
+    preflight_source_documents,
     run_openclaw_assistant,
 )
 
@@ -159,11 +161,13 @@ def test_assistant_prompt_passes_resume_docx_as_structured_blocks() -> None:
     )
 
     context, _ = prompt.split("USER_MESSAGE (trusted instructions):\n", 1)
-    assert '"format":"resume-blocks-v1"' in context
+    assert '"format":"resume-blocks-v2"' in context
     assert '"blockId":"block-0001"' in context
     assert '"type":"heading"' in context
     assert '"original":"Backend engineer building reliable APIs."' in context
-    assert '"text"' not in context
+    assert '"spanId":"block-0002-span-0001"' in context
+    assert '"editable":true' in context
+    assert '"text":' not in context
 
 
 def test_assistant_prompt_reports_unsupported_resume_construction() -> None:
@@ -195,6 +199,43 @@ def test_assistant_prompt_reports_unsupported_resume_construction() -> None:
                 )
             ],
         )
+
+
+def test_source_docx_preflight_rejects_ambiguous_mixed_format_blocks() -> None:
+    document = Document()
+    document.add_paragraph("SUMMARY", style="Heading 1")
+    paragraph = document.add_paragraph()
+    paragraph.add_run("Bold fragment").bold = True
+    paragraph.add_run(" and italic fragment").italic = True
+    output = BytesIO()
+    document.save(output)
+    data_url = (
+        "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;"
+        "base64," + base64.b64encode(output.getvalue()).decode()
+    )
+
+    with pytest.raises(SourceDocumentPreflightError) as raised:
+        preflight_source_documents(
+            [
+                AssistantSourceDocument(
+                    id="mixed-cv",
+                    title="Mixed CV",
+                    category="CV / Resume",
+                    fileName="mixed.docx",
+                    dataUrl=data_url,
+                )
+            ]
+        )
+
+    assert raised.value.code == "unsupported_document"
+    assert raised.value.unsupported_elements == [
+        {
+            "documentId": "mixed-cv",
+            "fileName": "mixed.docx",
+            "element": "mixedFormat",
+            "description": "ambiguous mixed formatting in editable resume block (block-0002)",
+        }
+    ]
 
 
 def test_source_docx_preflight_returns_all_unsupported_elements_before_ai(

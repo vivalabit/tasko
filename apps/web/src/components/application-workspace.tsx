@@ -180,6 +180,7 @@ type GeneratedDocumentVersion = {
   };
   diff: Array<{
     blockId: string;
+    spanId?: string;
     type: string;
     original: string;
     replacement: string;
@@ -284,12 +285,17 @@ function currentContent(document: GeneratedDocument | undefined) {
   if (document.type !== "tailored_resume") return content;
   try {
     const payload = JSON.parse(content) as {
-      replacements?: Array<{ blockId?: string; replacement?: string; reason?: string }>;
+      replacements?: Array<{
+        blockId?: string;
+        spanId?: string;
+        replacement?: string;
+        reason?: string;
+      }>;
     };
     if (!Array.isArray(payload.replacements)) return content;
     if (payload.replacements.length === 0) return "No safe block replacements were needed.";
     return payload.replacements.map((replacement) => (
-      `${replacement.blockId ?? "Block"}: ${replacement.replacement ?? ""}${replacement.reason ? `\nWhy: ${replacement.reason}` : ""}`
+      `${replacement.blockId ?? "Block"}${replacement.spanId ? ` · ${replacement.spanId}` : ""}: ${replacement.replacement ?? ""}${replacement.reason ? `\nWhy: ${replacement.reason}` : ""}`
     )).join("\n\n");
   } catch {
     return content;
@@ -848,7 +854,7 @@ export function ApplicationWorkspace({
     const targetLanguage = effectiveLanguage || selectedSource.language || "English";
     const prompt = isCoverLetter
       ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the guide's positioning, evidence map, risks, and cover-letter plan. Candidate confirmations take precedence over inferred evidence; a negative answer means the claim must be omitted. Use only verified facts and never invent achievements or metrics. Return only the complete letter text without Markdown or commentary, with a greeting, focused body paragraphs, and a professional closing.`
-      : `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v1 and contains blocks with stable blockId, type, and original fields. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0001","original":"exact original block text","replacement":"new text","reason":"short evidence-based reason"}]}. Include only blocks that should change. Copy blockId and original exactly from CONTEXT_JSON. Never change a block whose type is immutable. Preserve every tab (\\t) and line break (\\n) at the same position in the replacement's inline structure so DOCX hyperlinks, runs, and formatting remain valid. Do not add IDs, remove blocks, merge blocks, split blocks, use Markdown, or invent facts or metrics. Prefer targeted replacements for summary, skill, and achievement blocks; preserve headings, contacts, and table structure.`;
+      : `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v2. Each block has stable blockId, type, original, editable, and spans fields; each span has stable spanId, type, original, and editable fields. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0002","spanId":"block-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason"}]}. Include only text spans where editable is true, and copy blockId, spanId, and original exactly from CONTEXT_JSON. Never target headings, contacts, immutable or structural table-cell blocks, hyperlinks, tabs, line breaks, or any span where editable is false. Do not add IDs, remove blocks or spans, use Markdown, or invent facts or metrics. Prefer targeted edits to summary, skill, and achievement text spans.`;
     const generate = () => askAssistant(prompt, [selectedSource], assistantConfirmations);
     const assistantResult = onRetry
       ? await retryPackOperation(generate, onRetry)
@@ -1444,7 +1450,7 @@ function DocumentCard({
                 <span className={cn("rounded-md border px-2 py-1.5", currentVersion.visualValidation.tableOverflow === true ? "border-red-400/20 bg-red-500/[0.04] text-red-200" : "border-white/[0.07] bg-white/[0.025] text-muted")}><strong className="text-[#dfe5ec]">Tables</strong><span className="mt-0.5 block">{tableCheck}</span></span>
               </div>
             </div>
-            {currentVersion.diff.length ? currentVersion.diff.map((change) => <article key={`${change.blockId}-${change.original}`} className="rounded-lg border border-white/[0.07] bg-black/20 p-2.5"><div className="flex items-center justify-between gap-2"><p className="text-[9px] font-black uppercase tracking-wide text-[#9aa5b4]">{change.blockId} · {change.type}</p><p className="text-[8px] text-muted">{change.reason}</p></div><p className="mt-2 whitespace-pre-wrap text-[10px] leading-4 text-red-200/75 line-through">{change.original || "Added paragraph"}</p><p className="mt-1 whitespace-pre-wrap text-[10px] leading-4 text-emerald-200">{change.replacement || "Removed paragraph"}</p></article>) : <p className="rounded-lg border border-success/15 bg-success/[0.04] px-3 py-2 text-[9px] font-bold text-success">No factual content changes</p>}
+            {currentVersion.diff.length ? currentVersion.diff.map((change) => <article key={`${change.blockId}-${change.spanId ?? change.original}`} className="rounded-lg border border-white/[0.07] bg-black/20 p-2.5"><div className="flex items-center justify-between gap-2"><p className="text-[9px] font-black uppercase tracking-wide text-[#9aa5b4]">{change.blockId}{change.spanId ? ` · ${change.spanId}` : ""} · {change.type}</p><p className="text-[8px] text-muted">{change.reason}</p></div><p className="mt-2 whitespace-pre-wrap text-[10px] leading-4 text-red-200/75 line-through">{change.original || "Added paragraph"}</p><p className="mt-1 whitespace-pre-wrap text-[10px] leading-4 text-emerald-200">{change.replacement || "Removed paragraph"}</p></article>) : <p className="rounded-lg border border-success/15 bg-success/[0.04] px-3 py-2 text-[9px] font-bold text-success">No factual content changes</p>}
           </div>
         </details>
       ) : null}

@@ -14,7 +14,8 @@ from lxml import etree
 
 from app.services.resume_blocks import (
     parse_resume_blocks,
-    replace_paragraph_text_preserving_inline,
+    replace_resume_text_span,
+    set_text_node_value,
 )
 
 
@@ -148,23 +149,22 @@ def replace_cover_letter_text(document: Document, content: str) -> None:
 def replace_resume_text(body, content: str) -> None:
     blocks = parse_resume_blocks(body)
     blocks_by_id = {block.block_id: block for block in blocks}
-    seen_block_ids: set[str] = set()
+    seen_span_ids: set[str] = set()
     for replacement in parse_resume_replacements(content):
         block_id = replacement["blockId"]
-        if block_id in seen_block_ids:
-            raise ValueError(f"Duplicate resume replacement for {block_id}")
-        seen_block_ids.add(block_id)
         block = blocks_by_id.get(block_id)
         if block is None:
             raise ValueError(f"Unknown resume block: {block_id}")
-        if replacement["original"] != block.original:
-            raise ValueError(f"Resume block original does not match template: {block_id}")
-        replacement_text = replacement["replacement"]
-        if block.block_type == "immutable" and replacement_text != block.original:
-            raise ValueError(f"Immutable resume block cannot be changed: {block_id}")
-        if not replacement_text.strip():
-            raise ValueError(f"Resume block replacement cannot be empty: {block_id}")
-        set_paragraph_element_text(block.element, replacement_text)
+        span_id = replacement["spanId"]
+        if span_id in seen_span_ids:
+            raise ValueError(f"Duplicate resume replacement for {span_id}")
+        seen_span_ids.add(span_id)
+        span = next((candidate for candidate in block.spans if candidate.span_id == span_id), None)
+        if span is None:
+            raise ValueError(f"Unknown resume span for {block_id}: {span_id}")
+        if replacement["original"] != span.original:
+            raise ValueError(f"Resume span original does not match template: {span_id}")
+        replace_resume_text_span(span, replacement["replacement"])
 
 
 def parse_resume_replacements(content: str) -> list[dict[str, str]]:
@@ -187,14 +187,14 @@ def parse_resume_replacements(content: str) -> list[dict[str, str]]:
         raise ValueError("Generated resume JSON must contain a replacements array")
 
     replacements: list[dict[str, str]] = []
-    required_fields = ("blockId", "original", "replacement", "reason")
+    required_fields = ("blockId", "spanId", "original", "replacement", "reason")
     for index, raw_replacement in enumerate(raw_replacements):
         if not isinstance(raw_replacement, dict) or not all(
             isinstance(raw_replacement.get(field), str) for field in required_fields
         ):
             raise ValueError(
                 f"Resume replacement {index + 1} must contain string fields: "
-                "blockId, original, replacement, reason"
+                "blockId, spanId, original, replacement, reason"
             )
         replacements.append({field: raw_replacement[field] for field in required_fields})
     return replacements
@@ -255,7 +255,17 @@ def replace_paragraph_elements(paragraphs, replacement_texts: list[str]) -> None
 
 
 def set_paragraph_element_text(element, text: str) -> None:
-    replace_paragraph_text_preserving_inline(element, text)
+    text_nodes = list(element.iter(qn("w:t")))
+    if not text_nodes:
+        run = OxmlElement("w:r")
+        node = OxmlElement("w:t")
+        run.append(node)
+        element.append(run)
+        text_nodes = [node]
+    first, *remaining = text_nodes
+    set_text_node_value(first, text)
+    for node in remaining:
+        set_text_node_value(node, "")
 
 
 def configure_document(document: Document) -> None:

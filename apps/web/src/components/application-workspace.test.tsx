@@ -206,6 +206,7 @@ describe("ApplicationWorkspace", () => {
                 replacements: [
                   {
                     blockId: "summary",
+                    spanId: "summary-span-0001",
                     replacement: "Research-led product designer",
                     reason: "Matches the role positioning",
                   },

@@ -19,6 +19,8 @@ ResumeBlockType = Literal[
     "contact",
     "table cell",
 ]
+ResumeSpanType = Literal["text", "hyperlink", "tab", "lineBreak"]
+EDITABLE_BLOCK_TYPES = {"summary", "skill", "achievement"}
 
 HEADING_WORDS = {
     "about",
@@ -121,21 +123,41 @@ class UnsupportedWordConstruction:
 
 
 @dataclass(frozen=True)
+class ResumeSpan:
+    span_id: str
+    span_type: ResumeSpanType
+    original: str
+    editable: bool
+    text_nodes: tuple[Any, ...] = ()
+
+    def as_context(self) -> dict[str, str | bool]:
+        return {
+            "spanId": self.span_id,
+            "type": self.span_type,
+            "original": self.original,
+            "editable": self.editable,
+        }
+
+
+@dataclass(frozen=True)
 class ResumeBlock:
     block_id: str
     block_type: ResumeBlockType
     original: str
-    element: Any
+    editable: bool
+    spans: tuple[ResumeSpan, ...]
 
-    def as_context(self) -> dict[str, str]:
+    def as_context(self) -> dict[str, Any]:
         return {
             "blockId": self.block_id,
             "type": self.block_type,
             "original": self.original,
+            "editable": self.editable,
+            "spans": [span.as_context() for span in self.spans],
         }
 
 
-def extract_resume_blocks_from_docx(content: bytes) -> list[dict[str, str]]:
+def extract_resume_blocks_from_docx(content: bytes) -> list[dict[str, Any]]:
     validate_docx_package(content)
     with zipfile.ZipFile(BytesIO(content)) as archive:
         root = etree.fromstring(archive.read("word/document.xml"))
@@ -178,11 +200,21 @@ def parse_resume_blocks(body: Any) -> list[ResumeBlock]:
             current_section=current_section,
             block_index=len(blocks),
         )
+        block_id = f"block-{len(blocks) + 1:04d}"
+        allows_edits = block_type in EDITABLE_BLOCK_TYPES
+        spans = tuple(
+            build_resume_spans(
+                paragraph,
+                block_id=block_id,
+                block_editable=allows_edits,
+            )
+        )
         block = ResumeBlock(
-            block_id=f"block-{len(blocks) + 1:04d}",
+            block_id=block_id,
             block_type=block_type,
             original=original,
-            element=paragraph,
+            editable=any(span.editable for span in spans),
+            spans=spans,
         )
         blocks.append(block)
         if block_type == "heading":
@@ -230,14 +262,20 @@ def classify_resume_block(
 
 
 def paragraph_text(element: Any) -> str:
-    values: list[str] = []
-    for part_type, value in paragraph_inline_parts(element):
-        values.append(value.text or "" if part_type == "text" else value)
-    return "".join(values)
+    return "".join(token.original for token in paragraph_inline_tokens(element))
 
 
-def paragraph_inline_parts(element: Any) -> list[tuple[str, Any]]:
-    parts: list[tuple[str, Any]] = []
+@dataclass(frozen=True)
+class InlineToken:
+    token_type: Literal["text", "tab", "lineBreak"]
+    original: str
+    text_node: Any | None
+    hyperlink: Any | None
+    formatting_signature: bytes
+
+
+def paragraph_inline_tokens(element: Any) -> list[InlineToken]:
+    tokens: list[InlineToken] = []
     for node in element.iter():
         if node is element or nearest_paragraph(node) is not element:
             continue
@@ -247,91 +285,157 @@ def paragraph_inline_parts(element: Any) -> list[tuple[str, Any]]:
                 raise UnsupportedResumeStructureError(
                     "Unsupported DOCX construction: literal tabs or line breaks inside w:t"
                 )
-            parts.append(("text", node))
+            tokens.append(
+                InlineToken(
+                    token_type="text",
+                    original=value,
+                    text_node=node,
+                    hyperlink=nearest_ancestor(node, qn("w:hyperlink")),
+                    formatting_signature=run_formatting_signature(node),
+                )
+            )
         elif node.tag == qn("w:tab"):
-            parts.append(("control", "\t"))
+            tokens.append(
+                InlineToken(
+                    token_type="tab",
+                    original="\t",
+                    text_node=None,
+                    hyperlink=nearest_ancestor(node, qn("w:hyperlink")),
+                    formatting_signature=b"",
+                )
+            )
         elif node.tag in {qn("w:br"), qn("w:cr")}:
-            parts.append(("control", "\n"))
-    return parts
-
-
-def replace_paragraph_text_preserving_inline(element: Any, replacement: str) -> None:
-    validate_supported_paragraph(element)
-    parts = paragraph_inline_parts(element)
-    slot_groups: list[list[Any]] = [[]]
-    original_controls: list[str] = []
-    for part_type, value in parts:
-        if part_type == "text":
-            slot_groups[-1].append(value)
-        else:
-            original_controls.append(value)
-            slot_groups.append([])
-
-    replacement_parts = re.split(r"([\t\n])", replacement)
-    replacement_segments = replacement_parts[::2]
-    replacement_controls = replacement_parts[1::2]
-    if replacement_controls != original_controls:
-        raise UnsupportedResumeStructureError(
-            "Resume replacements must preserve the original tabs and line breaks"
-        )
-    if len(replacement_segments) != len(slot_groups):
-        raise UnsupportedResumeStructureError(
-            "Resume replacement does not match the paragraph inline structure"
-        )
-
-    for slots, segment in zip(slot_groups, replacement_segments, strict=True):
-        distribute_text_across_slots(slots, segment)
-
-
-def distribute_text_across_slots(slots: list[Any], replacement: str) -> None:
-    if not slots:
-        if replacement:
-            raise UnsupportedResumeStructureError(
-                "Resume replacement cannot add text where the DOCX has no text run"
+            tokens.append(
+                InlineToken(
+                    token_type="lineBreak",
+                    original="\n",
+                    text_node=None,
+                    hyperlink=nearest_ancestor(node, qn("w:hyperlink")),
+                    formatting_signature=b"",
+                )
             )
-        return
+    return tokens
 
-    original_lengths = [len(slot.text or "") for slot in slots]
-    active_indexes = [index for index, length in enumerate(original_lengths) if length > 0]
-    if not active_indexes:
-        if replacement:
-            raise UnsupportedResumeStructureError(
-                "Resume replacement cannot target an empty run-only segment"
-            )
-        allocations = [0] * len(slots)
-    else:
-        allocations = proportional_allocations(original_lengths, len(replacement))
 
+def build_resume_spans(
+    paragraph: Any,
+    *,
+    block_id: str,
+    block_editable: bool,
+) -> list[ResumeSpan]:
+    tokens = paragraph_inline_tokens(paragraph)
+    spans: list[ResumeSpan] = []
     cursor = 0
-    for slot, length in zip(slots, allocations, strict=True):
-        value = replacement[cursor : cursor + length]
-        cursor += length
-        slot.text = value
-        if value.startswith(" ") or value.endswith(" "):
-            slot.set(XML_SPACE, "preserve")
-        else:
-            slot.attrib.pop(XML_SPACE, None)
+    while cursor < len(tokens):
+        token = tokens[cursor]
+        if token.hyperlink is not None:
+            end = cursor + 1
+            while end < len(tokens) and tokens[end].hyperlink is token.hyperlink:
+                end += 1
+            group = tokens[cursor:end]
+            append_resume_span(
+                spans,
+                block_id=block_id,
+                span_type="hyperlink",
+                tokens=group,
+                editable=False,
+            )
+            cursor = end
+            continue
+        if token.token_type != "text":
+            append_resume_span(
+                spans,
+                block_id=block_id,
+                span_type=token.token_type,
+                tokens=[token],
+                editable=False,
+            )
+            cursor += 1
+            continue
+
+        end = cursor + 1
+        while (
+            end < len(tokens)
+            and tokens[end].hyperlink is None
+            and tokens[end].token_type == "text"
+        ):
+            end += 1
+        group = tokens[cursor:end]
+        signatures = {
+            item.formatting_signature
+            for item in group
+            if item.original
+        }
+        if block_editable and len(signatures) > 1:
+            raise UnsupportedResumeStructureError(
+                "Unsupported DOCX construction: ambiguous mixed formatting in "
+                f"editable resume block ({block_id})"
+            )
+        original = "".join(item.original for item in group)
+        append_resume_span(
+            spans,
+            block_id=block_id,
+            span_type="text",
+            tokens=group,
+            editable=block_editable and bool(original.strip()),
+        )
+        cursor = end
+    return spans
 
 
-def proportional_allocations(weights: list[int], target_length: int) -> list[int]:
-    allocations = [0] * len(weights)
-    active_indexes = [index for index, weight in enumerate(weights) if weight > 0]
-    if not active_indexes or target_length <= 0:
-        return allocations
+def append_resume_span(
+    spans: list[ResumeSpan],
+    *,
+    block_id: str,
+    span_type: ResumeSpanType,
+    tokens: list[InlineToken],
+    editable: bool,
+) -> None:
+    original = "".join(token.original for token in tokens)
+    if not original:
+        return
+    spans.append(
+        ResumeSpan(
+            span_id=f"{block_id}-span-{len(spans) + 1:04d}",
+            span_type=span_type,
+            original=original,
+            editable=editable,
+            text_nodes=tuple(
+                token.text_node for token in tokens if token.text_node is not None
+            ),
+        )
+    )
 
-    baseline = 1 if target_length >= len(active_indexes) else 0
-    for index in active_indexes:
-        allocations[index] = baseline
-    remaining = target_length - baseline * len(active_indexes)
-    total_weight = sum(weights[index] for index in active_indexes)
-    cumulative_weight = 0
-    assigned = 0
-    for index in active_indexes:
-        cumulative_weight += weights[index]
-        cumulative_target = round(cumulative_weight * remaining / total_weight)
-        allocations[index] += cumulative_target - assigned
-        assigned = cumulative_target
-    return allocations
+
+def run_formatting_signature(text_node: Any) -> bytes:
+    run = nearest_ancestor(text_node, qn("w:r"))
+    properties = run.find(qn("w:rPr")) if run is not None else None
+    return etree.tostring(properties) if properties is not None else b""
+
+
+def replace_resume_text_span(span: ResumeSpan, replacement: str) -> None:
+    if not span.editable or span.span_type != "text":
+        raise ValueError(f"Immutable resume span cannot be changed: {span.span_id}")
+    if not replacement.strip():
+        raise ValueError(f"Resume span replacement cannot be empty: {span.span_id}")
+    if any(control in replacement for control in ("\t", "\n", "\r")):
+        raise ValueError(
+            f"Resume text span replacement cannot contain tabs or line breaks: {span.span_id}"
+        )
+    if not span.text_nodes:
+        raise ValueError(f"Resume text span has no editable text node: {span.span_id}")
+    first, *remaining = span.text_nodes
+    set_text_node_value(first, replacement)
+    for node in remaining:
+        set_text_node_value(node, "")
+
+
+def set_text_node_value(node: Any, value: str) -> None:
+    node.text = value
+    if value.startswith(" ") or value.endswith(" "):
+        node.set(XML_SPACE, "preserve")
+    else:
+        node.attrib.pop(XML_SPACE, None)
 
 
 def validate_supported_resume_structure(body: Any) -> None:
@@ -372,25 +476,6 @@ def find_unsupported_word_constructions(body: Any) -> list[UnsupportedWordConstr
                 if unsupported_property:
                     append_issue(property_name, unsupported_property)
     return issues
-
-
-def validate_supported_paragraph(paragraph: Any) -> None:
-    for element in paragraph.iter():
-        local_name = etree.QName(element).localname
-        unsupported = UNSUPPORTED_ELEMENTS.get(local_name)
-        if unsupported:
-            raise UnsupportedResumeStructureError(
-                f"Unsupported DOCX construction: {unsupported} ({local_name})"
-            )
-        if local_name == "sdtPr":
-            for property_element in element.iterchildren():
-                property_name = etree.QName(property_element).localname
-                unsupported_property = UNSUPPORTED_CONTENT_CONTROL_PROPERTIES.get(property_name)
-                if unsupported_property:
-                    raise UnsupportedResumeStructureError(
-                        "Unsupported DOCX construction: "
-                        f"{unsupported_property} ({property_name})"
-                    )
 
 
 def nearest_ancestor(element: Any | None, tag: str) -> Any | None:

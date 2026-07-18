@@ -196,6 +196,7 @@ def build_document_diff(
         return [
             {
                 "blockId": replacement["blockId"],
+                "spanId": replacement["spanId"],
                 "type": blocks.get(replacement["blockId"], {}).get("type", "block"),
                 "original": replacement["original"],
                 "replacement": replacement["replacement"],
