@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "FastAPI backend for the tasko personal job search assistant."
 requires-python = ">=3.12"
 dependencies = [
+  "alembic>=1.14.0",
   "fastapi>=0.115.0",
   "httpx>=0.28.0",
   "pypdf>=5.0.0",
@@ -26,3 +27,6 @@ target-version = "py312"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.setuptools.packages.find]
+include = ["app*"]

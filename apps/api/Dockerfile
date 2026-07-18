@@ -22,6 +22,8 @@ COPY apps/api/pyproject.toml ./
 RUN python -m pip install --upgrade pip \
     && python -m pip install -e .
 
+COPY apps/api/alembic.ini ./alembic.ini
+COPY apps/api/migrations ./migrations
 COPY apps/api/app ./app
 
 EXPOSE 8000

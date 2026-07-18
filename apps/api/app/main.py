@@ -3,7 +3,6 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.applications import router as applications_router
 from app.api.assistant import router as assistant_router
@@ -14,7 +13,7 @@ from app.api.jobs import router as jobs_router
 from app.api.parsers import router as parsers_router
 from app.api.profile import router as profile_router
 from app.api.settings import router as settings_router
-from app.core.database import init_db
+from app.core.migrations import upgrade_database
 from app.core.settings import get_settings
 
 settings = get_settings()
@@ -22,11 +21,7 @@ settings = get_settings()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    try:
-        init_db()
-    except SQLAlchemyError:
-        pass
-
+    upgrade_database()
     yield
 
 
