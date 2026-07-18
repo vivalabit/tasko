@@ -23,23 +23,47 @@ ResumeBlockType = Literal[
 HEADING_WORDS = {
     "about",
     "achievements",
+    "berufserfahrung",
+    "bildung",
     "certifications",
     "education",
     "experience",
+    "kenntnisse",
     "languages",
     "profile",
+    "profil",
     "projects",
+    "projekte",
     "skills",
+    "sprachen",
     "summary",
     "technical skills",
     "work experience",
 }
-SUMMARY_SECTIONS = {"about", "objective", "profile", "professional profile", "summary"}
-SKILL_SECTIONS = {"competencies", "skills", "technical skills", "technologies", "tools"}
+SUMMARY_SECTIONS = {
+    "about",
+    "objective",
+    "profile",
+    "profil",
+    "professional profile",
+    "summary",
+}
+SKILL_SECTIONS = {
+    "competencies",
+    "kenntnisse",
+    "languages",
+    "skills",
+    "sprachen",
+    "technical skills",
+    "technologies",
+    "tools",
+}
 ACHIEVEMENT_SECTIONS = {
     "achievements",
+    "berufserfahrung",
     "experience",
     "projects",
+    "projekte",
     "professional experience",
     "work experience",
 }
@@ -124,12 +148,30 @@ def extract_resume_blocks_from_docx(content: bytes) -> list[dict[str, str]]:
 def parse_resume_blocks(body: Any) -> list[ResumeBlock]:
     validate_supported_resume_structure(body)
     blocks: list[ResumeBlock] = []
-    current_section = ""
+    document_section = ""
+    table_column_sections: dict[Any, dict[int, str]] = {}
+    active_table_row: Any | None = None
+    active_row_section = ""
     for paragraph in body.iter(qn("w:p")):
         original = paragraph_text(paragraph)
         text = original.strip()
         if not text:
             continue
+        table_cell = nearest_ancestor(paragraph, qn("w:tc"))
+        table = nearest_ancestor(table_cell, qn("w:tbl")) if table_cell is not None else None
+        table_row = nearest_ancestor(table_cell, qn("w:tr")) if table_cell is not None else None
+        if table_row is not active_table_row:
+            active_table_row = table_row
+            active_row_section = ""
+        if table is not None and table_cell is not None:
+            column_index = table_cell_column_index(table_cell)
+            current_section = (
+                active_row_section
+                or table_column_sections.get(table, {}).get(column_index, "")
+            )
+        else:
+            column_index = None
+            current_section = document_section
         block_type = classify_resume_block(
             paragraph,
             text,
@@ -144,7 +186,17 @@ def parse_resume_blocks(body: Any) -> list[ResumeBlock]:
         )
         blocks.append(block)
         if block_type == "heading":
-            current_section = normalize_heading(text)
+            section = normalize_heading(text)
+            if table is not None and column_index is not None:
+                column_sections = table_column_sections.setdefault(table, {})
+                for covered_column in range(
+                    column_index,
+                    column_index + table_cell_grid_span(table_cell),
+                ):
+                    column_sections[covered_column] = section
+                active_row_section = section
+            else:
+                document_section = section
     return blocks
 
 
@@ -155,18 +207,19 @@ def classify_resume_block(
     current_section: str,
     block_index: int,
 ) -> ResumeBlockType:
-    if has_ancestor(paragraph, qn("w:tc")):
-        return "table cell"
     if is_heading(paragraph, text):
         return "heading"
+    in_table_cell = has_ancestor(paragraph, qn("w:tc"))
     if CONTACT_PATTERN.search(text):
-        return "contact"
+        return "table cell" if in_table_cell else "contact"
     if current_section in SUMMARY_SECTIONS:
         return "summary"
     if current_section in SKILL_SECTIONS:
         return "skill"
     if current_section in ACHIEVEMENT_SECTIONS and len(text) >= 20:
         return "achievement"
+    if in_table_cell:
+        return "table cell"
     if has_numbering(paragraph):
         return "achievement"
     if block_index <= 2 and len(text) >= 40 and len(text.split()) >= 6:
@@ -340,22 +393,44 @@ def validate_supported_paragraph(paragraph: Any) -> None:
                     )
 
 
-def nearest_paragraph(element: Any) -> Any | None:
+def nearest_ancestor(element: Any | None, tag: str) -> Any | None:
+    if element is None:
+        return None
     ancestor = element.getparent()
     while ancestor is not None:
-        if ancestor.tag == qn("w:p"):
+        if ancestor.tag == tag:
             return ancestor
         ancestor = ancestor.getparent()
     return None
 
 
+def nearest_paragraph(element: Any) -> Any | None:
+    return nearest_ancestor(element, qn("w:p"))
+
+
 def has_ancestor(element: Any, tag: str) -> bool:
-    ancestor = element.getparent()
-    while ancestor is not None:
-        if ancestor.tag == tag:
-            return True
-        ancestor = ancestor.getparent()
-    return False
+    return nearest_ancestor(element, tag) is not None
+
+
+def table_cell_column_index(cell: Any) -> int:
+    row = nearest_ancestor(cell, qn("w:tr"))
+    if row is None:
+        return 0
+    column_index = 0
+    for sibling in row.iterchildren(qn("w:tc")):
+        if sibling is cell:
+            return column_index
+        column_index += table_cell_grid_span(sibling)
+    return column_index
+
+
+def table_cell_grid_span(cell: Any) -> int:
+    properties = cell.find(qn("w:tcPr"))
+    grid_span = properties.find(qn("w:gridSpan")) if properties is not None else None
+    try:
+        return max(1, int(grid_span.get(qn("w:val"), "1"))) if grid_span is not None else 1
+    except ValueError:
+        return 1
 
 
 def has_numbering(paragraph: Any) -> bool:

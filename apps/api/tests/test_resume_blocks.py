@@ -30,6 +30,50 @@ def resume_template() -> bytes:
     return output.getvalue()
 
 
+@pytest.fixture
+def german_resume_docx() -> bytes:
+    document = Document()
+    sections = [
+        ("Profil", "Backend-Entwicklerin für zuverlässige APIs."),
+        ("Kenntnisse", "Python und FastAPI"),
+        ("Bildung", "MSc Informatik, Universität Zürich"),
+        ("Sprachen", "Deutsch C2 und Englisch C1"),
+        ("Projekte", "Entwickelte eine verteilte Plattform für internationale Kundenteams."),
+        ("Berufserfahrung", "Betrieb produktiver API-Dienste für regulierte Geschäftskunden."),
+    ]
+    for heading, content in sections:
+        document.add_paragraph(heading)
+        document.add_paragraph(content)
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+@pytest.fixture
+def german_table_resume_docx() -> bytes:
+    document = Document()
+    table = document.add_table(rows=6, cols=2)
+    table.cell(0, 0).text = "Profil"
+    table.cell(0, 1).text = "Kenntnisse"
+    table.cell(1, 0).text = "Backend-Entwicklerin mit Erfahrung in zuverlässigen Plattformen."
+    table.cell(1, 1).text = "Python, FastAPI, PostgreSQL"
+    table.cell(2, 0).text = "Berufserfahrung"
+    table.cell(2, 1).text = "Projekte"
+    table.cell(3, 0).text = "Betrieb produktiver API-Dienste für Geschäftskunden."
+    table.cell(3, 1).text = "Entwickelte eine Plattform für internationale Teams."
+    table.cell(4, 0).text = "Sprachen"
+    table.cell(4, 1).text = "Deutsch C2, Englisch C1, Französisch B2"
+    table.cell(5, 0).text = "Bildung"
+    table.cell(5, 1).text = "MSc Informatik, Universität Zürich"
+    languages_table = document.add_table(rows=2, cols=2)
+    languages_table.cell(0, 0).merge(languages_table.cell(0, 1)).text = "Sprachen"
+    languages_table.cell(1, 0).text = "Deutsch C2"
+    languages_table.cell(1, 1).text = "Englisch C1"
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
 def test_docx_is_parsed_into_stable_typed_resume_blocks() -> None:
     blocks = extract_resume_blocks_from_docx(resume_template())
 
@@ -45,6 +89,52 @@ def test_docx_is_parsed_into_stable_typed_resume_blocks() -> None:
         "contact",
         "table cell",
     }
+
+
+def test_german_resume_sections_are_classified(german_resume_docx: bytes) -> None:
+    blocks = extract_resume_blocks_from_docx(german_resume_docx)
+    types_by_text = {block["original"]: block["type"] for block in blocks}
+
+    assert {types_by_text[heading] for heading in (
+        "Berufserfahrung",
+        "Kenntnisse",
+        "Bildung",
+        "Sprachen",
+        "Projekte",
+        "Profil",
+    )} == {"heading"}
+    assert types_by_text["Backend-Entwicklerin für zuverlässige APIs."] == "summary"
+    assert types_by_text["Python und FastAPI"] == "skill"
+    assert types_by_text["Deutsch C2 und Englisch C1"] == "skill"
+    assert types_by_text[
+        "Entwickelte eine verteilte Plattform für internationale Kundenteams."
+    ] == "achievement"
+    assert types_by_text[
+        "Betrieb produktiver API-Dienste für regulierte Geschäftskunden."
+    ] == "achievement"
+    assert types_by_text["MSc Informatik, Universität Zürich"] == "immutable"
+
+
+def test_german_sections_inside_tables_follow_rows_and_columns(
+    german_table_resume_docx: bytes,
+) -> None:
+    blocks = extract_resume_blocks_from_docx(german_table_resume_docx)
+    types_by_text = {block["original"]: block["type"] for block in blocks}
+
+    assert types_by_text[
+        "Backend-Entwicklerin mit Erfahrung in zuverlässigen Plattformen."
+    ] == "summary"
+    assert types_by_text["Python, FastAPI, PostgreSQL"] == "skill"
+    assert types_by_text[
+        "Betrieb produktiver API-Dienste für Geschäftskunden."
+    ] == "achievement"
+    assert types_by_text[
+        "Entwickelte eine Plattform für internationale Teams."
+    ] == "achievement"
+    assert types_by_text["Deutsch C2, Englisch C1, Französisch B2"] == "skill"
+    assert types_by_text["Deutsch C2"] == "skill"
+    assert types_by_text["Englisch C1"] == "skill"
+    assert types_by_text["MSc Informatik, Universität Zürich"] == "table cell"
 
 
 def test_resume_renderer_applies_partial_json_replacements_without_line_count() -> None:
