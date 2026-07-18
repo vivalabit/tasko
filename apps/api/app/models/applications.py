@@ -56,25 +56,24 @@ class StoredApplicationEventsRequest(BaseModel):
 
 class CandidateConfirmationInput(BaseModel):
     question_id: str = Field(min_length=1, max_length=160, alias="questionId")
-    requirement: str = Field(min_length=1, max_length=500)
     response: Literal["yes", "no", "partial"]
     example_text: str = Field(default="", max_length=1500, alias="exampleText")
-    blocking: bool = False
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class CandidateConfirmationsRequest(BaseModel):
     confirmations: list[CandidateConfirmationInput] = Field(default_factory=list, max_length=20)
-    required_question_ids: list[str] = Field(
-        max_length=20,
-        alias="requiredQuestionIds",
-    )
 
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
-class CandidateConfirmationPayload(CandidateConfirmationInput):
+class CandidateConfirmationPayload(BaseModel):
+    question_id: str = Field(min_length=1, max_length=160, alias="questionId")
+    requirement: str = Field(max_length=500)
+    response: Literal["yes", "no", "partial"]
+    example_text: str = Field(default="", max_length=1500, alias="exampleText")
+    blocking: bool
     updated_at: datetime = Field(alias="updatedAt")
 
     model_config = {"populate_by_name": True}

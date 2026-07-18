@@ -759,9 +759,9 @@ export function ApplicationWorkspace({
           const confirmation = candidateConfirmations[question.id];
           if (!confirmation) return [];
           return [{
-            ...confirmation,
-            requirement: question.requirement,
-            blocking: question.blocking,
+            questionId: confirmation.questionId,
+            response: confirmation.response,
+            exampleText: confirmation.exampleText,
           }];
         });
         const response = await fetch(
@@ -769,10 +769,7 @@ export function ApplicationWorkspace({
           {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              confirmations,
-              requiredQuestionIds: clarificationQuestions.filter((question) => question.blocking).map((question) => question.id),
-            }),
+            body: JSON.stringify({ confirmations }),
             signal: controller.signal,
           },
         );

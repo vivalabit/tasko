@@ -73,6 +73,64 @@ describe("ApplicationWorkspace", () => {
     });
   });
 
+  it("sends only candidate answers when saving confirmations", async () => {
+    const application = createV3WorkspaceApplication();
+    application.job.aiMatch?.applicationGuide?.clarificationQuestions?.push({
+      id: "production-research",
+      requirement: "Production research",
+      question: "Have you run research for a production product?",
+      why: "The role requires evidence from shipped products.",
+      claimIfConfirmed: "Led production product research.",
+      blocking: true,
+    });
+    const fetchMock = installApplicationWorkspaceApiMock({
+      confirmationPutResponse: [
+        {
+          questionId: "production-research",
+          requirement: "Production research",
+          response: "yes",
+          exampleText: "Led customer interviews before two production launches.",
+          blocking: true,
+          updatedAt: "2026-07-18T10:00:00.000Z",
+        },
+      ],
+    });
+
+    renderApplicationWorkspace(application);
+
+    expect(
+      await screen.findByText("Have you run research for a production product?"),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "yes" }));
+    fireEvent.change(
+      screen.getByPlaceholderText("Add a true, concrete example"),
+      {
+        target: {
+          value: "Led customer interviews before two production launches.",
+        },
+      },
+    );
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([, init]) => init?.method === "PUT"),
+      ).toBe(true);
+    });
+    const putCall = fetchMock.mock.calls.find(
+      ([, init]) => init?.method === "PUT",
+    );
+    expect(putCall).toBeDefined();
+    expect(JSON.parse(String(putCall?.[1]?.body))).toEqual({
+      confirmations: [
+        {
+          questionId: "production-research",
+          response: "yes",
+          exampleText: "Led customer interviews before two production launches.",
+        },
+      ],
+    });
+  });
+
   it("warns before downloading an outdated and unvalidated document", async () => {
     installApplicationWorkspaceApiMock({
       documents: [

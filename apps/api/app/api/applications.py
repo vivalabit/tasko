@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy.exc import SQLAlchemyError
@@ -18,15 +19,26 @@ from app.models.applications import (
     StoredApplicationRecord,
     StoredApplicationsRequest,
 )
+from app.models.jobs import JobMatchRecord
+from app.services.ai_match import MATCHER_VERSION
+from app.services.job_match_store import match_record_to_ai_match
 
 router = APIRouter()
+
+
+@dataclass(frozen=True)
+class StoredClarificationQuestion:
+    requirement: str
+    blocking: bool
 
 
 def is_meaningful_confirmation(confirmation: CandidateConfirmationInput) -> bool:
     if confirmation.response == "no":
         return True
     normalized = " ".join(confirmation.example_text.split())
-    words = [word for word in normalized.split(" ") if any(character.isalnum() for character in word)]
+    words = [
+        word for word in normalized.split(" ") if any(character.isalnum() for character in word)
+    ]
     return len(normalized) >= 10 and len(words) >= 2
 
 
@@ -39,6 +51,66 @@ def confirmation_payload(record: CandidateConfirmationRecord) -> CandidateConfir
         blocking=record.blocking,
         updatedAt=record.updated_at,
     )
+
+
+def stored_clarification_questions(
+    db: Session,
+    application: StoredApplicationRecord,
+) -> dict[str, StoredClarificationQuestion]:
+    application_data = application.data if isinstance(application.data, dict) else {}
+    job = application_data.get("job")
+    job_id = str(job.get("id") or "").strip() if isinstance(job, dict) else ""
+    if not job_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Application does not reference a job with a stored ai-match-v3",
+        )
+
+    match_record = (
+        db.query(JobMatchRecord)
+        .filter(
+            JobMatchRecord.job_id == job_id,
+            JobMatchRecord.matcher_version == MATCHER_VERSION,
+        )
+        .order_by(JobMatchRecord.created_at.desc(), JobMatchRecord.id.desc())
+        .first()
+    )
+    if not match_record:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Stored ai-match-v3 is required before saving candidate confirmations",
+        )
+
+    application_guide = match_record_to_ai_match(match_record).get("applicationGuide")
+    if not isinstance(application_guide, dict):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Stored ai-match-v3 application guide is unavailable",
+        )
+
+    raw_questions = application_guide.get("clarificationQuestions")
+    questions: dict[str, StoredClarificationQuestion] = {}
+    if not isinstance(raw_questions, list):
+        return questions
+
+    for raw_question in raw_questions:
+        if not isinstance(raw_question, dict):
+            continue
+        question_id = str(raw_question.get("id") or "").strip()
+        question_text = str(raw_question.get("question") or "").strip()
+        requirement = str(raw_question.get("requirement") or question_text).strip()[:500]
+        if not question_id or not requirement:
+            continue
+        if question_id in questions:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Stored ai-match-v3 contains duplicate clarification question IDs",
+            )
+        questions[question_id] = StoredClarificationQuestion(
+            requirement=requirement,
+            blocking=bool(raw_question.get("blocking")),
+        )
+    return questions
 
 
 @router.get("", response_model=list[StoredApplicationPayload])
@@ -116,11 +188,14 @@ def replace_candidate_confirmations(
     db: Session = Depends(get_db),
 ) -> list[CandidateConfirmationPayload]:
     try:
-        if not db.get(StoredApplicationRecord, application_id):
+        application = db.get(StoredApplicationRecord, application_id)
+        if not application:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Application not found",
             )
+
+        questions_by_id = stored_clarification_questions(db, application)
 
         question_ids = [confirmation.question_id for confirmation in request.confirmations]
         if len(question_ids) != len(set(question_ids)):
@@ -129,12 +204,18 @@ def replace_candidate_confirmations(
                 detail="Candidate confirmation question IDs must be unique",
             )
 
-        required_question_ids = set(request.required_question_ids)
-        if len(required_question_ids) != len(request.required_question_ids):
+        unknown_question_ids = set(question_ids) - set(questions_by_id)
+        if unknown_question_ids:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="Required candidate confirmation question IDs must be unique",
+                detail=(
+                    "Unknown candidate confirmation question IDs: "
+                    f"{', '.join(sorted(unknown_question_ids))}"
+                ),
             )
+        required_question_ids = {
+            question_id for question_id, question in questions_by_id.items() if question.blocking
+        }
         missing_required_ids = required_question_ids - set(question_ids)
         if missing_required_ids:
             raise HTTPException(
@@ -143,14 +224,12 @@ def replace_candidate_confirmations(
             )
 
         for confirmation in request.confirmations:
-            if (
-                confirmation.question_id in required_question_ids
-                and not is_meaningful_confirmation(confirmation)
-            ):
+            question = questions_by_id[confirmation.question_id]
+            if question.blocking and not is_meaningful_confirmation(confirmation):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail=(
-                        f"A meaningful example is required for {confirmation.requirement} "
+                        f"A meaningful example is required for {question.requirement} "
                         "when the answer is yes or partial"
                     ),
                 )
@@ -169,19 +248,20 @@ def replace_candidate_confirmations(
                 db.delete(record)
 
         for confirmation in request.confirmations:
+            question = questions_by_id[confirmation.question_id]
             example_text = confirmation.example_text.strip()
             record = existing_records.get(confirmation.question_id)
             if record:
                 has_changed = (
-                    record.requirement != confirmation.requirement.strip()
+                    record.requirement != question.requirement
                     or record.response != confirmation.response
                     or record.example_text != example_text
-                    or record.blocking != (confirmation.question_id in required_question_ids)
+                    or record.blocking != question.blocking
                 )
-                record.requirement = confirmation.requirement.strip()
+                record.requirement = question.requirement
                 record.response = confirmation.response
                 record.example_text = example_text
-                record.blocking = confirmation.question_id in required_question_ids
+                record.blocking = question.blocking
                 if has_changed:
                     record.updated_at = now
             else:
@@ -189,10 +269,10 @@ def replace_candidate_confirmations(
                     CandidateConfirmationRecord(
                         application_id=application_id,
                         question_id=confirmation.question_id,
-                        requirement=confirmation.requirement.strip(),
+                        requirement=question.requirement,
                         response=confirmation.response,
                         example_text=example_text,
-                        blocking=confirmation.question_id in required_question_ids,
+                        blocking=question.blocking,
                         updated_at=now,
                     )
                 )

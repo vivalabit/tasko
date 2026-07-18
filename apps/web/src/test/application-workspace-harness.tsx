@@ -15,6 +15,7 @@ type ApplicationOverrides = Omit<Partial<WorkspaceApplication>, "job"> & {
 };
 
 type WorkspaceApiOptions = {
+  confirmationPutResponse?: unknown[];
   confirmations?: unknown[];
   documents?: unknown[];
   templates?: unknown[];
@@ -172,6 +173,7 @@ function createWorkspaceApplication(
 }
 
 export function installApplicationWorkspaceApiMock({
+  confirmationPutResponse = [],
   confirmations = [],
   documents = [],
   templates = [],
@@ -197,6 +199,12 @@ export function installApplicationWorkspaceApiMock({
       method === "GET"
     ) {
       return Response.json(confirmations);
+    }
+    if (
+      /^\/applications\/[^/]+\/confirmations$/.test(url.pathname) &&
+      method === "PUT"
+    ) {
+      return Response.json(confirmationPutResponse);
     }
 
     throw new Error(
