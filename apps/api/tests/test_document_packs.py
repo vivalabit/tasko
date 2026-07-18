@@ -53,6 +53,14 @@ def pack_client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, N
                         "job": {"id": "vacancy-1"},
                     },
                 ),
+                StoredApplicationRecord(
+                    id="application-other",
+                    data={
+                        "id": "application-other",
+                        "status": "draft",
+                        "job": {"id": "vacancy-1"},
+                    },
+                ),
                 StoredJobRecord(
                     id="vacancy-1",
                     data={
@@ -307,6 +315,50 @@ def test_atomic_pack_updates_both_documents_as_one_idempotent_version_batch(
     assert {document["currentVersion"] for document in updated.json()["documents"]} == {2}
     assert retried.json()["documents"] == updated.json()["documents"]
     assert version_count == 4
+
+
+def test_pack_rejects_document_from_another_application_or_wrong_type(
+    pack_client,
+    monkeypatch,
+) -> None:
+    client, testing_session_local = pack_client
+    resume_template_id, cover_template_id = upload_pack_templates(client)
+    monkeypatch.setattr(
+        "app.api.documents.validate_generated_document",
+        lambda **kwargs: validation_report(kwargs["document_type"]),
+    )
+    initial = client.post(
+        "/documents/packs",
+        json=pack_request(resume_template_id, cover_template_id),
+    )
+    documents_by_type = {
+        document["type"]: document for document in initial.json()["documents"]
+    }
+
+    foreign_request = pack_request(resume_template_id, cover_template_id)
+    foreign_request["packJobId"] = "foreign-pack"
+    foreign_request["applicationId"] = "application-other"
+    foreign_request["resume"]["documentId"] = documents_by_type["tailored_resume"]["id"]
+    foreign = client.post("/documents/packs", json=foreign_request)
+
+    wrong_type_request = pack_request(resume_template_id, cover_template_id)
+    wrong_type_request["packJobId"] = "wrong-type-pack"
+    wrong_type_request["resume"]["documentId"] = documents_by_type["cover_letter"]["id"]
+    wrong_type = client.post("/documents/packs", json=wrong_type_request)
+
+    with testing_session_local() as db:
+        version_count = db.scalar(select(func.count()).select_from(DocumentVersionRecord))
+
+    assert initial.status_code == 201
+    assert foreign.status_code == 409
+    assert foreign.json()["detail"] == (
+        "Existing document is not attached to the application"
+    )
+    assert wrong_type.status_code == 422
+    assert wrong_type.json()["detail"] == (
+        "Existing document type does not match pack item type"
+    )
+    assert version_count == 2
 
 
 def test_atomic_pack_stops_after_failed_cv_validation(pack_client, monkeypatch) -> None:

@@ -236,6 +236,12 @@ def validate_resume_pack_item(
     db: Session = Depends(get_db),
 ) -> DocumentPackValidationPayload:
     try:
+        require_pack_document_ownership(
+            db,
+            request.resume,
+            document_type="tailored_resume",
+            application_id=request.application_id,
+        )
         context = load_authoritative_generation_context(
             db,
             application_id=request.application_id,
@@ -276,6 +282,20 @@ def create_document_pack(
                     "status": "rolled_back",
                     "message": "Atomic application packs require a cover letter",
                 },
+            )
+
+        require_pack_document_ownership(
+            db,
+            request.resume,
+            document_type="tailored_resume",
+            application_id=request.application_id,
+        )
+        if request.cover_letter is not None:
+            require_pack_document_ownership(
+                db,
+                request.cover_letter,
+                document_type="cover_letter",
+                application_id=request.application_id,
             )
 
         try:
@@ -460,6 +480,8 @@ def update_document(
         record = require_document(db, document_id)
         fields = request.model_fields_set
         has_provenance = bool(request.generation_model and request.generation_model.strip())
+        if request.application_id:
+            require_document_application_ownership(record, request.application_id)
         if (has_provenance or "template_id" in fields) and (
             "content" not in fields or request.content is None
         ):
@@ -588,6 +610,8 @@ def update_document(
                         generation_provenance.input_versions,
                         now,
                     )
+                else:
+                    record.generation_provenance = None
                 current_provenance = record.generation_provenance
                 if current_provenance:
                     append_version_generation_provenance(
@@ -1059,12 +1083,13 @@ def persist_pack_document(
 ) -> str:
     provenance = context.provenance()
     if item.document_id:
-        record = require_document(db, item.document_id)
-        if record.type != document_type:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="Existing document type does not match pack item type",
-            )
+        record = require_pack_document_ownership(
+            db,
+            item,
+            document_type=document_type,
+            application_id=context.application_id,
+        )
+        assert record is not None
         next_version = record.current_version + 1
         record.title = item.title.strip()
         record.job_id = context.job_id
@@ -1121,6 +1146,25 @@ def persist_pack_document(
     record.current_version = next_version
     record.updated_at = created_at
     return record.id
+
+
+def require_pack_document_ownership(
+    db: Session,
+    item: DocumentPackItemRequest,
+    *,
+    document_type: str,
+    application_id: str,
+) -> DocumentRecord | None:
+    if not item.document_id:
+        return None
+    record = require_document(db, item.document_id)
+    if record.type != document_type:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Existing document type does not match pack item type",
+        )
+    require_document_application_ownership(record, application_id)
+    return record
 
 
 def document_pack_request_fingerprint(
@@ -1236,6 +1280,20 @@ def single_attachment_application_id(record: DocumentRecord) -> str | None:
     if len(application_ids) != 1:
         return None
     return next(iter(application_ids))
+
+
+def require_document_application_ownership(
+    record: DocumentRecord,
+    application_id: str,
+) -> None:
+    if any(
+        attachment.application_id == application_id for attachment in record.attachments
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Existing document is not attached to the application",
+    )
 
 
 def document_file_record(

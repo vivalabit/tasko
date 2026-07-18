@@ -535,14 +535,41 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
         )
         listed = client.get("/documents")
         with testing_session_local() as db:
-            validation_count = db.scalar(
-                select(func.count()).select_from(DocumentVersionValidationRecord)
-            )
             profile = db.get(ProfileRecord, "default")
             assert profile is not None
             profile.data = {**profile.data, "skills": "Python, PostgreSQL"}
             db.commit()
         refreshed = client.get("/documents?applicationId=application-validated")
+        foreign_update = client.patch(
+            f"/documents/{created.json()['id']}",
+            json={
+                "title": "Must not be changed",
+                "applicationId": "application-not-owner",
+            },
+        )
+        manually_updated = client.patch(
+            f"/documents/{created.json()['id']}",
+            json={
+                "content": (
+                    "Dear Hiring Team,\n\n"
+                    "This content was edited without regeneration.\n\n"
+                    "Kind regards,"
+                ),
+                "applicationId": "application-validated",
+            },
+        )
+        with testing_session_local() as db:
+            validation_count = db.scalar(
+                select(func.count()).select_from(DocumentVersionValidationRecord)
+            )
+            current_provenance_count = db.scalar(
+                select(func.count()).select_from(DocumentGenerationProvenanceRecord)
+            )
+            version_provenance_count = db.scalar(
+                select(func.count()).select_from(
+                    DocumentVersionGenerationProvenanceRecord
+                )
+            )
     finally:
         app.dependency_overrides.clear()
 
@@ -569,7 +596,20 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
     assert refreshed.json()[0]["currentGenerationFingerprint"] != created.json()[
         "generationFingerprint"
     ]
+    assert foreign_update.status_code == 409
+    assert foreign_update.json()["detail"] == (
+        "Existing document is not attached to the application"
+    )
+    assert manually_updated.status_code == 200
+    assert manually_updated.json()["currentVersion"] == 2
+    assert manually_updated.json()["generationFingerprint"] is None
+    assert manually_updated.json()["currentGenerationFingerprint"] is None
+    assert manually_updated.json()["versions"][0]["factualValidation"]["status"] == "passed"
+    assert manually_updated.json()["versions"][1]["factualValidation"] == {}
+    assert manually_updated.json()["versions"][1]["visualValidation"] == {}
     assert validation_count == 1
+    assert current_provenance_count == 0
+    assert version_provenance_count == 1
     assert captured_evidence["language"] == "German"
     assert captured_evidence["profile"]["experience"].startswith("Built a Python service")
     assert captured_evidence["confirmations"] == [
