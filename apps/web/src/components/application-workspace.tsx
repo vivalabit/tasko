@@ -49,6 +49,11 @@ import {
   getDocumentVersionDownloadWarnings,
   getGeneratedDocumentReadiness,
 } from "@/lib/document-readiness";
+import {
+  API_HEALTH_TIMEOUT_MS,
+  apiUnavailableMessage,
+  fetchWithTimeout,
+} from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 
 type WorkspaceJob = {
@@ -562,16 +567,45 @@ export function ApplicationWorkspace({
   const [aiDisclosureConfirmed, setAiDisclosureConfirmed] = useState(false);
   const [pendingAiGeneration, setPendingAiGeneration] = useState<PendingAiGeneration>(null);
   const [aiConfiguration, setAiConfiguration] = useState<AiConfiguration>(defaultAiConfiguration);
+  const [apiHealth, setApiHealth] = useState<"checking" | "available" | "unavailable">("checking");
+  const [apiRetryVersion, setApiRetryVersion] = useState(0);
+
+  function retryApiRequests() {
+    setApiHealth("checking");
+    setDocumentError("");
+    setConfirmationSyncMessage("");
+    setApiRetryVersion((current) => current + 1);
+  }
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setApiHealth("checking");
+    fetchWithTimeout(
+      `${apiBaseUrl}/health`,
+      { cache: "no-store", signal: controller.signal },
+      API_HEALTH_TIMEOUT_MS,
+    )
+      .then((response) => {
+        if (!response.ok) throw new Error("API health check failed");
+        setApiHealth("available");
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setApiHealth("unavailable");
+      });
+    return () => controller.abort();
+  }, [apiRetryVersion]);
 
   useEffect(() => {
     if (!application) return;
     setDocumentsLoaded(false);
     setDocuments([]);
+    setDocumentError("");
     const controller = new AbortController();
     Promise.all([
-      fetch(`${apiBaseUrl}/documents?applicationId=${encodeURIComponent(application.id)}`, { signal: controller.signal }),
-      fetch(`${apiBaseUrl}/documents/templates/library`, { signal: controller.signal }),
-      fetch(`${apiBaseUrl}/assistant/config`, { signal: controller.signal }),
+      fetchWithTimeout(`${apiBaseUrl}/documents?applicationId=${encodeURIComponent(application.id)}`, { signal: controller.signal }),
+      fetchWithTimeout(`${apiBaseUrl}/documents/templates/library`, { signal: controller.signal }),
+      fetchWithTimeout(`${apiBaseUrl}/assistant/config`, { signal: controller.signal }),
     ])
       .then(async ([documentsResponse, templatesResponse, aiConfigurationResponse]) => {
         if (!documentsResponse.ok || !templatesResponse.ok || !aiConfigurationResponse.ok) throw new Error("Application documents are temporarily unavailable");
@@ -587,10 +621,11 @@ export function ApplicationWorkspace({
       })
       .catch((error) => {
         if (error instanceof DOMException && error.name === "AbortError") return;
-        setDocumentError(error instanceof Error ? error.message : "Application documents are temporarily unavailable");
+        setApiHealth("unavailable");
+        setDocumentError(apiUnavailableMessage(error, "Application documents are temporarily unavailable"));
       });
     return () => controller.abort();
-  }, [application]);
+  }, [application, apiRetryVersion]);
 
   const latestResume = useMemo(
     () => documents.find((document) => document.type === "tailored_resume"),
@@ -656,7 +691,7 @@ export function ApplicationWorkspace({
 
     async function loadCandidateConfirmations() {
       try {
-        const response = await fetch(
+        const response = await fetchWithTimeout(
           `${apiBaseUrl}/applications/${encodeURIComponent(applicationId)}/confirmations`,
           { cache: "no-store", signal: controller.signal },
         );
@@ -702,14 +737,15 @@ export function ApplicationWorkspace({
         }
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
+        setApiHealth("unavailable");
         setConfirmationSyncStatus("error");
-        setConfirmationSyncMessage(error instanceof Error ? error.message : "Candidate confirmations could not be loaded");
+        setConfirmationSyncMessage(apiUnavailableMessage(error, "Candidate confirmations could not be loaded"));
       }
     }
 
     void loadCandidateConfirmations();
     return () => controller.abort();
-  }, [application?.id, application?.job.aiMatch?.updatedAt]);
+  }, [application?.id, application?.job.aiMatch?.updatedAt, apiRetryVersion]);
 
   useEffect(() => {
     if (!application || !confirmationsDirty) return;
@@ -737,7 +773,7 @@ export function ApplicationWorkspace({
             exampleText: confirmation.exampleText,
           }];
         });
-        const response = await fetch(
+        const response = await fetchWithTimeout(
           `${apiBaseUrl}/applications/${encodeURIComponent(application.id)}/confirmations`,
           {
             method: "PUT",
@@ -755,8 +791,9 @@ export function ApplicationWorkspace({
         window.localStorage.removeItem(`tasko.application-confirmations.${application.id}`);
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
+        setApiHealth("unavailable");
         setConfirmationSyncStatus("error");
-        setConfirmationSyncMessage(error instanceof Error ? error.message : "Candidate confirmations could not be saved");
+        setConfirmationSyncMessage(apiUnavailableMessage(error, "Candidate confirmations could not be saved"));
       }
     }, 600);
 
@@ -1370,6 +1407,11 @@ export function ApplicationWorkspace({
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-full border border-accent/30 bg-accent/10 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-[#ff8b4a]">Application prep</span>
                 <span className="rounded-full border border-white/10 bg-white/[0.045] px-2.5 py-1 text-[10px] font-bold capitalize text-[#cbd3df]">{application.status === "draft" ? "In progress" : application.status}</span>
+                <span className={cn("inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-bold", apiHealth === "available" ? "border-success/25 bg-success/10 text-success" : apiHealth === "unavailable" ? "border-red-400/30 bg-red-500/10 text-red-200" : "border-white/10 bg-white/[0.045] text-muted")} role="status" aria-live="polite">
+                  <span className={cn("h-1.5 w-1.5 rounded-full", apiHealth === "available" ? "bg-success" : apiHealth === "unavailable" ? "bg-red-300" : "animate-pulse bg-muted")} />
+                  {apiHealth === "available" ? "API online" : apiHealth === "unavailable" ? "API unavailable" : "Checking API…"}
+                </span>
+                {apiHealth === "unavailable" ? <button type="button" onClick={retryApiRequests} className="inline-flex items-center gap-1 text-[10px] font-bold text-red-200 hover:text-white"><RefreshCw className="h-3 w-3" /> Retry</button> : null}
               </div>
               <h1 className="mt-4 max-w-4xl text-2xl font-bold leading-[1.15] tracking-[-0.025em] text-white sm:text-3xl">{application.job.title}</h1>
               <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-[#aeb7c5]">
@@ -1483,10 +1525,10 @@ export function ApplicationWorkspace({
             <section className={cn("workspace-card overflow-hidden", !confirmationsReady && "border-amber-300/20")}>
               <div className="flex items-start gap-3 border-b border-white/[0.07] px-5 py-5 sm:px-6">
                 <span className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-xl", !confirmationsReady ? "bg-amber-400/10 text-amber-200" : "bg-success/10 text-success")}><MessageSquareText className="h-[18px] w-[18px]" /></span>
-                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">02 · Confirm your evidence</p>{!hasCurrentAnalysis ? <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black text-amber-200">Analysis required</span> : hasOversizedConfirmation ? <span className="rounded-full border border-red-400/25 bg-red-500/10 px-2 py-0.5 text-[9px] font-black text-red-200">Shorten long answer</span> : unansweredBlockingQuestions.length ? <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black text-amber-200">{unansweredBlockingQuestions.length} required</span> : <span className="rounded-full border border-success/25 bg-success/10 px-2 py-0.5 text-[9px] font-black text-success">Complete</span>}<span className={cn("rounded-full border px-2 py-0.5 text-[9px] font-black", confirmationSyncStatus === "saved" ? "border-success/20 bg-success/[0.06] text-success" : confirmationSyncStatus === "error" ? "border-red-400/25 bg-red-500/10 text-red-200" : "border-white/10 bg-white/[0.035] text-muted")}>{confirmationSyncStatus === "loading" ? "Loading answers" : confirmationSyncStatus === "saving" ? "Saving…" : confirmationSyncStatus === "saved" ? "Saved" : confirmationSyncStatus === "error" ? "Save failed" : "Not saved"}</span></div><h2 className="mt-1 text-lg font-bold text-white">Keep every claim accurate</h2><p className="mt-1 text-xs leading-5 text-muted">Choose yes, no, or partial and support positive answers with a concrete example.</p></div>
+                <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">02 · Confirm your evidence</p>{!hasCurrentAnalysis ? <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black text-amber-200">Analysis required</span> : hasOversizedConfirmation ? <span className="rounded-full border border-red-400/25 bg-red-500/10 px-2 py-0.5 text-[9px] font-black text-red-200">Shorten long answer</span> : unansweredBlockingQuestions.length ? <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2 py-0.5 text-[9px] font-black text-amber-200">{unansweredBlockingQuestions.length} required</span> : <span className="rounded-full border border-success/25 bg-success/10 px-2 py-0.5 text-[9px] font-black text-success">Complete</span>}<span className={cn("rounded-full border px-2 py-0.5 text-[9px] font-black", confirmationSyncStatus === "saved" ? "border-success/20 bg-success/[0.06] text-success" : confirmationSyncStatus === "error" ? "border-red-400/25 bg-red-500/10 text-red-200" : "border-white/10 bg-white/[0.035] text-muted")}>{confirmationSyncStatus === "loading" ? "Loading answers" : confirmationSyncStatus === "saving" ? "Saving…" : confirmationSyncStatus === "saved" ? "Saved" : confirmationSyncStatus === "error" ? apiHealth === "unavailable" ? "API unavailable" : "Sync failed" : "Not saved"}</span></div><h2 className="mt-1 text-lg font-bold text-white">Keep every claim accurate</h2><p className="mt-1 text-xs leading-5 text-muted">Choose yes, no, or partial and support positive answers with a concrete example.</p></div>
               </div>
               <div className="p-5 sm:p-6">
-                {confirmationSyncMessage ? <div className={cn("mb-4 rounded-xl border px-3 py-2.5 text-[10px] leading-4", confirmationSyncStatus === "error" ? "border-red-400/25 bg-red-500/[0.07] text-red-200" : "border-amber-400/20 bg-amber-400/[0.05] text-amber-100/80")}>{confirmationSyncMessage}</div> : null}
+                {confirmationSyncMessage ? <div className={cn("mb-4 flex items-center justify-between gap-3 rounded-xl border px-3 py-2.5 text-[10px] leading-4", confirmationSyncStatus === "error" ? "border-red-400/25 bg-red-500/[0.07] text-red-200" : "border-amber-400/20 bg-amber-400/[0.05] text-amber-100/80")}><span>{confirmationSyncMessage}</span>{confirmationSyncStatus === "error" ? <button type="button" onClick={retryApiRequests} className="inline-flex shrink-0 items-center gap-1 font-bold text-red-100 hover:text-white"><RefreshCw className="h-3 w-3" /> Retry</button> : null}</div> : null}
                 {!hasCurrentAnalysis ? <div className="flex items-center gap-3 rounded-xl border border-amber-400/20 bg-amber-400/[0.045] px-4 py-3 text-xs text-amber-100/80"><AlertTriangle className="h-5 w-5 shrink-0 text-amber-200" /><span>Update the analysis before confirming evidence. The legacy percentage does not contain the questions required for safe document generation.</span></div> : clarificationQuestions.length ? <div className="grid gap-3">{clarificationQuestions.map((question, index) => {
                   const confirmation = candidateConfirmations[question.id];
                   const answerLength = confirmation?.exampleText.trim().length ?? 0;
@@ -1508,13 +1550,13 @@ export function ApplicationWorkspace({
                 </div>
               </div>
               <div className="p-5 sm:p-6">
-                {documentError ? <div className="mb-4 rounded-xl border border-red-400/25 bg-red-500/[0.07] px-3 py-2.5 text-xs leading-5 text-red-200">{documentError}</div> : null}
+                {documentError ? <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-red-400/25 bg-red-500/[0.07] px-3 py-2.5 text-xs leading-5 text-red-200"><span>{documentError}</span><button type="button" onClick={retryApiRequests} className="inline-flex shrink-0 items-center gap-1.5 font-bold text-red-100 hover:text-white"><RefreshCw className="h-3.5 w-3.5" /> Retry</button></div> : null}
                 {packProgress ? <div className={cn("mb-4 rounded-xl border p-3", packProgress.status === "failed" ? "border-red-400/25 bg-red-500/[0.045]" : packProgress.status === "partial" ? "border-amber-400/25 bg-amber-400/[0.045]" : "border-white/[0.08] bg-black/15")}><div className="grid gap-2 sm:grid-cols-4">{packStageDefinitions.map((stage, index) => { const currentIndex = packStageDefinitions.findIndex((candidate) => candidate.id === packProgress.stage); const stageStatus = index < currentIndex ? "completed" : index === currentIndex ? packProgress.status : "pending"; return <div key={stage.id} className={cn("rounded-lg border px-2.5 py-2", stageStatus === "completed" ? "border-success/20 bg-success/[0.05]" : stageStatus === "failed" ? "border-red-400/25 bg-red-500/[0.06]" : stageStatus === "partial" ? "border-amber-400/25 bg-amber-400/[0.06]" : stageStatus === "active" || stageStatus === "retrying" ? "border-accent/30 bg-accent/[0.07]" : "border-white/[0.06] bg-white/[0.015]")}><div className="flex items-center gap-2">{stageStatus === "completed" ? <Check className="h-3.5 w-3.5 text-success" /> : stageStatus === "active" || stageStatus === "retrying" ? <LoaderCircle className="h-3.5 w-3.5 animate-spin text-accent" /> : stageStatus === "failed" ? <AlertTriangle className="h-3.5 w-3.5 text-red-200" /> : <CircleDot className="h-3.5 w-3.5 text-muted" />}<span className={cn("text-[9px] font-black uppercase tracking-wide", stageStatus === "completed" ? "text-success" : stageStatus === "failed" ? "text-red-200" : stageStatus === "partial" ? "text-amber-200" : stageStatus === "active" || stageStatus === "retrying" ? "text-white" : "text-muted")}>{stage.label}</span></div></div>; })}</div><div className="mt-2 flex items-center justify-between gap-3 px-1 text-[9px]"><span className={cn(packProgress.status === "failed" ? "text-red-200" : packProgress.status === "partial" ? "text-amber-200" : "text-muted")}>{packProgress.message}</span><span className="shrink-0 font-mono text-muted">{packProgress.attempt > 1 ? `attempt ${packProgress.attempt}/3 · ` : ""}{packProgress.jobId.slice(-8)}</span></div></div> : null}
                 {effectiveLanguage && !resumeSources.some((source) => source.language === effectiveLanguage) ? <div className="mb-4 rounded-xl border border-amber-400/25 bg-amber-400/[0.07] px-3 py-2.5 text-xs leading-5 text-amber-200">No {effectiveLanguage} CV DOCX is saved in Profile. Add one or choose another language.</div> : null}
                 {templates.length ? <details className="mb-4 rounded-xl border border-white/[0.07] bg-black/15"><summary className="cursor-pointer px-3 py-2.5 text-[10px] font-bold text-[#cbd3df] marker:text-muted">Stored templates · {templates.length}</summary><div className="divide-y divide-white/[0.06] border-t border-white/[0.07] px-3">{templates.map((template) => <div key={template.id} className="flex items-center gap-3 py-2"><div className="min-w-0 flex-1"><p className="truncate text-[10px] font-bold text-white">{template.name}</p><p className="truncate text-[9px] text-muted">{template.type === "tailored_resume" ? "CV" : "Cover letter"} · {template.fileName}</p></div><Button type="button" variant="ghost" aria-label={`Delete template ${template.name}`} disabled={deletingTemplateId === template.id} onClick={() => void deleteStoredTemplate(template)} className="h-8 rounded-lg border border-red-400/20 px-2 text-red-200 hover:bg-red-500/10">{deletingTemplateId === template.id ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}</Button></div>)}</div></details> : null}
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <DocumentCard documentType="tailored_resume" icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} onLoadMoreVersions={() => latestResume && void loadMoreDocumentVersions(latestResume)} onDelete={() => latestResume && void deleteGeneratedDocument(latestResume)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? "Loading history…" : !selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
-                  <DocumentCard documentType="cover_letter" icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} onLoadMoreVersions={() => latestCoverLetter && void loadMoreDocumentVersions(latestCoverLetter)} onDelete={() => latestCoverLetter && void deleteGeneratedDocument(latestCoverLetter)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? "Loading history…" : !selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
+                  <DocumentCard documentType="tailored_resume" icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} onLoadMoreVersions={() => latestResume && void loadMoreDocumentVersions(latestResume)} onDelete={() => latestResume && void deleteGeneratedDocument(latestResume)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
+                  <DocumentCard documentType="cover_letter" icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} onLoadMoreVersions={() => latestCoverLetter && void loadMoreDocumentVersions(latestCoverLetter)} onDelete={() => latestCoverLetter && void deleteGeneratedDocument(latestCoverLetter)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
                 </div>
               </div>
             </section>

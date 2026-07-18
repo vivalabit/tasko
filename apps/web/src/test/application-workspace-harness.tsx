@@ -196,6 +196,9 @@ export function installApplicationWorkspaceApiMock({
     const customResponse = await requestHandler?.(url, method, init);
     if (customResponse) return customResponse;
 
+    if (url.pathname === "/health" && method === "GET") {
+      return Response.json({ status: "ok" });
+    }
     if (url.pathname === "/documents" && method === "GET") {
       return Response.json(documents);
     }

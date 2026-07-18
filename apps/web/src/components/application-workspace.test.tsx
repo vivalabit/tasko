@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -71,6 +71,43 @@ describe("ApplicationWorkspace", () => {
       expect(
         screen.getAllByRole("button", { name: "Select source first" }),
       ).toHaveLength(2);
+    });
+  });
+
+  it("stops hung loaders, reports API unavailable, and retries", async () => {
+    vi.useFakeTimers();
+    let apiUnavailable = true;
+    installApplicationWorkspaceApiMock({
+      requestHandler: (_url, _method, init) => {
+        if (!apiUnavailable) return undefined;
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("Aborted", "AbortError"));
+          });
+        });
+      },
+    });
+
+    renderApplicationWorkspace(createV3WorkspaceApplication());
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    expect(screen.getAllByText("API unavailable").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Loading answers")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Retry loading history" })).toHaveLength(2);
+
+    apiUnavailable = false;
+    fireEvent.click(screen.getAllByRole("button", { name: "Retry" })[0]);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+
+    expect(await screen.findByText("API online")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "Select source first" })).toHaveLength(2);
     });
   });
 
@@ -485,6 +522,6 @@ describe("ApplicationWorkspace", () => {
         screen.getAllByRole("button", { name: "Select source first" }),
       ).toHaveLength(2);
     });
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 });

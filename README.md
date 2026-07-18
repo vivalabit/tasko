@@ -14,11 +14,6 @@ cd apps/api
 alembic upgrade head
 ```
 
-For a database that was created by an older Tasko version through SQLAlchemy
-`create_all`, verify that its schema matches the baseline and mark that one
-revision as already applied before starting the upgraded API for the first
-time:
-
 ```bash
 cd apps/api
 alembic stamp 20260718_0001
