@@ -19,6 +19,11 @@ type WorkspaceApiOptions = {
   confirmations?: unknown[];
   documents?: unknown[];
   templates?: unknown[];
+  requestHandler?: (
+    url: URL,
+    method: string,
+    init?: RequestInit,
+  ) => Response | Promise<Response | undefined> | undefined;
 };
 
 const baseJob: Omit<WorkspaceJob, "aiMatch"> = {
@@ -177,6 +182,7 @@ export function installApplicationWorkspaceApiMock({
   confirmations = [],
   documents = [],
   templates = [],
+  requestHandler,
 }: WorkspaceApiOptions = {}) {
   const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
     const requestUrl =
@@ -187,6 +193,8 @@ export function installApplicationWorkspaceApiMock({
           : input.url;
     const url = new URL(requestUrl);
     const method = init?.method ?? "GET";
+    const customResponse = await requestHandler?.(url, method, init);
+    if (customResponse) return customResponse;
 
     if (url.pathname === "/documents" && method === "GET") {
       return Response.json(documents);

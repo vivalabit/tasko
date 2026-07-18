@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createLegacyWorkspaceApplication,
   createV3WorkspaceApplication,
+  createWorkspaceProfile,
   createWorkspaceApplicationWithoutGuide,
   installApplicationWorkspaceApiMock,
   renderApplicationWorkspace,
@@ -269,6 +270,131 @@ describe("ApplicationWorkspace", () => {
     expect(screen.getByText("0 page · 0 cell overflow · 0 table structure")).toBeInTheDocument();
     expect(screen.getByText("0 issues")).toBeInTheDocument();
     expect(screen.queryByText(/Visual validation/i)).not.toBeInTheDocument();
+  });
+
+  it("reuses the resume artifact and recovers a committed pack after response loss", async () => {
+    window.localStorage.setItem("tasko.ai-cv-disclosure.v1", "accepted");
+    const uploadedAt = "2026-07-18T10:00:00.000Z";
+    const sources = [
+      {
+        id: "resume-source",
+        title: "Main CV",
+        category: "CV / Resume",
+        language: "English",
+        file_name: "resume.docx",
+        file_size: "20 KB",
+        file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        uploaded_at: uploadedAt,
+        data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cv",
+      },
+      {
+        id: "cover-source",
+        title: "Main cover",
+        category: "Cover Letter",
+        language: "English",
+        file_name: "cover.docx",
+        file_size: "16 KB",
+        file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        uploaded_at: uploadedAt,
+        data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cover",
+      },
+    ];
+    const templates = [
+      { id: "resume-template", type: "tailored_resume", name: `Main CV · ${uploadedAt}`, fileName: "resume.docx", createdAt: uploadedAt, updatedAt: uploadedAt },
+      { id: "cover-template", type: "cover_letter", name: `Main cover · ${uploadedAt}`, fileName: "cover.docx", createdAt: uploadedAt, updatedAt: uploadedAt },
+    ];
+    const savedDocuments = [
+      {
+        id: "saved-resume",
+        type: "tailored_resume",
+        title: "Tailored CV",
+        jobId: "job-product-designer",
+        applicationIds: ["application-v3"],
+        currentVersion: 1,
+        createdAt: uploadedAt,
+        updatedAt: uploadedAt,
+        generationFingerprint: "a".repeat(64),
+        currentGenerationFingerprint: "a".repeat(64),
+        generationModel: "test-model",
+        inputVersions: {},
+        versions: [],
+      },
+      {
+        id: "saved-cover",
+        type: "cover_letter",
+        title: "Cover letter",
+        jobId: "job-product-designer",
+        applicationIds: ["application-v3"],
+        currentVersion: 1,
+        createdAt: uploadedAt,
+        updatedAt: uploadedAt,
+        generationFingerprint: "b".repeat(64),
+        currentGenerationFingerprint: "b".repeat(64),
+        generationModel: "test-model",
+        inputVersions: {},
+        versions: [],
+      },
+    ];
+    const recoveredPack = {
+      packJobId: "server-uses-request-id",
+      status: "completed",
+      persistenceMode: "atomic",
+      documents: savedDocuments,
+      stages: [],
+      message: "Application pack saved atomically",
+    };
+    let assistantCalls = 0;
+    let packPostCalls = 0;
+    let submittedResume: Record<string, unknown> | undefined;
+    installApplicationWorkspaceApiMock({
+      templates,
+      requestHandler: async (url, method, init) => {
+        if (url.pathname === "/assistant/chat" && method === "POST") {
+          assistantCalls += 1;
+          return Response.json({
+            message: assistantCalls === 1
+              ? JSON.stringify({ replacements: [] })
+              : "Dear Hiring Team,\n\nVerified experience.\n\nKind regards,",
+            metadata: { metrics: { model: "test-model" } },
+          });
+        }
+        if (url.pathname === "/documents/packs/validate-resume" && method === "POST") {
+          return Response.json({
+            status: "passed",
+            validation: {},
+            validationArtifactId: "artifact-1",
+            expiresAt: "2026-07-18T10:30:00.000Z",
+          });
+        }
+        if (url.pathname === "/documents/packs" && method === "POST") {
+          packPostCalls += 1;
+          submittedResume = (JSON.parse(String(init?.body)) as { resume: Record<string, unknown> }).resume;
+          throw new TypeError("response lost");
+        }
+        if (/^\/documents\/packs\/application-pack-/.test(url.pathname) && method === "GET") {
+          return Response.json(recoveredPack);
+        }
+        return undefined;
+      },
+    });
+
+    const { props } = renderApplicationWorkspace(
+      createV3WorkspaceApplication(),
+      { profile: createWorkspaceProfile({ documents: JSON.stringify(sources) }) },
+    );
+
+    const generatePack = await screen.findByRole("button", { name: "Generate both documents" });
+    await waitFor(() => expect(generatePack).toBeEnabled());
+    fireEvent.click(generatePack);
+
+    expect(
+      await screen.findByText(/recovered after response loss/, {}, { timeout: 4_000 }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/No pack documents were saved/)).not.toBeInTheDocument();
+    expect(submittedResume?.validationArtifactId).toBe("artifact-1");
+    expect(packPostCalls).toBe(3);
+    expect(props.onDocumentAttached).toHaveBeenCalledTimes(2);
+    window.localStorage.removeItem("tasko.ai-cv-disclosure.v1");
   });
 
   it("does not loop fingerprint updates when the application guide is missing", async () => {

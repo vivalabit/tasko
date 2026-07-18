@@ -169,6 +169,24 @@ class DocumentPackJobRecord(Base):
     )
 
 
+class DocumentValidationArtifactRecord(Base):
+    __tablename__ = "document_validation_artifacts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    application_id: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    document_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    template_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    template_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    rendered_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    rendered_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    validation_report: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
 class DocumentTemplateRecord(Base):
     __tablename__ = "document_templates"
 
@@ -302,6 +320,12 @@ class DocumentPackItemRequest(BaseModel):
         max_length=160,
         alias="generationModel",
     )
+    validation_artifact_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=36,
+        alias="validationArtifactId",
+    )
     model_config = {"populate_by_name": True}
 
 
@@ -333,6 +357,10 @@ class DocumentPackRequest(BaseModel):
 class DocumentPackValidationPayload(BaseModel):
     status: Literal["passed"] = "passed"
     validation: dict[str, Any]
+    validation_artifact_id: str = Field(alias="validationArtifactId")
+    expires_at: datetime = Field(alias="expiresAt")
+
+    model_config = {"populate_by_name": True}
 
 
 class DocumentPackStagePayload(BaseModel):

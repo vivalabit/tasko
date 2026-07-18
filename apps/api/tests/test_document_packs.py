@@ -19,6 +19,8 @@ from app.models.applications import StoredApplicationRecord
 from app.models.documents import (
     DocumentPackJobRecord,
     DocumentRecord,
+    DocumentTemplateRecord,
+    DocumentValidationArtifactRecord,
     DocumentVersionRecord,
 )
 from app.models.jobs import JobMatchRecord, StoredJobRecord
@@ -256,6 +258,36 @@ def test_atomic_pack_commits_both_documents_and_retry_is_idempotent(
     assert job_count == 1
 
 
+def test_pack_status_can_be_recovered_after_response_loss(pack_client, monkeypatch) -> None:
+    client, _ = pack_client
+    resume_template_id, cover_template_id = upload_pack_templates(client)
+    monkeypatch.setattr(
+        "app.api.documents.validate_generated_document",
+        lambda **kwargs: validation_report(kwargs["document_type"]),
+    )
+    request = pack_request(resume_template_id, cover_template_id)
+    created = client.post("/documents/packs", json=request)
+
+    recovered = client.get(
+        f"/documents/packs/{request['packJobId']}",
+        params={"applicationId": request["applicationId"]},
+    )
+    foreign = client.get(
+        f"/documents/packs/{request['packJobId']}",
+        params={"applicationId": "application-other"},
+    )
+    missing = client.get(
+        "/documents/packs/missing-pack",
+        params={"applicationId": request["applicationId"]},
+    )
+
+    assert created.status_code == 201
+    assert recovered.status_code == 200
+    assert recovered.json() == created.json()
+    assert foreign.status_code == 409
+    assert missing.status_code == 404
+
+
 def test_resume_preflight_validates_without_saving(pack_client, monkeypatch) -> None:
     client, testing_session_local = pack_client
     resume_template_id, cover_template_id = upload_pack_templates(client)
@@ -276,12 +308,161 @@ def test_resume_preflight_validates_without_saving(pack_client, monkeypatch) -> 
     with testing_session_local() as db:
         document_count = db.scalar(select(func.count()).select_from(DocumentRecord))
         job_count = db.scalar(select(func.count()).select_from(DocumentPackJobRecord))
+        artifact_count = db.scalar(
+            select(func.count()).select_from(DocumentValidationArtifactRecord)
+        )
 
     assert response.status_code == 200
     assert response.json()["status"] == "passed"
     assert response.json()["validation"]["documentType"] == "tailored_resume"
+    assert response.json()["validationArtifactId"]
+    assert response.json()["expiresAt"]
     assert document_count == 0
     assert job_count == 0
+    assert artifact_count == 1
+
+
+def test_pack_reuses_and_consumes_resume_validation_artifact(
+    pack_client,
+    monkeypatch,
+) -> None:
+    client, testing_session_local = pack_client
+    resume_template_id, cover_template_id = upload_pack_templates(client)
+    calls: list[str] = []
+
+    def validate(**kwargs):
+        calls.append(kwargs["document_type"])
+        return validation_report(kwargs["document_type"])
+
+    monkeypatch.setattr("app.api.documents.validate_generated_document", validate)
+    request = pack_request(resume_template_id, cover_template_id)
+    preflight = client.post(
+        "/documents/packs/validate-resume",
+        json={
+            "applicationId": request["applicationId"],
+            "resume": request["resume"],
+        },
+    )
+    artifact_id = preflight.json()["validationArtifactId"]
+    request["resume"]["validationArtifactId"] = artifact_id
+
+    saved = client.post("/documents/packs", json=request)
+    retry = client.post("/documents/packs", json=request)
+
+    with testing_session_local() as db:
+        artifact = db.get(DocumentValidationArtifactRecord, artifact_id)
+        assert artifact is not None
+        assert artifact.consumed_at is not None
+
+    assert saved.status_code == 201
+    assert retry.status_code == 201
+    assert retry.json() == saved.json()
+    assert calls == ["tailored_resume", "cover_letter"]
+
+    reused_request = json.loads(json.dumps(request))
+    reused_request["packJobId"] = "pack-job-artifact-reuse"
+    reused = client.post("/documents/packs", json=reused_request)
+    assert reused.status_code == 422
+    assert "already been used" in reused.json()["detail"]["message"]
+
+
+def test_validation_artifact_is_not_consumed_when_atomic_pack_rolls_back(
+    pack_client,
+    monkeypatch,
+) -> None:
+    client, testing_session_local = pack_client
+    resume_template_id, cover_template_id = upload_pack_templates(client)
+
+    def validate(**kwargs):
+        if kwargs["document_type"] == "cover_letter":
+            raise DocumentValidationError("Cover validation failed")
+        return validation_report(kwargs["document_type"])
+
+    monkeypatch.setattr("app.api.documents.validate_generated_document", validate)
+    request = pack_request(resume_template_id, cover_template_id)
+    preflight = client.post(
+        "/documents/packs/validate-resume",
+        json={"applicationId": request["applicationId"], "resume": request["resume"]},
+    )
+    artifact_id = preflight.json()["validationArtifactId"]
+    request["resume"]["validationArtifactId"] = artifact_id
+
+    failed = client.post("/documents/packs", json=request)
+    with testing_session_local() as db:
+        artifact = db.get(DocumentValidationArtifactRecord, artifact_id)
+        assert artifact is not None
+        assert artifact.consumed_at is None
+
+    monkeypatch.setattr(
+        "app.api.documents.validate_generated_document",
+        lambda **kwargs: validation_report(kwargs["document_type"]),
+    )
+    saved = client.post("/documents/packs", json=request)
+
+    assert failed.status_code == 422
+    assert saved.status_code == 201
+
+
+@pytest.mark.parametrize("changed_input", ["template", "result", "evidence"])
+def test_pack_rejects_validation_artifact_hash_mismatch(
+    pack_client,
+    monkeypatch,
+    changed_input: str,
+) -> None:
+    client, testing_session_local = pack_client
+    resume_template_id, cover_template_id = upload_pack_templates(client)
+    monkeypatch.setattr(
+        "app.api.documents.validate_generated_document",
+        lambda **kwargs: validation_report(kwargs["document_type"]),
+    )
+    request = pack_request(resume_template_id, cover_template_id)
+    preflight = client.post(
+        "/documents/packs/validate-resume",
+        json={"applicationId": request["applicationId"], "resume": request["resume"]},
+    )
+    artifact_id = preflight.json()["validationArtifactId"]
+    request["resume"]["validationArtifactId"] = artifact_id
+
+    if changed_input == "result":
+        request["resume"]["content"] = json.dumps(
+            {
+                "replacements": [
+                    {
+                        "blockId": "block-0001",
+                        "spanId": "block-0001-span-0001",
+                        "original": "Original resume summary.",
+                        "replacement": "Changed result",
+                        "reason": "Hash mismatch fixture",
+                        "evidenceIds": ["source:block-0001-span-0001"],
+                    }
+                ]
+            }
+        )
+    elif changed_input == "evidence":
+        with testing_session_local() as db:
+            profile = db.get(ProfileRecord, "default")
+            assert profile is not None
+            profile.data = {**profile.data, "skills": "Python, FastAPI"}
+            db.commit()
+    else:
+        changed_template = Document()
+        changed_template.add_paragraph("Changed resume template.")
+        changed_output = BytesIO()
+        changed_template.save(changed_output)
+        with testing_session_local() as db:
+            template = db.get(DocumentTemplateRecord, resume_template_id)
+            assert template is not None
+            template.content = changed_output.getvalue()
+            db.commit()
+
+    response = client.post("/documents/packs", json=request)
+
+    with testing_session_local() as db:
+        artifact = db.get(DocumentValidationArtifactRecord, artifact_id)
+        assert artifact is not None
+        assert artifact.consumed_at is None
+    assert response.status_code == 422
+    assert "hashes do not match" in response.json()["detail"]["message"]
 
 
 def test_atomic_pack_updates_both_documents_as_one_idempotent_version_batch(

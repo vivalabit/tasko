@@ -31,7 +31,11 @@ import {
   hasCurrentApplicationGuide,
   isLegacyAiMatch,
 } from "@/lib/ai-match";
-import { RetryablePackError, retryPackOperation } from "@/lib/application-pack";
+import {
+  RetryablePackError,
+  recoverPackStatus,
+  retryPackOperation,
+} from "@/lib/application-pack";
 import {
   importLegacyCandidateConfirmations,
   isCandidateConfirmationComplete,
@@ -241,6 +245,13 @@ type GeneratedDocumentDraft = {
   content: string;
   templateId: string;
   generationModel: string;
+  validationArtifactId?: string;
+};
+
+type ResumeValidationResponse = {
+  status: "passed";
+  validationArtifactId: string;
+  expiresAt: string;
 };
 
 type DocumentPackResponse = {
@@ -1015,6 +1026,7 @@ export function ApplicationWorkspace({
     setDocumentError("");
     let resumeDraft: GeneratedDocumentDraft | undefined;
     let coverDraft: GeneratedDocumentDraft | undefined;
+    let packSaveStarted = false;
     try {
       setGenerationType("tailored_resume");
       updateProgress("resume_generation", "active", "Creating an evidence-based CV");
@@ -1037,6 +1049,11 @@ export function ApplicationWorkspace({
         updateProgress("resume_validation", "failed", message);
         throw new Error(message);
       }
+      const resumeValidation = await resumeValidationResponse.json() as ResumeValidationResponse;
+      resumeDraft = {
+        ...resumeDraft,
+        validationArtifactId: resumeValidation.validationArtifactId,
+      };
       updateProgress("resume_validation", "completed", "CV passed factual validation and automated structural checks");
 
       setGenerationType("cover_letter");
@@ -1059,6 +1076,7 @@ export function ApplicationWorkspace({
         "active",
         coverDraft ? "Validating and committing both documents" : "Saving validated CV as an explicit partial pack",
       );
+      packSaveStarted = true;
       const packResponse = await postPackRequest(
         "/documents/packs",
         {
@@ -1087,6 +1105,30 @@ export function ApplicationWorkspace({
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : "Application pack generation failed";
+      if (packSaveStarted) {
+        const recovery = await recoverPackStatus<DocumentPackResponse>(() => fetch(
+          `${apiBaseUrl}/documents/packs/${encodeURIComponent(packJobId)}?applicationId=${encodeURIComponent(activeApplication.id)}`,
+        ));
+        if (recovery.state === "saved") {
+          applySavedPack(recovery.payload);
+          updateProgress(
+            "saving",
+            recovery.payload.status === "partial" ? "partial" : "completed",
+            `${recovery.payload.message} · recovered after response loss`,
+          );
+          setDocumentError("");
+          return;
+        }
+        if (recovery.state === "unknown") {
+          setPackProgress((current) => (
+            current && current.jobId === packJobId
+              ? { ...current, status: "failed", message: "Pack save status could not be confirmed" }
+              : current
+          ));
+          setDocumentError(`${message}. Pack save status could not be confirmed; refresh before retrying.`);
+          return;
+        }
+      }
       setPackProgress((current) => (
         current && current.jobId === packJobId && current.status !== "failed"
           ? { ...current, status: "failed", message }

@@ -24,7 +24,7 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260718_0001"
+        assert revision == "20260718_0002"
     finally:
         engine.dispose()
 

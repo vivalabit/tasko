@@ -2,7 +2,7 @@ import base64
 import hashlib
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import BytesIO
 from uuid import uuid4
 
@@ -35,6 +35,7 @@ from app.models.documents import (
     DocumentTemplatePayload,
     DocumentTemplateRecord,
     DocumentUpdateRequest,
+    DocumentValidationArtifactRecord,
     DocumentVersionGenerationProvenanceRecord,
     DocumentVersionPayload,
     DocumentVersionRecord,
@@ -57,6 +58,7 @@ router = APIRouter()
 
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 MAX_TEMPLATE_BYTES = 10_000_000
+VALIDATION_ARTIFACT_TTL = timedelta(minutes=30)
 
 
 @router.get("", response_model=list[DocumentPayload])
@@ -248,19 +250,36 @@ def validate_resume_pack_item(
             template_id=request.resume.template_id,
             document_type="tailored_resume",
         )
-        _, validation = prepare_pack_document(
+        rendered_content, validation = prepare_pack_document(
             request.resume,
             "tailored_resume",
             context=context,
         )
-        return DocumentPackValidationPayload(validation=validation)
+        artifact = create_validation_artifact(
+            application_id=request.application_id,
+            item=request.resume,
+            context=context,
+            rendered_content=rendered_content,
+            validation=validation,
+        )
+        db.add(artifact)
+        db.commit()
+        return DocumentPackValidationPayload(
+            validation=validation,
+            validation_artifact_id=artifact.id,
+            expires_at=artifact.expires_at,
+        )
     except GenerationContextError as exc:
+        db.rollback()
         raise pack_validation_failed("resume_validation", exc) from exc
     except DocumentValidationError as exc:
+        db.rollback()
         raise pack_validation_failed("resume_validation", exc) from exc
     except ValueError as exc:
+        db.rollback()
         raise pack_validation_failed("resume_validation", exc) from exc
     except SQLAlchemyError as exc:
+        db.rollback()
         raise database_unavailable(exc) from exc
 
 
@@ -350,11 +369,19 @@ def create_document_pack(
             return document_pack_payload(existing_job, db)
 
         try:
-            resume_content, resume_validation = prepare_pack_document(
-                request.resume,
-                "tailored_resume",
-                context=resume_context,
-            )
+            if request.resume.validation_artifact_id:
+                resume_content, resume_validation = consume_validation_artifact(
+                    db,
+                    artifact_id=request.resume.validation_artifact_id,
+                    item=request.resume,
+                    context=resume_context,
+                )
+            else:
+                resume_content, resume_validation = prepare_pack_document(
+                    request.resume,
+                    "tailored_resume",
+                    context=resume_context,
+                )
         except (DocumentValidationError, GenerationContextError, ValueError) as exc:
             raise pack_validation_failed("resume_validation", exc) from exc
 
@@ -453,6 +480,34 @@ def create_document_pack(
         raise
     except SQLAlchemyError as exc:
         db.rollback()
+        raise database_unavailable(exc) from exc
+
+
+@router.get(
+    "/packs/{pack_job_id}",
+    response_model=DocumentPackPayload,
+)
+def get_document_pack_status(
+    pack_job_id: str,
+    application_id: str = Query(min_length=1, max_length=160, alias="applicationId"),
+    db: Session = Depends(get_db),
+) -> DocumentPackPayload:
+    try:
+        job = db.get(DocumentPackJobRecord, pack_job_id)
+        if not job:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Pack job not found",
+            )
+        if job.application_id != application_id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Pack job is not attached to the application",
+            )
+        return document_pack_payload(job, db)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
         raise database_unavailable(exc) from exc
 
 
@@ -1069,6 +1124,101 @@ def prepare_pack_document(
         evidence=context.validation_evidence(),
     )
     return rendered_content, validation
+
+
+def create_validation_artifact(
+    *,
+    application_id: str,
+    item: DocumentPackItemRequest,
+    context: AuthoritativeGenerationContext,
+    rendered_content: bytes,
+    validation: dict[str, object],
+) -> DocumentValidationArtifactRecord:
+    now = utc_now()
+    template_hash, result_hash, evidence_hash = validation_artifact_hashes(
+        item,
+        context,
+    )
+    return DocumentValidationArtifactRecord(
+        id=str(uuid4()),
+        application_id=application_id,
+        document_type="tailored_resume",
+        template_id=context.template.id,
+        template_hash=template_hash,
+        result_hash=result_hash,
+        evidence_hash=evidence_hash,
+        rendered_hash=hashlib.sha256(rendered_content).hexdigest(),
+        rendered_content=rendered_content,
+        validation_report=validation,
+        consumed_at=None,
+        expires_at=now + VALIDATION_ARTIFACT_TTL,
+        created_at=now,
+    )
+
+
+def consume_validation_artifact(
+    db: Session,
+    *,
+    artifact_id: str,
+    item: DocumentPackItemRequest,
+    context: AuthoritativeGenerationContext,
+) -> tuple[bytes, dict[str, object]]:
+    artifact = db.scalar(
+        select(DocumentValidationArtifactRecord)
+        .where(DocumentValidationArtifactRecord.id == artifact_id)
+        .with_for_update()
+    )
+    if artifact is None:
+        raise ValueError("Resume validation artifact was not found")
+    if artifact.consumed_at is not None:
+        raise ValueError("Resume validation artifact has already been used")
+    expires_at = artifact.expires_at
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=utc_now().tzinfo)
+    if expires_at <= utc_now():
+        raise ValueError("Resume validation artifact has expired")
+    if (
+        artifact.application_id != context.application_id
+        or artifact.document_type != "tailored_resume"
+        or artifact.template_id != context.template.id
+    ):
+        raise ValueError("Resume validation artifact does not match the application or template")
+
+    expected_hashes = validation_artifact_hashes(item, context)
+    artifact_hashes = (
+        artifact.template_hash,
+        artifact.result_hash,
+        artifact.evidence_hash,
+    )
+    if artifact_hashes != expected_hashes:
+        raise ValueError(
+            "Resume validation artifact hashes do not match the current template, result, or evidence"
+        )
+    if hashlib.sha256(artifact.rendered_content).hexdigest() != artifact.rendered_hash:
+        raise ValueError("Resume validation artifact content is corrupted")
+    artifact.consumed_at = utc_now()
+    return artifact.rendered_content, dict(artifact.validation_report)
+
+
+def validation_artifact_hashes(
+    item: DocumentPackItemRequest,
+    context: AuthoritativeGenerationContext,
+) -> tuple[str, str, str]:
+    return (
+        hashlib.sha256(context.template.content).hexdigest(),
+        hashlib.sha256(item.content.encode()).hexdigest(),
+        canonical_json_hash(context.validation_evidence()),
+    )
+
+
+def canonical_json_hash(value: object) -> str:
+    canonical = json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def persist_pack_document(

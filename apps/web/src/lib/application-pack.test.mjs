@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   RetryablePackError,
+  recoverPackStatus,
   retryPackOperation,
 } from "./application-pack.ts";
 
@@ -64,4 +65,45 @@ test("stops after the configured retry budget", async () => {
   );
 
   assert.equal(attempts, 3);
+});
+
+test("recovers a committed pack after the save response was lost", async () => {
+  const payload = { packJobId: "pack-1", status: "completed" };
+  const recovery = await recoverPackStatus(async () => Response.json(payload));
+
+  assert.deepEqual(recovery, { state: "saved", payload });
+});
+
+test("polls through a transient missing status while the commit finishes", async () => {
+  let attempts = 0;
+  const recovery = await recoverPackStatus(
+    async () => {
+      attempts += 1;
+      return attempts === 1
+        ? new Response(null, { status: 404 })
+        : Response.json({ status: "completed" });
+    },
+    3,
+    async () => {},
+  );
+
+  assert.deepEqual(recovery, {
+    state: "saved",
+    payload: { status: "completed" },
+  });
+  assert.equal(attempts, 2);
+});
+
+test("distinguishes a missing pack from an unknown recovery state", async () => {
+  assert.deepEqual(
+    await recoverPackStatus(async () => new Response(null, { status: 404 }), 1),
+    { state: "not_found" },
+  );
+  assert.deepEqual(
+    await recoverPackStatus(
+      async () => { throw new TypeError("network unavailable"); },
+      1,
+    ),
+    { state: "unknown" },
+  );
 });
