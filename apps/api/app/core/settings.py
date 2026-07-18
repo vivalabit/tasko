@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     openclaw_assistant_enabled: bool = True
     openclaw_assistant_agent_id: str = "tasko-assistant"
     openclaw_assistant_model: str = "openai/gpt-5.6-terra"
+    ai_provider_name: str = "OpenAI"
+    ai_consent_version: str = "2026-07-18.v2"
     openclaw_assistant_thinking: str = "off"
     openclaw_assistant_timeout_seconds: int = Field(default=120, ge=10, le=600)
     openclaw_assistant_max_attempts: int = Field(default=2, ge=1, le=4)

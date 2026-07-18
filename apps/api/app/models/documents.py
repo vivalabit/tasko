@@ -167,6 +167,11 @@ class DocumentPackJobRecord(Base):
         default=utc_now,
         onupdate=utc_now,
     )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+    )
 
 
 class DocumentValidationArtifactRecord(Base):
@@ -189,12 +194,16 @@ class DocumentValidationArtifactRecord(Base):
 
 class DocumentTemplateRecord(Base):
     __tablename__ = "document_templates"
+    __table_args__ = (
+        UniqueConstraint("type", "content_sha256", name="uq_document_templates_type_content_sha256"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(240), nullable=False)
     file_name: Mapped[str] = mapped_column(String(240), nullable=False)
     content_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     extracted_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -275,6 +284,17 @@ class DocumentPayload(BaseModel):
     generation_model: str | None = Field(default=None, alias="generationModel")
     input_versions: dict[str, Any] = Field(default_factory=dict, alias="inputVersions")
     versions: list[DocumentVersionPayload]
+    versions_total: int = Field(alias="versionsTotal")
+    versions_has_more: bool = Field(alias="versionsHasMore")
+
+    model_config = {"populate_by_name": True}
+
+
+class DocumentVersionPagePayload(BaseModel):
+    items: list[DocumentVersionPayload]
+    total: int
+    limit: int
+    offset: int
 
     model_config = {"populate_by_name": True}
 
@@ -376,6 +396,7 @@ class DocumentPackPayload(BaseModel):
     documents: list[DocumentPayload]
     stages: list[DocumentPackStagePayload]
     message: str = ""
+    expires_at: datetime = Field(alias="expiresAt")
 
     model_config = {"populate_by_name": True}
 

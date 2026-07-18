@@ -64,6 +64,9 @@ def test_templates_are_deduplicated_and_binary_retention_follows_owner_deletion(
             },
         )
         listed = client.get("/documents/templates/library")
+        with testing_session_local() as db:
+            stored_template = db.get(DocumentTemplateRecord, first.json()["id"])
+            stored_content_sha256 = stored_template.content_sha256 if stored_template else ""
         created = client.post(
             "/documents",
             json={
@@ -93,6 +96,7 @@ def test_templates_are_deduplicated_and_binary_retention_follows_owner_deletion(
     assert duplicate.status_code == 201
     assert duplicate.json()["id"] == first.json()["id"]
     assert len(listed.json()) == 1
+    assert len(stored_content_sha256) == 64
     assert "extractedText" not in listed.json()[0]
     assert created.status_code == 201
     assert deleted_template.status_code == 204

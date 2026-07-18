@@ -73,6 +73,14 @@ class AssistantStreamState:
 assistant_streams: dict[str, AssistantStreamState] = {}
 
 
+@router.get("/config")
+def get_assistant_config(settings: Settings = Depends(get_settings)) -> dict[str, str]:
+    return {
+        "providerName": settings.ai_provider_name,
+        "consentVersion": settings.ai_consent_version,
+    }
+
+
 @router.post("/chat", response_model=AssistantChatResponse)
 async def chat_with_assistant(
     request: AssistantChatRequest,
@@ -142,6 +150,7 @@ async def chat_with_assistant(
             "sessionId": session_id,
             "contextKind": request.context_kind,
             "contextId": request.context_id,
+            "providerName": settings.ai_provider_name,
             "metrics": metrics,
             "actions": [action.model_dump(by_alias=True, mode="json") for action in actions],
         },
@@ -323,6 +332,7 @@ async def generate_assistant_stream(
             "sessionKey": session_id,
             "contextKind": request.context_kind,
             "contextId": request.context_id,
+            "providerName": settings.ai_provider_name,
             "metrics": metrics,
             "actions": [action.model_dump(by_alias=True, mode="json") for action in actions],
         }

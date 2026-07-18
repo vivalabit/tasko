@@ -272,8 +272,82 @@ describe("ApplicationWorkspace", () => {
     expect(screen.queryByText(/Visual validation/i)).not.toBeInTheDocument();
   });
 
+  it("shows the AI provider, revokes versioned consent, and deletes stored artifacts", async () => {
+    window.localStorage.setItem("tasko.ai-consent", JSON.stringify({
+      version: "2026-07-18.v2",
+      providerName: "OpenAI",
+      acceptedAt: "2026-07-18T10:00:00.000Z",
+    }));
+    const fetchMock = installApplicationWorkspaceApiMock({
+      documents: [{
+        id: "document-delete",
+        type: "tailored_resume",
+        title: "Tailored CV",
+        jobId: "job-product-designer",
+        applicationIds: ["application-v3"],
+        currentVersion: 1,
+        createdAt: "2026-07-18T10:00:00.000Z",
+        updatedAt: "2026-07-18T10:00:00.000Z",
+        generationFingerprint: null,
+        currentGenerationFingerprint: null,
+        generationModel: null,
+        inputVersions: {},
+        versions: [{
+          id: "document-delete-v1",
+          version: 1,
+          content: "CV content",
+          createdAt: "2026-07-18T10:00:00.000Z",
+          hasRenderedDocx: false,
+          factualValidation: {},
+          visualValidation: {},
+          diff: [],
+        }],
+      }],
+      templates: [{
+        id: "template-delete",
+        type: "tailored_resume",
+        name: "Stored CV",
+        fileName: "resume.docx",
+        createdAt: "2026-07-18T10:00:00.000Z",
+        updatedAt: "2026-07-18T10:00:00.000Z",
+      }],
+      requestHandler: async (url, method) => {
+        if (url.pathname === "/documents/document-delete" && method === "DELETE") {
+          return new Response(null, { status: 204 });
+        }
+        if (url.pathname === "/documents/templates/template-delete" && method === "DELETE") {
+          return new Response(null, { status: 204 });
+        }
+        return undefined;
+      },
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderApplicationWorkspace(createV3WorkspaceApplication());
+
+    expect(await screen.findByText("AI provider:")).toBeInTheDocument();
+    expect(screen.getByText("OpenAI")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Revoke consent" }));
+    expect(window.localStorage.getItem("tasko.ai-consent")).toBeNull();
+    expect(screen.getByText("Consent required")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete Tailored CV" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Delete Tailored CV" })).not.toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Delete template Stored CV" }));
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "Delete template Stored CV" })).not.toBeInTheDocument();
+    });
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).includes("/documents/document-delete") && init?.method === "DELETE")).toBe(true);
+  });
+
   it("reuses the resume artifact and recovers a committed pack after response loss", async () => {
-    window.localStorage.setItem("tasko.ai-cv-disclosure.v1", "accepted");
+    window.localStorage.setItem("tasko.ai-consent", JSON.stringify({
+      version: "2026-07-18.v2",
+      providerName: "OpenAI",
+      acceptedAt: "2026-07-18T10:00:00.000Z",
+    }));
     const uploadedAt = "2026-07-18T10:00:00.000Z";
     const sources = [
       {
@@ -394,7 +468,7 @@ describe("ApplicationWorkspace", () => {
     expect(submittedResume?.validationArtifactId).toBe("artifact-1");
     expect(packPostCalls).toBe(3);
     expect(props.onDocumentAttached).toHaveBeenCalledTimes(2);
-    window.localStorage.removeItem("tasko.ai-cv-disclosure.v1");
+    window.localStorage.removeItem("tasko.ai-consent");
   });
 
   it("does not loop fingerprint updates when the application guide is missing", async () => {
@@ -411,6 +485,6 @@ describe("ApplicationWorkspace", () => {
         screen.getAllByRole("button", { name: "Select source first" }),
       ).toHaveLength(2);
     });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 });

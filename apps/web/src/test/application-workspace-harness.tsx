@@ -202,6 +202,12 @@ export function installApplicationWorkspaceApiMock({
     if (url.pathname === "/documents/templates/library" && method === "GET") {
       return Response.json(templates);
     }
+    if (url.pathname === "/assistant/config" && method === "GET") {
+      return Response.json({
+        providerName: "OpenAI",
+        consentVersion: "2026-07-18.v2",
+      });
+    }
     if (
       /^\/applications\/[^/]+\/confirmations$/.test(url.pathname) &&
       method === "GET"

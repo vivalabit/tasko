@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   Sparkles,
   Target,
+  Trash2,
   Upload,
 } from "lucide-react";
 
@@ -233,6 +234,13 @@ type GeneratedDocument = {
   generationModel: string | null;
   inputVersions: Record<string, unknown>;
   versions: GeneratedDocumentVersion[];
+  versionsTotal?: number;
+  versionsHasMore?: boolean;
+};
+
+type AiConfiguration = {
+  providerName: string;
+  consentVersion: string;
 };
 
 type PackPersistenceMode = "atomic" | "partial";
@@ -304,7 +312,12 @@ type ApplicationWorkspaceProps = {
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const docxContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-const aiDisclosureStorageKey = "tasko.ai-cv-disclosure.v1";
+const aiConsentStorageKey = "tasko.ai-consent";
+const legacyAiDisclosureStorageKey = "tasko.ai-cv-disclosure.v1";
+const defaultAiConfiguration: AiConfiguration = {
+  providerName: "OpenAI",
+  consentVersion: "2026-07-18.v2",
+};
 const confirmationAnswerMaxChars = 1_500;
 const packStageDefinitions: Array<{ id: PackStageId; label: string }> = [
   { id: "resume_generation", label: "Generate CV" },
@@ -315,6 +328,19 @@ const packStageDefinitions: Array<{ id: PackStageId; label: string }> = [
 
 function createId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function hasCurrentAiConsent(configuration: AiConfiguration) {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(aiConsentStorageKey) ?? "null") as {
+      version?: string;
+      providerName?: string;
+    } | null;
+    return stored?.version === configuration.consentVersion
+      && stored.providerName === configuration.providerName;
+  } catch {
+    return false;
+  }
 }
 
 function currentContent(document: GeneratedDocument | undefined) {
@@ -520,6 +546,9 @@ export function ApplicationWorkspace({
   const [packPersistenceMode, setPackPersistenceMode] = useState<PackPersistenceMode>("atomic");
   const [packProgress, setPackProgress] = useState<PackProgress | null>(null);
   const [restoringVersionKey, setRestoringVersionKey] = useState("");
+  const [loadingVersionHistoryId, setLoadingVersionHistoryId] = useState("");
+  const [deletingDocumentId, setDeletingDocumentId] = useState("");
+  const [deletingTemplateId, setDeletingTemplateId] = useState("");
   const [documentError, setDocumentError] = useState("");
   const [candidateConfirmations, setCandidateConfirmations] = useState<Record<string, CandidateConfirmation>>({});
   const [confirmationsDirty, setConfirmationsDirty] = useState(false);
@@ -532,10 +561,7 @@ export function ApplicationWorkspace({
   const [aiDisclosureAccepted, setAiDisclosureAccepted] = useState(false);
   const [aiDisclosureConfirmed, setAiDisclosureConfirmed] = useState(false);
   const [pendingAiGeneration, setPendingAiGeneration] = useState<PendingAiGeneration>(null);
-
-  useEffect(() => {
-    setAiDisclosureAccepted(window.localStorage.getItem(aiDisclosureStorageKey) === "accepted");
-  }, []);
+  const [aiConfiguration, setAiConfiguration] = useState<AiConfiguration>(defaultAiConfiguration);
 
   useEffect(() => {
     if (!application) return;
@@ -545,13 +571,18 @@ export function ApplicationWorkspace({
     Promise.all([
       fetch(`${apiBaseUrl}/documents?applicationId=${encodeURIComponent(application.id)}`, { signal: controller.signal }),
       fetch(`${apiBaseUrl}/documents/templates/library`, { signal: controller.signal }),
+      fetch(`${apiBaseUrl}/assistant/config`, { signal: controller.signal }),
     ])
-      .then(async ([documentsResponse, templatesResponse]) => {
-        if (!documentsResponse.ok || !templatesResponse.ok) throw new Error("Application documents are temporarily unavailable");
+      .then(async ([documentsResponse, templatesResponse, aiConfigurationResponse]) => {
+        if (!documentsResponse.ok || !templatesResponse.ok || !aiConfigurationResponse.ok) throw new Error("Application documents are temporarily unavailable");
         const loadedDocuments = await documentsResponse.json() as GeneratedDocument[];
         const loadedTemplates = await templatesResponse.json() as DocumentTemplate[];
+        const loadedAiConfiguration = await aiConfigurationResponse.json() as AiConfiguration;
         setDocuments(loadedDocuments);
         setTemplates(loadedTemplates);
+        setAiConfiguration(loadedAiConfiguration);
+        window.localStorage.removeItem(legacyAiDisclosureStorageKey);
+        setAiDisclosureAccepted(hasCurrentAiConsent(loadedAiConfiguration));
         setDocumentsLoaded(true);
       })
       .catch((error) => {
@@ -989,11 +1020,21 @@ export function ApplicationWorkspace({
   function acceptAiDisclosure() {
     if (!aiDisclosureConfirmed || !pendingAiGeneration) return;
     const action = pendingAiGeneration;
-    window.localStorage.setItem(aiDisclosureStorageKey, "accepted");
+    window.localStorage.setItem(aiConsentStorageKey, JSON.stringify({
+      version: aiConfiguration.consentVersion,
+      providerName: aiConfiguration.providerName,
+      acceptedAt: new Date().toISOString(),
+    }));
     setAiDisclosureAccepted(true);
     setPendingAiGeneration(null);
     if (action === "pack") void generatePack();
     else void generateDocument(action);
+  }
+
+  function revokeAiConsent() {
+    window.localStorage.removeItem(aiConsentStorageKey);
+    setAiDisclosureAccepted(false);
+    setAiDisclosureConfirmed(false);
   }
 
   async function generatePack() {
@@ -1172,6 +1213,71 @@ export function ApplicationWorkspace({
       setDocumentError(error instanceof Error ? error.message : "Document version could not be restored");
     } finally {
       setRestoringVersionKey("");
+    }
+  }
+
+  async function loadMoreDocumentVersions(document: GeneratedDocument) {
+    setLoadingVersionHistoryId(document.id);
+    setDocumentError("");
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/versions?offset=${document.versions.length}&limit=20`,
+      );
+      if (!response.ok) throw new Error(await readApiError(response, "Version history could not be loaded"));
+      const page = await response.json() as {
+        items: GeneratedDocumentVersion[];
+        total: number;
+      };
+      setDocuments((current) => current.map((item) => {
+        if (item.id !== document.id) return item;
+        const versions = [...item.versions, ...page.items].filter(
+          (version, index, all) => all.findIndex((candidate) => candidate.id === version.id) === index,
+        );
+        return {
+          ...item,
+          versions,
+          versionsTotal: page.total,
+          versionsHasMore: versions.length < page.total,
+        };
+      }));
+    } catch (error) {
+      setDocumentError(error instanceof Error ? error.message : "Version history could not be loaded");
+    } finally {
+      setLoadingVersionHistoryId("");
+    }
+  }
+
+  async function deleteGeneratedDocument(document: GeneratedDocument) {
+    if (!window.confirm(`Delete ${document.title} and all of its versions?`)) return;
+    setDeletingDocumentId(document.id);
+    setDocumentError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) throw new Error(await readApiError(response, "Document could not be deleted"));
+      setDocuments((current) => current.filter((item) => item.id !== document.id));
+    } catch (error) {
+      setDocumentError(error instanceof Error ? error.message : "Document could not be deleted");
+    } finally {
+      setDeletingDocumentId("");
+    }
+  }
+
+  async function deleteStoredTemplate(template: DocumentTemplate) {
+    if (!window.confirm(`Delete stored template ${template.name}? Generated DOCX files will remain available.`)) return;
+    setDeletingTemplateId(template.id);
+    setDocumentError("");
+    try {
+      const response = await fetch(`${apiBaseUrl}/documents/templates/${encodeURIComponent(template.id)}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) throw new Error(await readApiError(response, "Template could not be deleted"));
+      setTemplates((current) => current.filter((item) => item.id !== template.id));
+    } catch (error) {
+      setDocumentError(error instanceof Error ? error.message : "Template could not be deleted");
+    } finally {
+      setDeletingTemplateId("");
     }
   }
 
@@ -1396,6 +1502,7 @@ export function ApplicationWorkspace({
               <div className="flex flex-col gap-4 border-b border-white/[0.07] px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
                 <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent"><Sparkles className="h-[18px] w-[18px]" /></span><div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">03 · Build your application pack</p><h2 className="mt-1 text-lg font-bold text-white">Tailored documents</h2><p className="mt-1 text-xs leading-5 text-muted">Select your originals. Tasko rewrites the content and preserves the DOCX design.</p></div></div>
                 <div className="flex flex-col gap-2 sm:items-end">
+                  <div className="flex items-center gap-2 text-[9px] text-muted"><span>AI provider: <strong className="text-white">{aiConfiguration.providerName}</strong></span>{aiDisclosureAccepted ? <button type="button" onClick={revokeAiConsent} className="font-bold text-amber-200 hover:text-white">Revoke consent</button> : <span className="font-bold text-amber-200">Consent required</span>}</div>
                   <label className="flex items-center gap-2 text-[9px] font-bold text-muted"><span>On cover failure</span><select value={packPersistenceMode} disabled={isGeneratingPack} onChange={(event) => setPackPersistenceMode(event.target.value as PackPersistenceMode)} className="h-8 rounded-lg border border-white/[0.08] bg-[#151c24] px-2 text-[10px] font-bold text-white outline-none focus:border-accent/60 disabled:opacity-50"><option value="atomic">Roll back pack</option><option value="partial">Keep validated CV</option></select></label>
                   <Button onClick={() => requestAiGeneration("pack")} disabled={isGeneratingPack || Boolean(generationType) || !documentsLoaded || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? packStageDefinitions.find((stage) => stage.id === packProgress?.stage)?.label ?? "Generating pack…" : "Generate both documents"}</Button>
                 </div>
@@ -1404,9 +1511,10 @@ export function ApplicationWorkspace({
                 {documentError ? <div className="mb-4 rounded-xl border border-red-400/25 bg-red-500/[0.07] px-3 py-2.5 text-xs leading-5 text-red-200">{documentError}</div> : null}
                 {packProgress ? <div className={cn("mb-4 rounded-xl border p-3", packProgress.status === "failed" ? "border-red-400/25 bg-red-500/[0.045]" : packProgress.status === "partial" ? "border-amber-400/25 bg-amber-400/[0.045]" : "border-white/[0.08] bg-black/15")}><div className="grid gap-2 sm:grid-cols-4">{packStageDefinitions.map((stage, index) => { const currentIndex = packStageDefinitions.findIndex((candidate) => candidate.id === packProgress.stage); const stageStatus = index < currentIndex ? "completed" : index === currentIndex ? packProgress.status : "pending"; return <div key={stage.id} className={cn("rounded-lg border px-2.5 py-2", stageStatus === "completed" ? "border-success/20 bg-success/[0.05]" : stageStatus === "failed" ? "border-red-400/25 bg-red-500/[0.06]" : stageStatus === "partial" ? "border-amber-400/25 bg-amber-400/[0.06]" : stageStatus === "active" || stageStatus === "retrying" ? "border-accent/30 bg-accent/[0.07]" : "border-white/[0.06] bg-white/[0.015]")}><div className="flex items-center gap-2">{stageStatus === "completed" ? <Check className="h-3.5 w-3.5 text-success" /> : stageStatus === "active" || stageStatus === "retrying" ? <LoaderCircle className="h-3.5 w-3.5 animate-spin text-accent" /> : stageStatus === "failed" ? <AlertTriangle className="h-3.5 w-3.5 text-red-200" /> : <CircleDot className="h-3.5 w-3.5 text-muted" />}<span className={cn("text-[9px] font-black uppercase tracking-wide", stageStatus === "completed" ? "text-success" : stageStatus === "failed" ? "text-red-200" : stageStatus === "partial" ? "text-amber-200" : stageStatus === "active" || stageStatus === "retrying" ? "text-white" : "text-muted")}>{stage.label}</span></div></div>; })}</div><div className="mt-2 flex items-center justify-between gap-3 px-1 text-[9px]"><span className={cn(packProgress.status === "failed" ? "text-red-200" : packProgress.status === "partial" ? "text-amber-200" : "text-muted")}>{packProgress.message}</span><span className="shrink-0 font-mono text-muted">{packProgress.attempt > 1 ? `attempt ${packProgress.attempt}/3 · ` : ""}{packProgress.jobId.slice(-8)}</span></div></div> : null}
                 {effectiveLanguage && !resumeSources.some((source) => source.language === effectiveLanguage) ? <div className="mb-4 rounded-xl border border-amber-400/25 bg-amber-400/[0.07] px-3 py-2.5 text-xs leading-5 text-amber-200">No {effectiveLanguage} CV DOCX is saved in Profile. Add one or choose another language.</div> : null}
+                {templates.length ? <details className="mb-4 rounded-xl border border-white/[0.07] bg-black/15"><summary className="cursor-pointer px-3 py-2.5 text-[10px] font-bold text-[#cbd3df] marker:text-muted">Stored templates · {templates.length}</summary><div className="divide-y divide-white/[0.06] border-t border-white/[0.07] px-3">{templates.map((template) => <div key={template.id} className="flex items-center gap-3 py-2"><div className="min-w-0 flex-1"><p className="truncate text-[10px] font-bold text-white">{template.name}</p><p className="truncate text-[9px] text-muted">{template.type === "tailored_resume" ? "CV" : "Cover letter"} · {template.fileName}</p></div><Button type="button" variant="ghost" aria-label={`Delete template ${template.name}`} disabled={deletingTemplateId === template.id} onClick={() => void deleteStoredTemplate(template)} className="h-8 rounded-lg border border-red-400/20 px-2 text-red-200 hover:bg-red-500/10">{deletingTemplateId === template.id ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}</Button></div>)}</div></details> : null}
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <DocumentCard documentType="tailored_resume" icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} onGenerate={() => requestAiGeneration("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? "Loading history…" : !selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
-                  <DocumentCard documentType="cover_letter" icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} onGenerate={() => requestAiGeneration("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? "Loading history…" : !selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
+                  <DocumentCard documentType="tailored_resume" icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} onLoadMoreVersions={() => latestResume && void loadMoreDocumentVersions(latestResume)} onDelete={() => latestResume && void deleteGeneratedDocument(latestResume)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? "Loading history…" : !selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
+                  <DocumentCard documentType="cover_letter" icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} onLoadMoreVersions={() => latestCoverLetter && void loadMoreDocumentVersions(latestCoverLetter)} onDelete={() => latestCoverLetter && void deleteGeneratedDocument(latestCoverLetter)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? "Loading history…" : !selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
                 </div>
               </div>
             </section>
@@ -1440,13 +1548,14 @@ export function ApplicationWorkspace({
         <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-[#111821] p-5 shadow-2xl sm:p-6">
           <div className="flex items-start gap-3">
             <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-accent/25 bg-accent/10 text-accent"><ShieldCheck className="h-5 w-5" /></span>
-            <div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">AI data disclosure</p><h2 id="ai-disclosure-title" className="mt-1 text-lg font-bold text-white">Your CV will be sent to the configured AI provider</h2></div>
+            <div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">AI data disclosure · {aiConfiguration.consentVersion}</p><h2 id="ai-disclosure-title" className="mt-1 text-lg font-bold text-white">Your CV will be sent to {aiConfiguration.providerName}</h2></div>
           </div>
           <p className="mt-4 text-xs leading-5 text-[#cbd3df]">To tailor your application, Tasko sends the selected source document together with relevant profile details, vacancy text, and your confirmations through OpenClaw to the configured AI model provider.</p>
           <div className="mt-4 space-y-2 rounded-xl border border-white/[0.08] bg-black/20 p-4 text-[11px] leading-5 text-muted">
             <p><span className="font-bold text-white">Purpose:</span> generate the CV and cover letter you requested.</p>
             <p><span className="font-bold text-white">Tasko storage:</span> source templates remain until you delete them; generated DOCX files remain until you delete their document.</p>
-            <p><span className="font-bold text-white">Provider retention:</span> processing and retention follow the policy of the AI provider configured for this Tasko deployment.</p>
+            <p><span className="font-bold text-white">AI provider:</span> {aiConfiguration.providerName}.</p>
+            <p><span className="font-bold text-white">Provider retention:</span> processing and retention follow {aiConfiguration.providerName}&apos;s policy.</p>
           </div>
           <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-white/[0.08] bg-white/[0.025] p-3 text-xs leading-5 text-[#dce2ea]"><input type="checkbox" checked={aiDisclosureConfirmed} onChange={(event) => setAiDisclosureConfirmed(event.target.checked)} className="mt-1 h-4 w-4 accent-[#ff5a00]" /><span>I understand and agree to send these application data to the AI provider for generation.</span></label>
           <div className="mt-5 flex justify-end gap-2"><Button variant="ghost" onClick={() => setPendingAiGeneration(null)} className="h-10 rounded-xl border border-white/10 px-4 text-xs">Cancel</Button><Button disabled={!aiDisclosureConfirmed} onClick={acceptAiDisclosure} className="h-10 rounded-xl bg-accent px-4 text-xs font-bold text-white disabled:opacity-40"><Bot className="h-4 w-4" /> Continue to AI</Button></div>
@@ -1466,8 +1575,12 @@ function DocumentCard({
   isOutdated,
   isGenerating,
   restoringVersionKey,
+  loadingVersionHistoryId,
+  deletingDocumentId,
   onGenerate,
   onRestore,
+  onLoadMoreVersions,
+  onDelete,
   canGenerate,
   disabledLabel,
   sourceControl,
@@ -1480,8 +1593,12 @@ function DocumentCard({
   isOutdated: boolean;
   isGenerating: boolean;
   restoringVersionKey: string;
+  loadingVersionHistoryId: string;
+  deletingDocumentId: string;
   onGenerate: () => void;
   onRestore: (version: number) => void;
+  onLoadMoreVersions: () => void;
+  onDelete: () => void;
   canGenerate: boolean;
   disabledLabel: string;
   sourceControl?: React.ReactNode;
@@ -1546,11 +1663,12 @@ function DocumentCard({
       <div className="mt-3 flex gap-2">
         <Button type="button" disabled={isGenerating || isRestoringDocument || !canGenerate} onClick={onGenerate} className="h-10 flex-1 rounded-xl bg-accent px-3 text-[11px] font-bold text-white hover:bg-[#ff6a14] disabled:opacity-40">{isGenerating ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : document ? <RefreshCw className="h-3.5 w-3.5" /> : <Sparkles className="h-3.5 w-3.5" />}{isGenerating ? "Generating…" : !canGenerate ? disabledLabel : document ? "Regenerate" : `Generate ${label}`}</Button>
         {document ? <a href={`${apiBaseUrl}/documents/${encodeURIComponent(document.id)}/download`} download={documentFileName(document)} onClick={(event) => confirmDocumentDownload(event, readiness.warnings)} className="inline-flex h-10 items-center gap-1.5 rounded-xl border border-white/[0.09] px-3 text-[11px] font-bold text-[#e6ebf3] transition hover:bg-white/[0.05]"><Download className="h-3.5 w-3.5" /> DOCX</a> : null}
+        {document ? <Button type="button" variant="ghost" aria-label={`Delete ${label}`} disabled={deletingDocumentId === document.id || isGenerating} onClick={onDelete} className="h-10 rounded-xl border border-red-400/20 px-3 text-red-200 hover:bg-red-500/10"><Trash2 className="h-3.5 w-3.5" /></Button> : null}
       </div>
       {document ? (
         <details className="mt-3 rounded-xl border border-white/[0.07] bg-white/[0.018]">
           <summary className="cursor-pointer px-3 py-2.5 text-[10px] font-bold text-[#cbd3df] marker:text-muted">
-            Version history · {document.versions.length}
+            Version history · {document.versionsTotal ?? document.versions.length}
           </summary>
           <div className="border-t border-white/[0.07] px-3 py-2">
             {[...document.versions].sort((left, right) => right.version - left.version).map((version) => {
@@ -1569,6 +1687,7 @@ function DocumentCard({
                 </div>
               );
             })}
+            {(document.versionsHasMore ?? document.versions.length < (document.versionsTotal ?? document.versions.length)) ? <Button type="button" variant="ghost" disabled={loadingVersionHistoryId === document.id} onClick={onLoadMoreVersions} className="mt-2 h-8 w-full rounded-lg border border-white/[0.08] text-[9px] font-bold text-muted hover:text-white">{loadingVersionHistoryId === document.id ? <LoaderCircle className="h-3 w-3 animate-spin" /> : null} Load older versions</Button> : null}
           </div>
         </details>
       ) : null}

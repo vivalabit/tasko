@@ -1,6 +1,6 @@
 from collections.abc import Generator
 import base64
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 import json
 
@@ -286,6 +286,78 @@ def test_pack_status_can_be_recovered_after_response_loss(pack_client, monkeypat
     assert recovered.json() == created.json()
     assert foreign.status_code == 409
     assert missing.status_code == 404
+
+
+def test_pack_status_lookup_cleans_up_expired_jobs_and_validation_artifacts(
+    pack_client,
+) -> None:
+    client, testing_session_local = pack_client
+    now = datetime.now(UTC)
+    with testing_session_local() as db:
+        db.add_all(
+            [
+                DocumentPackJobRecord(
+                    id="expired-pack",
+                    request_fingerprint="a" * 64,
+                    application_id="application-pack",
+                    persistence_mode="atomic",
+                    status="completed",
+                    document_ids=[],
+                    stages=[],
+                    message="expired",
+                    created_at=now - timedelta(days=8),
+                    updated_at=now - timedelta(days=8),
+                    expires_at=now - timedelta(days=1),
+                ),
+                DocumentPackJobRecord(
+                    id="active-pack",
+                    request_fingerprint="b" * 64,
+                    application_id="application-pack",
+                    persistence_mode="atomic",
+                    status="completed",
+                    document_ids=[],
+                    stages=[],
+                    message="active",
+                    created_at=now,
+                    updated_at=now,
+                    expires_at=now + timedelta(days=7),
+                ),
+                DocumentValidationArtifactRecord(
+                    id="expired-artifact",
+                    application_id="application-pack",
+                    document_type="tailored_resume",
+                    template_id="expired-template",
+                    template_hash="c" * 64,
+                    result_hash="d" * 64,
+                    evidence_hash="e" * 64,
+                    rendered_hash="f" * 64,
+                    rendered_content=b"expired",
+                    validation_report={},
+                    consumed_at=None,
+                    expires_at=now - timedelta(minutes=1),
+                    created_at=now - timedelta(hours=1),
+                ),
+            ]
+        )
+        db.commit()
+
+    response = client.get(
+        "/documents/packs/active-pack?applicationId=application-pack"
+    )
+
+    with testing_session_local() as db:
+        expired_job = db.get(DocumentPackJobRecord, "expired-pack")
+        active_job = db.get(DocumentPackJobRecord, "active-pack")
+        expired_artifact = db.get(
+            DocumentValidationArtifactRecord,
+            "expired-artifact",
+        )
+
+    assert response.status_code == 200
+    assert response.json()["expiresAt"]
+    assert expired_job is None
+    assert active_job is not None
+    assert expired_artifact is None
 
 
 def test_resume_preflight_validates_without_saving(pack_client, monkeypatch) -> None:

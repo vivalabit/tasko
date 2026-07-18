@@ -17,6 +17,7 @@ from app.models.applications import CandidateConfirmationRecord, StoredApplicati
 from app.models.documents import (
     DocumentAttachmentRecord,
     DocumentGenerationProvenanceRecord,
+    DocumentRecord,
     DocumentVersionGenerationProvenanceRecord,
     DocumentVersionRecord,
     DocumentVersionValidationRecord,
@@ -134,6 +135,64 @@ def test_document_versions_download_and_application_attachments() -> None:
     assert attachment_count == 0
     assert provenance_count == 0
     assert version_provenance_count == 0
+
+
+def test_document_version_history_is_paginated_from_newest_to_oldest() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    now = datetime.now(UTC)
+    with testing_session_local() as db:
+        record = DocumentRecord(
+            id="paginated-document",
+            type="cover_letter",
+            title="Long history",
+            current_version=25,
+            created_at=now,
+            updated_at=now,
+        )
+        record.versions.extend(
+            DocumentVersionRecord(
+                id=f"paginated-version-{version}",
+                document_id=record.id,
+                version=version,
+                content=f"Version {version}",
+                created_at=now,
+            )
+            for version in range(1, 26)
+        )
+        db.add(record)
+        db.commit()
+
+    def override_get_db() -> Generator[Session, None, None]:
+        with testing_session_local() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        document = client.get("/documents/paginated-document")
+        older_page = client.get(
+            "/documents/paginated-document/versions?limit=20&offset=20"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert document.status_code == 200
+    assert document.json()["versionsTotal"] == 25
+    assert document.json()["versionsHasMore"] is True
+    assert [version["version"] for version in document.json()["versions"]] == list(
+        range(6, 26)
+    )
+    assert older_page.status_code == 200
+    assert older_page.json()["total"] == 25
+    assert [version["version"] for version in older_page.json()["items"]] == list(
+        range(1, 6)
+    )
 
 
 def test_document_attachment_requires_existing_application() -> None:

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import hashlib
 
 import pytest
 from sqlalchemy import create_engine
@@ -86,6 +87,7 @@ def generation_context_session(*, include_confirmation: bool = True) -> Session:
             name="Cover letter",
             file_name="cover.docx",
             content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            content_sha256=hashlib.sha256(b"docx").hexdigest(),
             content=b"docx",
             extracted_text="Original cover letter",
             created_at=now,

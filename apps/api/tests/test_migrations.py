@@ -19,12 +19,21 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
     try:
         table_names = set(inspect(engine).get_table_names())
         assert table_names == {*Base.metadata.tables, "alembic_version"}
+        template_constraints = inspect(engine).get_unique_constraints(
+            "document_templates"
+        )
+        assert {
+            tuple(constraint["column_names"])
+            for constraint in template_constraints
+        } == {("type", "content_sha256")}
+        pack_indexes = inspect(engine).get_indexes("document_pack_jobs")
+        assert any(index["column_names"] == ["expires_at"] for index in pack_indexes)
 
         with engine.connect() as connection:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260718_0002"
+        assert revision == "20260718_0003"
     finally:
         engine.dispose()
 

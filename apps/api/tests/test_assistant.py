@@ -55,6 +55,23 @@ def test_extract_openclaw_assistant_text_reads_payload_wrapper() -> None:
     assert response == "Here is your evidence-based interview plan."
 
 
+def test_assistant_config_exposes_provider_and_consent_version() -> None:
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        ai_provider_name="Example AI",
+        ai_consent_version="consent-v3",
+    )
+    try:
+        response = TestClient(app).get("/assistant/config")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "providerName": "Example AI",
+        "consentVersion": "consent-v3",
+    }
+
+
 def test_build_openclaw_assistant_prompt_only_includes_dynamic_context() -> None:
     prompt = build_openclaw_assistant_prompt(
         message="Tailor my resume",

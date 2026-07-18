@@ -7,8 +7,8 @@ from io import BytesIO
 from uuid import uuid4
 
 from docx import Document
-from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -37,6 +37,7 @@ from app.models.documents import (
     DocumentUpdateRequest,
     DocumentValidationArtifactRecord,
     DocumentVersionGenerationProvenanceRecord,
+    DocumentVersionPagePayload,
     DocumentVersionPayload,
     DocumentVersionRecord,
     DocumentVersionValidationRecord,
@@ -59,6 +60,8 @@ router = APIRouter()
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 MAX_TEMPLATE_BYTES = 10_000_000
 VALIDATION_ARTIFACT_TTL = timedelta(minutes=30)
+PACK_JOB_TTL = timedelta(days=7)
+DOCUMENT_VERSION_PAGE_SIZE = 20
 
 
 @router.get("", response_model=list[DocumentPayload])
@@ -89,6 +92,7 @@ def list_documents(
         return [
             document_payload(
                 record,
+                version_limit=DOCUMENT_VERSION_PAGE_SIZE,
                 current_generation_fingerprint=authoritative_current_generation_fingerprint(
                     db,
                     record,
@@ -238,6 +242,7 @@ def validate_resume_pack_item(
     db: Session = Depends(get_db),
 ) -> DocumentPackValidationPayload:
     try:
+        cleanup_expired_pack_storage(db)
         require_pack_document_ownership(
             db,
             request.resume,
@@ -293,6 +298,7 @@ def create_document_pack(
     db: Session = Depends(get_db),
 ) -> DocumentPackPayload:
     try:
+        cleanup_expired_pack_storage(db)
         if request.persistence_mode == "atomic" and request.cover_letter is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -471,6 +477,7 @@ def create_document_pack(
             message=message,
             created_at=now,
             updated_at=now,
+            expires_at=now + PACK_JOB_TTL,
         )
         db.add(job)
         db.commit()
@@ -493,6 +500,7 @@ def get_document_pack_status(
     db: Session = Depends(get_db),
 ) -> DocumentPackPayload:
     try:
+        cleanup_expired_pack_storage(db)
         job = db.get(DocumentPackJobRecord, pack_job_id)
         if not job:
             raise HTTPException(
@@ -517,7 +525,78 @@ def get_document(document_id: str, db: Session = Depends(get_db)) -> DocumentPay
         record = require_document(db, document_id)
         return document_payload(
             record,
+            version_limit=DOCUMENT_VERSION_PAGE_SIZE,
             current_generation_fingerprint=authoritative_current_generation_fingerprint(db, record),
+        )
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        raise database_unavailable(exc) from exc
+
+
+@router.get("/{document_id}/versions", response_model=DocumentVersionPagePayload)
+def list_document_versions(
+    document_id: str,
+    limit: int = Query(default=DOCUMENT_VERSION_PAGE_SIZE, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> DocumentVersionPagePayload:
+    try:
+        if db.get(DocumentRecord, document_id) is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found",
+            )
+        total = db.scalar(
+            select(func.count()).select_from(DocumentVersionRecord).where(
+                DocumentVersionRecord.document_id == document_id
+            )
+        ) or 0
+        versions = list(
+            reversed(
+                db.scalars(
+                    select(DocumentVersionRecord)
+                    .where(DocumentVersionRecord.document_id == document_id)
+                    .order_by(DocumentVersionRecord.version.desc())
+                    .offset(offset)
+                    .limit(limit)
+                ).all()
+            )
+        )
+        version_numbers = [version.version for version in versions]
+        rendered_versions = (
+            set(
+                db.scalars(
+                    select(DocumentFileRecord.version).where(
+                        DocumentFileRecord.document_id == document_id,
+                        DocumentFileRecord.version.in_(version_numbers),
+                    )
+                ).all()
+            )
+            if version_numbers
+            else set()
+        )
+        validations = (
+            db.scalars(
+                select(DocumentVersionValidationRecord).where(
+                    DocumentVersionValidationRecord.document_id == document_id,
+                    DocumentVersionValidationRecord.version.in_(version_numbers),
+                )
+            ).all()
+            if version_numbers
+            else []
+        )
+        return DocumentVersionPagePayload(
+            items=document_version_payloads(
+                versions,
+                rendered_versions=rendered_versions,
+                validations_by_version={
+                    validation.version: validation for validation in validations
+                },
+            ),
+            total=total,
+            limit=limit,
+            offset=offset,
         )
     except HTTPException:
         raise
@@ -948,18 +1027,13 @@ def create_document_template(
             detail=str(exc),
         ) from exc
 
-    content_sha256 = hashlib.sha256(content).digest()
+    content_sha256 = hashlib.sha256(content).hexdigest()
     try:
-        candidates = db.scalars(
-            select(DocumentTemplateRecord).where(DocumentTemplateRecord.type == request.type)
-        ).all()
-        duplicate = next(
-            (
-                candidate
-                for candidate in candidates
-                if hashlib.sha256(candidate.content).digest() == content_sha256
-            ),
-            None,
+        duplicate = db.scalar(
+            select(DocumentTemplateRecord).where(
+                DocumentTemplateRecord.type == request.type,
+                DocumentTemplateRecord.content_sha256 == content_sha256,
+            )
         )
         if duplicate is not None:
             return document_template_payload(duplicate)
@@ -984,6 +1058,7 @@ def create_document_template(
         name=request.name.strip(),
         file_name=safe_upload_filename(request.file_name),
         content_type=content_type or DOCX_CONTENT_TYPE,
+        content_sha256=content_sha256,
         content=content,
         extracted_text=extracted_text,
         created_at=now,
@@ -994,6 +1069,17 @@ def create_document_template(
         db.commit()
         db.refresh(record)
         return document_template_payload(record)
+    except IntegrityError as exc:
+        db.rollback()
+        duplicate = db.scalar(
+            select(DocumentTemplateRecord).where(
+                DocumentTemplateRecord.type == request.type,
+                DocumentTemplateRecord.content_sha256 == content_sha256,
+            )
+        )
+        if duplicate is not None:
+            return document_template_payload(duplicate)
+        raise database_unavailable(exc) from exc
     except SQLAlchemyError as exc:
         db.rollback()
         raise database_unavailable(exc) from exc
@@ -1360,7 +1446,21 @@ def document_pack_payload(job: DocumentPackJobRecord, db: Session) -> DocumentPa
         documents=documents,
         stages=[DocumentPackStagePayload.model_validate(stage) for stage in job.stages],
         message=job.message,
+        expires_at=job.expires_at,
     )
+
+
+def cleanup_expired_pack_storage(db: Session) -> None:
+    now = utc_now()
+    db.execute(
+        delete(DocumentValidationArtifactRecord).where(
+            DocumentValidationArtifactRecord.expires_at <= now
+        )
+    )
+    db.execute(
+        delete(DocumentPackJobRecord).where(DocumentPackJobRecord.expires_at <= now)
+    )
+    db.commit()
 
 
 def pack_validation_failed(stage: str, exc: Exception) -> HTTPException:
@@ -1525,12 +1625,19 @@ def document_payload(
     record: DocumentRecord,
     *,
     current_generation_fingerprint: str | None = None,
+    version_limit: int | None = None,
+    version_offset: int = 0,
 ) -> DocumentPayload:
     provenance = record.generation_provenance
     rendered_versions = {file.version for file in record.files}
     validations_by_version = {
         validation.version: validation for validation in record.version_validations
     }
+    ordered_versions = sorted(record.versions, key=lambda version: version.version, reverse=True)
+    paged_versions = ordered_versions[version_offset:]
+    if version_limit is not None:
+        paged_versions = paged_versions[:version_limit]
+    paged_versions = list(reversed(paged_versions))
     return DocumentPayload(
         id=record.id,
         type=record.type,
@@ -1544,32 +1651,47 @@ def document_payload(
         current_generation_fingerprint=current_generation_fingerprint,
         generation_model=provenance.generation_model if provenance else None,
         input_versions=provenance.input_versions if provenance else {},
-        versions=[
-            DocumentVersionPayload(
-                id=version.id,
-                version=version.version,
-                content=version.content,
-                created_at=version.created_at,
-                has_rendered_docx=version.version in rendered_versions,
-                factual_validation=(
-                    validations_by_version[version.version].factual_report
-                    if version.version in validations_by_version
-                    else {}
-                ),
-                visual_validation=(
-                    validations_by_version[version.version].visual_report
-                    if version.version in validations_by_version
-                    else {}
-                ),
-                diff=(
-                    validations_by_version[version.version].diff_items
-                    if version.version in validations_by_version
-                    else []
-                ),
-            )
-            for version in record.versions
-        ],
+        versions=document_version_payloads(
+            paged_versions,
+            rendered_versions=rendered_versions,
+            validations_by_version=validations_by_version,
+        ),
+        versions_total=len(record.versions),
+        versions_has_more=version_offset + len(paged_versions) < len(record.versions),
     )
+
+
+def document_version_payloads(
+    versions: list[DocumentVersionRecord],
+    *,
+    rendered_versions: set[int],
+    validations_by_version: dict[int, DocumentVersionValidationRecord],
+) -> list[DocumentVersionPayload]:
+    return [
+        DocumentVersionPayload(
+            id=version.id,
+            version=version.version,
+            content=version.content,
+            created_at=version.created_at,
+            has_rendered_docx=version.version in rendered_versions,
+            factual_validation=(
+                validations_by_version[version.version].factual_report
+                if version.version in validations_by_version
+                else {}
+            ),
+            visual_validation=(
+                validations_by_version[version.version].visual_report
+                if version.version in validations_by_version
+                else {}
+            ),
+            diff=(
+                validations_by_version[version.version].diff_items
+                if version.version in validations_by_version
+                else []
+            ),
+        )
+        for version in versions
+    ]
 
 
 def safe_filename(value: str) -> str:
