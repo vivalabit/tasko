@@ -16,6 +16,16 @@ from app.services.ai_match import MATCHER_VERSION, detect_job_language
 from app.services.job_match_store import match_record_to_ai_match
 
 GENERATION_FINGERPRINT_VERSION = "generation-fingerprint-v2"
+PROFILE_EVIDENCE_FIELDS = (
+    "name",
+    "current_role",
+    "desired_role",
+    "location",
+    "headline",
+    "skills",
+    "experience",
+    "education",
+)
 
 
 class GenerationContextError(ValueError):
@@ -97,16 +107,6 @@ class AuthoritativeGenerationContext:
         )
 
     def validation_evidence(self) -> dict[str, Any]:
-        profile_fields = (
-            "name",
-            "current_role",
-            "desired_role",
-            "location",
-            "headline",
-            "skills",
-            "experience",
-            "education",
-        )
         evidence_matrix = self.application_guide.get("evidenceMatrix")
         verified_guide_evidence = (
             [
@@ -120,8 +120,36 @@ class AuthoritativeGenerationContext:
             if isinstance(evidence_matrix, list)
             else []
         )
+        profile_evidence = [
+            {
+                "id": f"profile:{field}",
+                "type": "profile",
+                "text": str(self.profile.get(field) or "").strip(),
+            }
+            for field in PROFILE_EVIDENCE_FIELDS
+            if str(self.profile.get(field) or "").strip()
+        ]
+        confirmation_evidence = [
+            {
+                "id": f"confirmation:{confirmation.question_id}",
+                "type": "confirmation",
+                "text": "\n".join(
+                    value
+                    for value in (
+                        confirmation.requirement,
+                        confirmation.question,
+                        confirmation.example_text,
+                    )
+                    if value.strip()
+                ),
+            }
+            for confirmation in self.confirmations
+            if confirmation.response != "no"
+        ]
         return {
-            "profile": {field: self.profile.get(field, "") for field in profile_fields},
+            "profile": {
+                field: self.profile.get(field, "") for field in PROFILE_EVIDENCE_FIELDS
+            },
             "confirmations": [
                 {
                     "requirement": confirmation.requirement,
@@ -133,6 +161,7 @@ class AuthoritativeGenerationContext:
             ],
             "verifiedGuideEvidence": verified_guide_evidence,
             "language": self.language,
+            "evidenceCatalog": [*profile_evidence, *confirmation_evidence],
         }
 
 

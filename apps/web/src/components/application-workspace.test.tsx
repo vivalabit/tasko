@@ -209,6 +209,7 @@ describe("ApplicationWorkspace", () => {
                     spanId: "summary-span-0001",
                     replacement: "Research-led product designer",
                     reason: "Matches the role positioning",
+                    evidenceIds: ["profile:headline"],
                   },
                 ],
               }),

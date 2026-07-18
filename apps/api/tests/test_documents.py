@@ -335,6 +335,7 @@ def test_resume_template_rewrites_blocks_without_rebuilding_design() -> None:
                                 "original": "Original professional summary with verified delivery experience.",
                                 "replacement": "Backend engineer focused on FastAPI",
                                 "reason": "Matches the target role with verified profile evidence",
+                                "evidenceIds": ["source:block-0002-span-0001"],
                             }
                         ]
                     }
@@ -614,3 +615,10 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
             "exampleText": "Built a Python service at Acme in 2023.",
         }
     ]
+    evidence_catalog = {
+        item["id"]: item for item in captured_evidence["evidenceCatalog"]
+    }
+    assert evidence_catalog["profile:experience"]["text"].startswith(
+        "Built a Python service"
+    )
+    assert evidence_catalog["confirmation:production-python"]["type"] == "confirmation"

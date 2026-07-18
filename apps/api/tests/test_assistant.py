@@ -343,6 +343,7 @@ def test_assistant_prompt_keeps_candidate_confirmations_in_structured_context() 
         application=None,
         candidate_confirmations=[
             AssistantCandidateConfirmation(
+                questionId="german-client-communication",
                 requirement="German client communication",
                 question="Have you discussed technical topics in German?",
                 answer="Yes, I presented an API integration to a German-speaking client.",
@@ -352,6 +353,7 @@ def test_assistant_prompt_keeps_candidate_confirmations_in_structured_context() 
 
     context, user_message = prompt.split("USER_MESSAGE (trusted instructions):\n", 1)
     assert '"candidate_confirmations"' in context
+    assert '"evidenceId":"confirmation:german-client-communication"' in context
     assert "German-speaking client" in context
     assert "German-speaking client" not in user_message
     assert user_message == "Tailor the selected CV using the structured application context."

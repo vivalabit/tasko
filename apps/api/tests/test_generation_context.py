@@ -127,6 +127,12 @@ def test_loads_complete_authoritative_generation_context() -> None:
         assert context.template.id == "template-context"
         assert context.confirmations[0].requirement == "Production Python"
         assert context.confirmations[0].blocking is True
+        evidence = context.validation_evidence()
+        assert {item["id"] for item in evidence["evidenceCatalog"]} >= {
+            "profile:skills",
+            "profile:experience",
+            "confirmation:production-python",
+        }
 
 
 def test_rejects_generation_when_required_confirmation_is_missing() -> None:

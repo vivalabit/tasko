@@ -156,16 +156,38 @@ def validate_generated_document(
     document_type: str,
     evidence: dict[str, Any],
 ) -> dict[str, Any]:
-    source_text = extract_docx_text(template_content)
-    evidence_text = "\n".join(flatten_evidence(evidence))
-    allowed_text = f"{source_text}\n{evidence_text}"
     diff = build_document_diff(
         template_content,
         generated_content,
         document_type,
         rendered_content=rendered_content,
     )
-    factual_issues = validate_factual_changes(diff, allowed_text)
+    if document_type == "tailored_resume":
+        replacements = parse_resume_replacements(generated_content)
+        evidence_catalog = build_authoritative_evidence_catalog(
+            template_content,
+            evidence,
+        )
+        factual_issues = [
+            *validate_evidence_id_references(replacements, evidence_catalog),
+            *validate_referenced_factual_changes(diff, evidence_catalog),
+        ]
+        cited_evidence_ids = {
+            evidence_id
+            for replacement in replacements
+            for evidence_id in replacement["evidenceIds"]
+            if evidence_id in evidence_catalog
+        }
+        checked_evidence_characters = sum(
+            len(evidence_catalog[evidence_id]["text"])
+            for evidence_id in cited_evidence_ids
+        )
+    else:
+        source_text = extract_docx_text(template_content)
+        evidence_text = "\n".join(flatten_evidence(evidence))
+        allowed_text = f"{source_text}\n{evidence_text}"
+        factual_issues = validate_factual_changes(diff, allowed_text)
+        checked_evidence_characters = len(allowed_text)
     visual_report, visual_issues = validate_visual_output(template_content, rendered_content)
     issues = [*factual_issues, *visual_issues]
     if issues:
@@ -174,7 +196,7 @@ def validate_generated_document(
         "factual": {
             "status": "passed",
             "checkedChanges": len(diff),
-            "checkedEvidenceCharacters": len(allowed_text),
+            "checkedEvidenceCharacters": checked_evidence_characters,
         },
         "visual": visual_report,
         "diff": diff,
@@ -187,7 +209,7 @@ def build_document_diff(
     document_type: str,
     *,
     rendered_content: bytes | None = None,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     if document_type == "tailored_resume":
         blocks = {
             block["blockId"]: block
@@ -201,6 +223,7 @@ def build_document_diff(
                 "original": replacement["original"],
                 "replacement": replacement["replacement"],
                 "reason": replacement["reason"],
+                "evidenceIds": replacement["evidenceIds"],
             }
             for replacement in parse_resume_replacements(generated_content)
             if replacement["replacement"] != replacement["original"]
@@ -216,7 +239,7 @@ def build_document_diff(
             if paragraph.strip()
         ]
     matcher = SequenceMatcher(a=original_paragraphs, b=generated_paragraphs, autojunk=False)
-    diff: list[dict[str, str]] = []
+    diff: list[dict[str, Any]] = []
     for change_index, (operation, left_start, left_end, right_start, right_end) in enumerate(
         matcher.get_opcodes(),
         start=1,
@@ -235,39 +258,126 @@ def build_document_diff(
     return diff
 
 
-def validate_factual_changes(diff: list[dict[str, str]], allowed_text: str) -> list[str]:
+def validate_factual_changes(diff: list[dict[str, Any]], allowed_text: str) -> list[str]:
     issues: list[str] = []
+    for change in diff:
+        issues.extend(validate_factual_change_against_text(change, allowed_text))
+    return issues
+
+
+def build_authoritative_evidence_catalog(
+    template_content: bytes,
+    evidence: dict[str, Any],
+) -> dict[str, dict[str, str]]:
+    catalog: dict[str, dict[str, str]] = {}
+    for block in extract_resume_blocks_from_docx(template_content):
+        for span in block["spans"]:
+            evidence_id = span.get("evidenceId")
+            original = span.get("original")
+            if isinstance(evidence_id, str) and isinstance(original, str) and original:
+                catalog[evidence_id] = {"type": "source", "text": original}
+
+    for item in evidence.get("evidenceCatalog", []):
+        if not isinstance(item, dict):
+            continue
+        evidence_id = item.get("id")
+        evidence_type = item.get("type")
+        text = item.get("text")
+        if (
+            isinstance(evidence_id, str)
+            and evidence_type in {"profile", "confirmation"}
+            and isinstance(text, str)
+            and text.strip()
+            and evidence_id.startswith(f"{evidence_type}:")
+        ):
+            catalog[evidence_id] = {
+                "type": evidence_type,
+                "text": text.strip(),
+            }
+    return catalog
+
+
+def validate_evidence_id_references(
+    replacements: list[dict[str, object]],
+    evidence_catalog: dict[str, dict[str, str]],
+) -> list[str]:
+    return [
+        f'{replacement["spanId"]} references unknown evidence "{evidence_id}"'
+        for replacement in replacements
+        for evidence_id in replacement["evidenceIds"]
+        if evidence_id not in evidence_catalog
+    ]
+
+
+def validate_referenced_factual_changes(
+    diff: list[dict[str, Any]],
+    evidence_catalog: dict[str, dict[str, str]],
+) -> list[str]:
+    issues: list[str] = []
+    for change in diff:
+        referenced_text = "\n".join(
+            evidence_catalog[evidence_id]["text"]
+            for evidence_id in change["evidenceIds"]
+            if evidence_id in evidence_catalog
+        )
+        if referenced_text:
+            issues.extend(
+                validate_factual_change_against_text(
+                    change,
+                    referenced_text,
+                    referenced=True,
+                )
+            )
+    return issues
+
+
+def validate_factual_change_against_text(
+    change: dict[str, Any],
+    allowed_text: str,
+    *,
+    referenced: bool = False,
+) -> list[str]:
+    issues: list[str] = []
+    original = change["original"]
+    replacement = change["replacement"]
+    location = change.get("spanId", change["blockId"])
     allowed_normalized = normalize_fact(allowed_text)
     allowed_tokens = significant_tokens(allowed_text)
-    for change in diff:
-        original = change["original"]
-        replacement = change["replacement"]
-        for label, extractor in (
-            ("date", extract_dates),
-            ("number", extract_numbers),
-            ("technology", extract_technologies),
-            ("company", extract_companies),
-            ("job title", extract_titles),
-        ):
-            original_values = {normalize_fact(value) for value in extractor(original)}
-            for value in extractor(replacement):
-                normalized = normalize_fact(value)
-                if normalized not in original_values and not contains_normalized_fact(
-                    allowed_normalized,
-                    normalized,
-                ):
+    for label, extractor in (
+        ("date", extract_dates),
+        ("number", extract_numbers),
+        ("technology", extract_technologies),
+        ("company", extract_companies),
+        ("job title", extract_titles),
+    ):
+        original_values = {normalize_fact(value) for value in extractor(original)}
+        for value in extractor(replacement):
+            normalized = normalize_fact(value)
+            if normalized not in original_values and not contains_normalized_fact(
+                allowed_normalized,
+                normalized,
+            ):
+                if referenced:
                     issues.append(
-                        f'{change["blockId"]} adds unsupported {label} "{value}"'
+                        f'{location} adds {label} "{value}" not supported by referenced evidence'
                     )
+                else:
+                    issues.append(f'{location} adds unsupported {label} "{value}"')
 
-        for sentence in split_sentences(replacement):
-            sentence_tokens = significant_tokens(sentence) - CLAIM_VERBS
-            if not (significant_tokens(sentence) & CLAIM_VERBS) or not sentence_tokens:
-                continue
-            supported = sentence_tokens & allowed_tokens
-            if len(supported) / len(sentence_tokens) < 0.5:
+    for sentence in split_sentences(replacement):
+        sentence_tokens = significant_tokens(sentence) - CLAIM_VERBS
+        if not (significant_tokens(sentence) & CLAIM_VERBS) or not sentence_tokens:
+            continue
+        supported = sentence_tokens & allowed_tokens
+        if len(supported) / len(sentence_tokens) < 0.5:
+            if referenced:
                 issues.append(
-                    f'{change["blockId"]} adds an unsupported claim "{sentence[:100]}"'
+                    f'{location} adds a claim not supported by referenced evidence '
+                    f'"{sentence[:100]}"'
+                )
+            else:
+                issues.append(
+                    f'{location} adds an unsupported claim "{sentence[:100]}"'
                 )
     return issues
 

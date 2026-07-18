@@ -1,3 +1,4 @@
+import json
 import shutil
 from io import BytesIO
 
@@ -8,10 +9,15 @@ from docx.oxml.ns import qn
 from docx.opc.constants import RELATIONSHIP_TYPE
 
 from app.services.document_validation import (
+    DocumentValidationError,
+    build_authoritative_evidence_catalog,
     build_document_diff,
     detect_table_overflow,
     render_and_count_pages,
+    validate_evidence_id_references,
     validate_factual_changes,
+    validate_referenced_factual_changes,
+    validate_generated_document,
     validate_visual_output,
 )
 
@@ -79,6 +85,136 @@ def test_factual_validation_uses_fact_boundaries_and_checks_job_titles() -> None
         "unsupported job title" in issue and "Principal Software Engineer" in issue
         for issue in issues
     )
+
+
+def test_authoritative_evidence_catalog_contains_source_profile_and_confirmation() -> None:
+    source = Document()
+    source.add_paragraph("SUMMARY", style="Heading 1")
+    source.add_paragraph("Built a Python service at Acme.")
+
+    catalog = build_authoritative_evidence_catalog(
+        document_bytes(source),
+        {
+            "evidenceCatalog": [
+                {"id": "profile:skills", "type": "profile", "text": "FastAPI"},
+                {
+                    "id": "confirmation:production",
+                    "type": "confirmation",
+                    "text": "Deployed Kubernetes in 2025.",
+                },
+                {"id": "vacancy:title", "type": "vacancy", "text": "Backend Engineer"},
+            ]
+        },
+    )
+
+    assert catalog["source:block-0002-span-0001"] == {
+        "type": "source",
+        "text": "Built a Python service at Acme.",
+    }
+    assert catalog["profile:skills"]["text"] == "FastAPI"
+    assert catalog["confirmation:production"]["text"] == "Deployed Kubernetes in 2025."
+    assert "vacancy:title" not in catalog
+
+
+def test_referenced_validation_rejects_unknown_and_uncited_evidence() -> None:
+    catalog = {
+        "source:block-0002-span-0001": {
+            "type": "source",
+            "text": "Built a Python service at Acme in 2023 for 12 clients.",
+        },
+        "confirmation:principal-role": {
+            "type": "confirmation",
+            "text": (
+                "Worked as a Principal Software Engineer at Globex in 2025 for "
+                "900 clients using Kubernetes."
+            ),
+        },
+    }
+    replacements: list[dict[str, object]] = [
+        {
+            "blockId": "block-0002",
+            "spanId": "block-0002-span-0001",
+            "original": "Built a Python service at Acme in 2023 for 12 clients.",
+            "replacement": (
+                "Worked as a Principal Software Engineer at Globex in 2025 for "
+                "900 clients using Kubernetes."
+            ),
+            "reason": "Targets the confirmed role",
+            "evidenceIds": ["source:block-0002-span-0001", "profile:missing"],
+        }
+    ]
+    diff = [dict(replacements[0])]
+
+    reference_issues = validate_evidence_id_references(replacements, catalog)
+    factual_issues = validate_referenced_factual_changes(diff, catalog)
+
+    assert reference_issues == [
+        'block-0002-span-0001 references unknown evidence "profile:missing"'
+    ]
+    for unsupported in ("2025", "900 clients", "kubernetes", "Globex", "Principal"):
+        assert any(
+            unsupported.casefold() in issue.casefold()
+            and "referenced evidence" in issue
+            for issue in factual_issues
+        )
+
+    diff[0]["evidenceIds"] = ["confirmation:principal-role"]
+    assert validate_referenced_factual_changes(diff, catalog) == []
+
+
+def test_generated_resume_validation_rejects_unknown_evidence_before_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = Document()
+    source.add_paragraph("SUMMARY", style="Heading 1")
+    source.add_paragraph("Built a Python service at Acme in 2023.")
+    source_content = document_bytes(source)
+    replacement = {
+        "blockId": "block-0002",
+        "spanId": "block-0002-span-0001",
+        "original": "Built a Python service at Acme in 2023.",
+        "replacement": "Built a FastAPI service at Acme in 2023.",
+        "reason": "Uses the verified profile skill",
+        "evidenceIds": ["source:block-0002-span-0001", "profile:missing"],
+    }
+    monkeypatch.setattr(
+        "app.services.document_validation.validate_visual_output",
+        lambda _source, _rendered: ({"status": "passed"}, []),
+    )
+
+    with pytest.raises(
+        DocumentValidationError,
+        match='references unknown evidence "profile:missing"',
+    ):
+        validate_generated_document(
+            template_content=source_content,
+            rendered_content=source_content,
+            generated_content=json.dumps({"replacements": [replacement]}),
+            document_type="tailored_resume",
+            evidence={"evidenceCatalog": []},
+        )
+
+    replacement["evidenceIds"] = [
+        "source:block-0002-span-0001",
+        "profile:skills",
+    ]
+    report = validate_generated_document(
+        template_content=source_content,
+        rendered_content=source_content,
+        generated_content=json.dumps({"replacements": [replacement]}),
+        document_type="tailored_resume",
+        evidence={
+            "evidenceCatalog": [
+                {"id": "profile:skills", "type": "profile", "text": "FastAPI"}
+            ]
+        },
+    )
+
+    assert report["factual"] == {
+        "status": "passed",
+        "checkedChanges": 1,
+        "checkedEvidenceCharacters": len("Built a Python service at Acme in 2023.FastAPI"),
+    }
 
 
 def test_cover_letter_diff_compares_the_rendered_docx() -> None:

@@ -31,6 +31,7 @@ from app.models.assistant import (
 )
 from app.models.profile import ProfilePayload
 from app.services.document_security import DocumentSecurityError, validate_docx_package
+from app.services.generation_context import PROFILE_EVIDENCE_FIELDS
 from app.services.resume_import import (
     decode_resume_data_url,
     extract_docx_body_text,
@@ -397,10 +398,17 @@ def build_openclaw_assistant_prompt(
             source_documents
         )
     if candidate_confirmations:
-        context_payload["candidate_confirmations"] = [
-            confirmation.model_dump(exclude_defaults=True)
-            for confirmation in candidate_confirmations
-        ]
+        context_payload["candidate_confirmations"] = []
+        for confirmation in candidate_confirmations:
+            confirmation_context = confirmation.model_dump(
+                by_alias=True,
+                exclude_defaults=True,
+            )
+            if confirmation.question_id:
+                confirmation_context["evidenceId"] = (
+                    f"confirmation:{confirmation.question_id}"
+                )
+            context_payload["candidate_confirmations"].append(confirmation_context)
 
     user_message = message.strip()
     fixed_prompt = (
@@ -427,6 +435,11 @@ def build_profile_context(profile: ProfilePayload) -> dict[str, Any]:
         exclude_defaults=True,
     )
     profile_context["resume_attached"] = bool(profile.resume_file_name and profile.resume_data_url)
+    profile_context["evidence_ids"] = {
+        field: f"profile:{field}"
+        for field in PROFILE_EVIDENCE_FIELDS
+        if str(profile_context.get(field) or "").strip()
+    }
     structured_profile = "".join((profile.experience, profile.skills, profile.education)).strip()
 
     if profile.resume_file_name and profile.resume_data_url and not structured_profile:

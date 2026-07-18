@@ -159,6 +159,7 @@ def test_resume_renderer_applies_editable_span_replacements() -> None:
                         "original": "Original professional profile backed by delivery evidence.",
                     "replacement": "Backend engineer delivering verified FastAPI services.",
                     "reason": "Aligns verified delivery evidence with the vacancy",
+                    "evidenceIds": ["source:block-0003-span-0001"],
                 }
             ]
         }
@@ -188,6 +189,7 @@ def test_resume_renderer_applies_editable_span_replacements() -> None:
             "original": "Original professional profile backed by delivery evidence.",
             "replacement": "Backend engineer delivering verified FastAPI services.",
             "reason": "Aligns verified delivery evidence with the vacancy",
+            "evidenceIds": ["source:block-0003-span-0001"],
         }
     ]
 
@@ -203,6 +205,7 @@ def test_resume_renderer_rejects_immutable_and_mismatched_spans() -> None:
                         "original": "Acme · 2024",
                     "replacement": "Different employer · 2025",
                     "reason": "Unsafe invented change",
+                    "evidenceIds": ["source:block-0007-span-0001"],
                 }
             ]
         }
@@ -216,6 +219,7 @@ def test_resume_renderer_rejects_immutable_and_mismatched_spans() -> None:
                         "original": "A different original",
                     "replacement": "Backend engineer",
                     "reason": "Stale model response",
+                    "evidenceIds": ["source:block-0003-span-0001"],
                 }
             ]
         }
@@ -231,6 +235,26 @@ def test_resume_renderer_rejects_immutable_and_mismatched_spans() -> None:
         build_document_from_template(
             template_content=template,
             content=mismatched_original,
+            document_type="tailored_resume",
+        )
+
+    missing_evidence = json.dumps(
+        {
+            "replacements": [
+                {
+                    "blockId": "block-0003",
+                    "spanId": "block-0003-span-0001",
+                    "original": "Original professional profile backed by delivery evidence.",
+                    "replacement": "Backend engineer",
+                    "reason": "Missing provenance",
+                }
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="must contain 1-20 unique evidenceIds strings"):
+        build_document_from_template(
+            template_content=template,
+            content=missing_evidence,
             document_type="tailored_resume",
         )
 
@@ -357,6 +381,7 @@ def test_v2_spans_preserve_runs_hyperlinks_controls_and_structural_cells() -> No
                         "original": "Original profile",
                         "replacement": "Targeted summary",
                         "reason": "Tailors the editable text before the protected hyperlink",
+                        "evidenceIds": ["source:block-0002-span-0001"],
                     },
                     {
                         "blockId": "block-0002",
@@ -364,6 +389,7 @@ def test_v2_spans_preserve_runs_hyperlinks_controls_and_structural_cells() -> No
                         "original": "Remote",
                         "replacement": "Hybrid",
                         "reason": "Updates an editable text span between protected controls",
+                        "evidenceIds": ["source:block-0002-span-0004"],
                     },
                     {
                         "blockId": "block-0002",
@@ -371,6 +397,7 @@ def test_v2_spans_preserve_runs_hyperlinks_controls_and_structural_cells() -> No
                         "original": "Delivery",
                         "replacement": "Delivery proof",
                         "reason": "Updates the final editable text span",
+                        "evidenceIds": ["source:block-0002-span-0006"],
                     },
                     {
                         "blockId": "block-0004",
@@ -378,6 +405,7 @@ def test_v2_spans_preserve_runs_hyperlinks_controls_and_structural_cells() -> No
                         "original": "Original controlled summary",
                     "replacement": "Verified controlled summary",
                     "reason": "Updates a supported plain-text content control",
+                    "evidenceIds": ["source:block-0004-span-0001"],
                 },
             ]
         }
@@ -436,6 +464,7 @@ def test_v2_rejects_protected_spans_ambiguous_formatting_and_word_fields() -> No
                         "original": original,
                         "replacement": "Changed protected content",
                         "reason": "Invalid protected span change",
+                        "evidenceIds": [f"source:{span_id}"],
                     }
                 ]
             }
@@ -456,6 +485,7 @@ def test_v2_rejects_protected_spans_ambiguous_formatting_and_word_fields() -> No
                     "original": "Original profile",
                     "replacement": "Targeted\nsummary",
                     "reason": "Invalid control insertion",
+                    "evidenceIds": ["source:block-0002-span-0001"],
                 }
             ]
         }

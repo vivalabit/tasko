@@ -167,7 +167,7 @@ def replace_resume_text(body, content: str) -> None:
         replace_resume_text_span(span, replacement["replacement"])
 
 
-def parse_resume_replacements(content: str) -> list[dict[str, str]]:
+def parse_resume_replacements(content: str) -> list[dict[str, object]]:
     cleaned = content.strip()
     fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.DOTALL | re.IGNORECASE)
     if fenced:
@@ -186,7 +186,7 @@ def parse_resume_replacements(content: str) -> list[dict[str, str]]:
     else:
         raise ValueError("Generated resume JSON must contain a replacements array")
 
-    replacements: list[dict[str, str]] = []
+    replacements: list[dict[str, object]] = []
     required_fields = ("blockId", "spanId", "original", "replacement", "reason")
     for index, raw_replacement in enumerate(raw_replacements):
         if not isinstance(raw_replacement, dict) or not all(
@@ -196,7 +196,28 @@ def parse_resume_replacements(content: str) -> list[dict[str, str]]:
                 f"Resume replacement {index + 1} must contain string fields: "
                 "blockId, spanId, original, replacement, reason"
             )
-        replacements.append({field: raw_replacement[field] for field in required_fields})
+        evidence_ids = raw_replacement.get("evidenceIds")
+        if (
+            not isinstance(evidence_ids, list)
+            or not 1 <= len(evidence_ids) <= 20
+            or not all(
+                isinstance(evidence_id, str)
+                and evidence_id == evidence_id.strip()
+                and 1 <= len(evidence_id) <= 200
+                for evidence_id in evidence_ids
+            )
+            or len(set(evidence_ids)) != len(evidence_ids)
+        ):
+            raise ValueError(
+                f"Resume replacement {index + 1} must contain 1-20 unique "
+                "evidenceIds strings"
+            )
+        replacements.append(
+            {
+                **{field: raw_replacement[field] for field in required_fields},
+                "evidenceIds": evidence_ids,
+            }
+        )
     return replacements
 
 

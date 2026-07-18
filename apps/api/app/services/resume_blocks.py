@@ -136,6 +136,7 @@ class ResumeSpan:
             "type": self.span_type,
             "original": self.original,
             "editable": self.editable,
+            "evidenceId": source_span_evidence_id(self.span_id),
         }
 
 
@@ -436,6 +437,10 @@ def set_text_node_value(node: Any, value: str) -> None:
         node.set(XML_SPACE, "preserve")
     else:
         node.attrib.pop(XML_SPACE, None)
+
+
+def source_span_evidence_id(span_id: str) -> str:
+    return f"source:{span_id}"
 
 
 def validate_supported_resume_structure(body: Any) -> None:

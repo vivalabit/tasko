@@ -290,12 +290,13 @@ function currentContent(document: GeneratedDocument | undefined) {
         spanId?: string;
         replacement?: string;
         reason?: string;
+        evidenceIds?: string[];
       }>;
     };
     if (!Array.isArray(payload.replacements)) return content;
     if (payload.replacements.length === 0) return "No safe block replacements were needed.";
     return payload.replacements.map((replacement) => (
-      `${replacement.blockId ?? "Block"}${replacement.spanId ? ` · ${replacement.spanId}` : ""}: ${replacement.replacement ?? ""}${replacement.reason ? `\nWhy: ${replacement.reason}` : ""}`
+      `${replacement.blockId ?? "Block"}${replacement.spanId ? ` · ${replacement.spanId}` : ""}: ${replacement.replacement ?? ""}${replacement.reason ? `\nWhy: ${replacement.reason}` : ""}${replacement.evidenceIds?.length ? `\nEvidence: ${replacement.evidenceIds.join(", ")}` : ""}`
     )).join("\n\n");
   } catch {
     return content;
@@ -776,7 +777,12 @@ export function ApplicationWorkspace({
   async function askAssistant(
     message: string,
     sources: ProfileSourceDocument[] = [],
-    candidateConfirmations: Array<{ requirement: string; question: string; answer: string }> = [],
+    candidateConfirmations: Array<{
+      questionId: string;
+      requirement: string;
+      question: string;
+      answer: string;
+    }> = [],
   ) {
     if (!message.trim()) return { message: "", model: "unknown" };
     const response = await fetch(`${apiBaseUrl}/assistant/chat`, {
@@ -846,6 +852,7 @@ export function ApplicationWorkspace({
       if (!confirmation) return [];
       const example = confirmation.exampleText.trim();
       return [{
+        questionId: question.id,
         requirement: question.requirement,
         question: question.question,
         answer: `${confirmation.response.toUpperCase()}${example ? `: ${example}` : ""}`,
@@ -854,7 +861,7 @@ export function ApplicationWorkspace({
     const targetLanguage = effectiveLanguage || selectedSource.language || "English";
     const prompt = isCoverLetter
       ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the guide's positioning, evidence map, risks, and cover-letter plan. Candidate confirmations take precedence over inferred evidence; a negative answer means the claim must be omitted. Use only verified facts and never invent achievements or metrics. Return only the complete letter text without Markdown or commentary, with a greeting, focused body paragraphs, and a professional closing.`
-      : `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v2. Each block has stable blockId, type, original, editable, and spans fields; each span has stable spanId, type, original, and editable fields. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0002","spanId":"block-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason"}]}. Include only text spans where editable is true, and copy blockId, spanId, and original exactly from CONTEXT_JSON. Never target headings, contacts, immutable or structural table-cell blocks, hyperlinks, tabs, line breaks, or any span where editable is false. Do not add IDs, remove blocks or spans, use Markdown, or invent facts or metrics. Prefer targeted edits to summary, skill, and achievement text spans.`;
+      : `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v2. Each block has stable blockId, type, original, editable, and spans fields; each span has stable spanId, type, original, editable, and evidenceId fields. Profile fields expose evidence IDs in candidate.evidence_ids, and saved confirmations expose evidenceId. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0002","spanId":"block-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason","evidenceIds":["source:block-0002-span-0001","profile:experience"]}]}. Every replacement must include one or more evidenceIds copied exactly from CONTEXT_JSON. Cite every source span, profile field, or confirmation needed to support the replacement. New numbers, dates, companies, job titles, and technologies are allowed only when they appear in the cited evidence. Include only text spans where editable is true, and copy blockId, spanId, and original exactly from CONTEXT_JSON. Never target headings, contacts, immutable or structural table-cell blocks, hyperlinks, tabs, line breaks, or any span where editable is false. Do not add IDs, remove blocks or spans, use Markdown, or invent facts or metrics. Prefer targeted edits to summary, skill, and achievement text spans.`;
     const generate = () => askAssistant(prompt, [selectedSource], assistantConfirmations);
     const assistantResult = onRetry
       ? await retryPackOperation(generate, onRetry)
