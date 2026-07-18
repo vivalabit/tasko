@@ -7,9 +7,13 @@ import logging
 import re
 import shutil
 import time
+import zipfile
 from dataclasses import dataclass
+from io import BytesIO
 from typing import Any
 
+from docx.oxml.ns import qn
+from lxml import etree
 from pydantic import ValidationError
 
 from app.models.assistant import (
@@ -26,6 +30,7 @@ from app.models.assistant import (
     UpdateProfileFieldProposal,
 )
 from app.models.profile import ProfilePayload
+from app.services.document_security import DocumentSecurityError, validate_docx_package
 from app.services.resume_import import (
     decode_resume_data_url,
     extract_docx_body_text,
@@ -37,6 +42,7 @@ from app.services.resume_import import (
 from app.services.resume_blocks import (
     UnsupportedResumeStructureError,
     extract_resume_blocks_from_docx,
+    find_unsupported_word_constructions,
 )
 
 
@@ -59,6 +65,27 @@ class OpenClawAssistantError(RuntimeError):
 class OpenClawAssistantTimeoutError(OpenClawAssistantError):
     def __init__(self, message: str = "The assistant took too long to respond.") -> None:
         super().__init__(message, code="timeout", retryable=True)
+
+
+class SourceDocumentPreflightError(OpenClawAssistantError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        unsupported_elements: list[dict[str, str]] | None = None,
+        limit_exceeded: bool = False,
+    ) -> None:
+        super().__init__(message, code=code)
+        self.unsupported_elements = unsupported_elements or []
+        self.limit_exceeded = limit_exceeded
+
+    def as_detail(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "message": str(self),
+            "unsupportedElements": self.unsupported_elements,
+        }
 
 
 @dataclass(frozen=True)
@@ -416,6 +443,7 @@ def build_profile_context(profile: ProfilePayload) -> dict[str, Any]:
 def build_source_document_context(
     source_documents: list[AssistantSourceDocument],
 ) -> list[dict[str, Any]]:
+    preflight_source_documents(source_documents)
     context: list[dict[str, Any]] = []
     remaining_chars = 16_000
     for source in source_documents:
@@ -481,6 +509,60 @@ def build_source_document_context(
             }
         )
     return context
+
+
+def preflight_source_documents(
+    source_documents: list[AssistantSourceDocument],
+) -> None:
+    """Validate every source DOCX completely before an AI process can start."""
+    unsupported_elements: list[dict[str, str]] = []
+    for source in source_documents:
+        if not source.file_name.lower().endswith(".docx"):
+            continue
+        try:
+            _, content = decode_resume_data_url(source.data_url)
+            validate_docx_package(content)
+            with zipfile.ZipFile(BytesIO(content)) as archive:
+                root = etree.fromstring(archive.read("word/document.xml"))
+        except DocumentSecurityError as exc:
+            raise SourceDocumentPreflightError(
+                f"{source.file_name}: {exc}",
+                code="invalid_document",
+                limit_exceeded=exc.limit_exceeded,
+            ) from exc
+        except Exception as exc:
+            raise SourceDocumentPreflightError(
+                f"{source.file_name}: DOCX could not be read safely",
+                code="invalid_document",
+            ) from exc
+
+        body = root.find(qn("w:body"))
+        if body is None:
+            raise SourceDocumentPreflightError(
+                f"{source.file_name}: DOCX has no document body",
+                code="invalid_document",
+            )
+        for issue in find_unsupported_word_constructions(body):
+            unsupported_elements.append(
+                {
+                    "documentId": source.id,
+                    "fileName": source.file_name,
+                    "element": issue.element,
+                    "description": issue.description,
+                }
+            )
+
+    if unsupported_elements:
+        descriptions = ", ".join(
+            f'{issue["description"]} ({issue["element"]})'
+            for issue in unsupported_elements
+        )
+        raise SourceDocumentPreflightError(
+            "Selected DOCX cannot be tailored safely. "
+            f"Unsupported Word constructions: {descriptions}",
+            code="unsupported_document",
+            unsupported_elements=unsupported_elements,
+        )
 
 
 def compact_conversation_history(

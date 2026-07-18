@@ -42,9 +42,11 @@ from app.services.assistant import (
     OpenClawAssistantRun,
     OpenClawAssistantError,
     OpenClawAssistantTimeoutError,
+    SourceDocumentPreflightError,
     compact_conversation_history,
     encode_message_actions,
     extract_assistant_action_previews,
+    preflight_source_documents,
     run_openclaw_assistant,
 )
 from app.services.profile_versions import record_profile_version
@@ -83,6 +85,7 @@ async def chat_with_assistant(
             detail="The assistant is temporarily disabled. Check the server configuration.",
         )
     validate_assistant_message_length(request.message, settings)
+    await preflight_assistant_source_documents(request)
 
     profile = load_profile(db)
     job = load_job_context(db, request)
@@ -157,6 +160,7 @@ async def stream_chat_with_assistant(
             detail="The assistant is temporarily disabled. Check the server configuration.",
         )
     validate_assistant_message_length(request.message, settings)
+    await preflight_assistant_source_documents(request)
 
     prune_assistant_streams()
     fingerprint = stream_request_fingerprint(request)
@@ -614,6 +618,20 @@ def validate_assistant_message_length(message: str, settings: Settings) -> None:
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"Message is too long ({len(message):,} characters). The limit is {limit:,}.",
         )
+
+
+async def preflight_assistant_source_documents(request: AssistantChatRequest) -> None:
+    try:
+        await asyncio.to_thread(preflight_source_documents, request.source_documents)
+    except SourceDocumentPreflightError as exc:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_413_CONTENT_TOO_LARGE
+                if exc.limit_exceeded
+                else status.HTTP_422_UNPROCESSABLE_CONTENT
+            ),
+            detail=exc.as_detail(),
+        ) from exc
 
 
 def load_compact_conversation_history(

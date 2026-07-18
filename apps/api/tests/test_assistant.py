@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import json
+import zipfile
 from collections.abc import Generator
 from io import BytesIO
 
@@ -194,6 +195,102 @@ def test_assistant_prompt_reports_unsupported_resume_construction() -> None:
                 )
             ],
         )
+
+
+def test_source_docx_preflight_returns_all_unsupported_elements_before_ai(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = Document()
+    paragraph = document.add_paragraph("Unsupported source")
+    field = OxmlElement("w:fldChar")
+    field.set(qn("w:fldCharType"), "begin")
+    paragraph.add_run()._r.append(field)
+    paragraph.add_run()._r.append(OxmlElement("w:drawing"))
+    output = BytesIO()
+    document.save(output)
+    data_url = (
+        "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;"
+        "base64," + base64.b64encode(output.getvalue()).decode()
+    )
+    unsafe_package = BytesIO()
+    with zipfile.ZipFile(BytesIO(output.getvalue())) as source_archive:
+        with zipfile.ZipFile(unsafe_package, "w") as target_archive:
+            for entry in source_archive.infolist():
+                target_archive.writestr(entry, source_archive.read(entry.filename))
+            target_archive.writestr("../secret.xml", b"<secret />")
+    unsafe_data_url = (
+        "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;"
+        "base64," + base64.b64encode(unsafe_package.getvalue()).decode()
+    )
+    ai_calls = 0
+
+    async def fake_run_openclaw_assistant(**_: object) -> tuple[str, str]:
+        nonlocal ai_calls
+        ai_calls += 1
+        return "This must not run", "session-preflight"
+
+    monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_assistant_enabled=True)
+    assistant_api.assistant_streams.clear()
+    client = TestClient(app)
+    source_document = {
+        "id": "unsafe-source",
+        "title": "Unsafe source",
+        "category": "CV / Resume",
+        "fileName": "unsafe.docx",
+        "dataUrl": data_url,
+    }
+
+    try:
+        chat_response = client.post(
+            "/assistant/chat",
+            json={
+                "threadId": "thread-preflight",
+                "message": "Tailor this source",
+                "contextKind": "profile",
+                "sourceDocuments": [source_document],
+            },
+        )
+        stream_response = client.post(
+            "/assistant/chat/stream",
+            json={
+                "requestId": "request-preflight",
+                "threadId": "thread-preflight",
+                "message": "Tailor this source",
+                "contextKind": "profile",
+                "sourceDocuments": [source_document],
+            },
+        )
+        security_response = client.post(
+            "/assistant/chat",
+            json={
+                "threadId": "thread-security-preflight",
+                "message": "Tailor this source",
+                "contextKind": "profile",
+                "sourceDocuments": [{**source_document, "dataUrl": unsafe_data_url}],
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+        assistant_api.assistant_streams.clear()
+
+    for response in (chat_response, stream_response):
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert detail["code"] == "unsupported_document"
+        assert [item["element"] for item in detail["unsupportedElements"]] == [
+            "fldChar",
+            "drawing",
+        ]
+        assert all(item["fileName"] == "unsafe.docx" for item in detail["unsupportedElements"])
+    assert ai_calls == 0
+    assert "request-preflight" not in assistant_api.assistant_streams
+    assert security_response.status_code == 422
+    assert security_response.json()["detail"] == {
+        "code": "invalid_document",
+        "message": "unsafe.docx: DOCX contains an unsafe ZIP entry path",
+        "unsupportedElements": [],
+    }
 
 
 def test_assistant_prompt_keeps_candidate_confirmations_in_structured_context() -> None:

@@ -67,3 +67,9 @@ def test_docx_security_rejects_unsafe_paths_and_xml_entities() -> None:
     entity_xml = b'<!DOCTYPE x [<!ENTITY a "secret">]><w:document />'
     with pytest.raises(DocumentSecurityError, match="entities"):
         validate_docx_package(docx_package(extra_entries={"word/header1.xml": entity_xml}))
+
+    delayed_entity_xml = b" " * 1_500 + entity_xml
+    with pytest.raises(DocumentSecurityError, match="entities"):
+        validate_docx_package(
+            docx_package(extra_entries={"word/header2.xml": delayed_entity_xml})
+        )

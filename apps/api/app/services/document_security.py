@@ -110,7 +110,7 @@ def read_bounded_part(archive: zipfile.ZipFile, entry: zipfile.ZipInfo) -> bytes
 
 
 def count_xml_elements(content: bytes) -> int:
-    lowered = content[:1_024].lower()
+    lowered = content.lower()
     if b"<!doctype" in lowered or b"<!entity" in lowered:
         raise DocumentSecurityError("DOCX XML DTDs and entities are not allowed")
     try:

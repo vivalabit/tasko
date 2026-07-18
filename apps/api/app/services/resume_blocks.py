@@ -7,6 +7,8 @@ from typing import Any, Literal
 from docx.oxml.ns import qn
 from lxml import etree
 
+from app.services.document_security import validate_docx_package
+
 
 ResumeBlockType = Literal[
     "immutable",
@@ -85,6 +87,16 @@ class UnsupportedResumeStructureError(ValueError):
 
 
 @dataclass(frozen=True)
+class UnsupportedWordConstruction:
+    element: str
+    description: str
+
+    @property
+    def message(self) -> str:
+        return f"Unsupported DOCX construction: {self.description} ({self.element})"
+
+
+@dataclass(frozen=True)
 class ResumeBlock:
     block_id: str
     block_type: ResumeBlockType
@@ -100,6 +112,7 @@ class ResumeBlock:
 
 
 def extract_resume_blocks_from_docx(content: bytes) -> list[dict[str, str]]:
+    validate_docx_package(content)
     with zipfile.ZipFile(BytesIO(content)) as archive:
         root = etree.fromstring(archive.read("word/document.xml"))
     body = root.find(qn("w:body"))
@@ -269,22 +282,43 @@ def proportional_allocations(weights: list[int], target_length: int) -> list[int
 
 
 def validate_supported_resume_structure(body: Any) -> None:
+    unsupported = find_unsupported_word_constructions(body)
+    if unsupported:
+        raise UnsupportedResumeStructureError(unsupported[0].message)
+
+
+def find_unsupported_word_constructions(body: Any) -> list[UnsupportedWordConstruction]:
+    """Return every distinct Word construction that cannot be tailored safely."""
+    issues: list[UnsupportedWordConstruction] = []
+    seen: set[tuple[str, str]] = set()
+
+    def append_issue(element: str, description: str) -> None:
+        key = (element, description)
+        if key not in seen:
+            seen.add(key)
+            issues.append(
+                UnsupportedWordConstruction(
+                    element=element,
+                    description=description,
+                )
+            )
+
     for element in body.iter():
         local_name = etree.QName(element).localname
         unsupported = UNSUPPORTED_ELEMENTS.get(local_name)
         if unsupported:
-            raise UnsupportedResumeStructureError(
-                f"Unsupported DOCX construction: {unsupported} ({local_name})"
-            )
+            append_issue(local_name, unsupported)
+        if local_name == "t":
+            value = element.text or ""
+            if "\t" in value or "\n" in value or "\r" in value:
+                append_issue("t", "literal tabs or line breaks inside w:t")
         if local_name == "sdtPr":
             for property_element in element.iterchildren():
                 property_name = etree.QName(property_element).localname
                 unsupported_property = UNSUPPORTED_CONTENT_CONTROL_PROPERTIES.get(property_name)
                 if unsupported_property:
-                    raise UnsupportedResumeStructureError(
-                        "Unsupported DOCX construction: "
-                        f"{unsupported_property} ({property_name})"
-                    )
+                    append_issue(property_name, unsupported_property)
+    return issues
 
 
 def validate_supported_paragraph(paragraph: Any) -> None:
