@@ -21,7 +21,7 @@ export function getDocumentVersionDownloadWarnings(
     warnings.push("factual validation has not passed");
   }
   if (version?.visualValidation?.status !== "passed") {
-    warnings.push("visual validation has not passed");
+    warnings.push("automated structural checks have not passed");
   }
   if (version?.hasRenderedDocx !== true) {
     warnings.push("a rendered DOCX is not available");

@@ -118,9 +118,69 @@ describe("ApplicationWorkspace", () => {
     expect(fireEvent.click(downloadLink)).toBe(false);
     expect(confirmDownload).toHaveBeenCalledWith(
       expect.stringMatching(
-        /fingerprint is outdated.*factual validation has not passed.*visual validation has not passed.*rendered DOCX is not available/,
+        /fingerprint is outdated.*factual validation has not passed.*automated structural checks have not passed.*rendered DOCX is not available/,
       ),
     );
+  });
+
+  it("labels CV content as changes and explains the automated structural checks", async () => {
+    installApplicationWorkspaceApiMock({
+      documents: [
+        {
+          id: "validated-resume",
+          type: "tailored_resume",
+          title: "Validated CV",
+          jobId: "job-product-designer",
+          applicationIds: ["application-v3"],
+          currentVersion: 1,
+          createdAt: "2026-07-17T10:00:00.000Z",
+          updatedAt: "2026-07-17T10:00:00.000Z",
+          generationFingerprint: "b".repeat(64),
+          generationModel: "test-model",
+          inputVersions: {},
+          versions: [
+            {
+              id: "validated-resume-v1",
+              version: 1,
+              content: JSON.stringify({
+                replacements: [
+                  {
+                    blockId: "summary",
+                    replacement: "Research-led product designer",
+                    reason: "Matches the role positioning",
+                  },
+                ],
+              }),
+              createdAt: "2026-07-17T10:00:00.000Z",
+              hasRenderedDocx: true,
+              factualValidation: { status: "passed" },
+              visualValidation: {
+                status: "passed",
+                sourcePageCount: 2,
+                renderedPageCount: 2,
+                sourceLinkCount: 3,
+                renderedLinkCount: 3,
+                linksPreserved: true,
+                tableOverflow: false,
+              },
+              diff: [],
+            },
+          ],
+        },
+      ],
+    });
+
+    renderApplicationWorkspace(createV3WorkspaceApplication());
+
+    expect(await screen.findByText("CV change list")).toBeInTheDocument();
+    expect(screen.getByText(/not a visual DOCX preview/)).toBeInTheDocument();
+    expect(screen.getByText("Automated structural checks")).toBeInTheDocument();
+    expect(screen.getByText("2 source → 2 rendered")).toBeInTheDocument();
+    expect(
+      screen.getByText("3 source → 3 rendered · preserved"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("No overflow detected")).toBeInTheDocument();
+    expect(screen.queryByText(/Visual validation/i)).not.toBeInTheDocument();
   });
 
   it("does not loop fingerprint updates when the application guide is missing", async () => {
