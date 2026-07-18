@@ -83,7 +83,18 @@ def list_documents(
             statement = statement.join(DocumentAttachmentRecord).where(
                 DocumentAttachmentRecord.application_id == application_id
             )
-        return [document_payload(record) for record in db.scalars(statement).unique().all()]
+        records = db.scalars(statement).unique().all()
+        return [
+            document_payload(
+                record,
+                current_generation_fingerprint=authoritative_current_generation_fingerprint(
+                    db,
+                    record,
+                    application_id=application_id,
+                ),
+            )
+            for record in records
+        ]
     except SQLAlchemyError as exc:
         raise database_unavailable(exc) from exc
 
@@ -94,17 +105,19 @@ def create_document(
     db: Session = Depends(get_db),
 ) -> DocumentPayload:
     try:
-        has_provenance = validate_generation_provenance(
-            request.generation_fingerprint,
-            request.generation_model,
-            request.input_versions,
-        )
+        has_provenance = bool(request.generation_model and request.generation_model.strip())
         generation_context = None
-        if request.template_id and has_provenance:
+        generation_provenance = None
+        if has_provenance:
             if not request.application_id:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="Application ID is required for generated documents",
+                )
+            if not request.template_id:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="Document template is required for generated documents",
                 )
             generation_context = load_generation_context_or_http(
                 db,
@@ -113,6 +126,7 @@ def create_document(
                 document_type=request.type,
                 expected_job_id=request.job_id,
             )
+            generation_provenance = generation_context.provenance()
         now = utc_now()
         document_id = str(uuid4())
         record = DocumentRecord(
@@ -134,19 +148,20 @@ def create_document(
             )
         )
         if has_provenance:
+            assert generation_provenance is not None
             set_current_generation_provenance(
                 record,
-                request.generation_fingerprint or "",
+                generation_provenance.generation_fingerprint,
                 request.generation_model or "",
-                request.input_versions,
+                generation_provenance.input_versions,
                 now,
             )
             append_version_generation_provenance(
                 record,
                 1,
-                request.generation_fingerprint or "",
+                generation_provenance.generation_fingerprint,
                 request.generation_model or "",
-                request.input_versions,
+                generation_provenance.input_versions,
                 now,
             )
         db.add(record)
@@ -196,7 +211,14 @@ def create_document(
         if request.application_id:
             attach_document_record(db, record, request.application_id)
         db.commit()
-        return document_payload(require_document(db, document_id))
+        return document_payload(
+            require_document(db, document_id),
+            current_generation_fingerprint=(
+                generation_provenance.generation_fingerprint
+                if generation_provenance
+                else None
+            ),
+        )
     except HTTPException:
         db.rollback()
         raise
@@ -214,11 +236,16 @@ def validate_resume_pack_item(
     db: Session = Depends(get_db),
 ) -> DocumentPackValidationPayload:
     try:
-        _, _, validation = prepare_pack_document(
+        context = load_authoritative_generation_context(
             db,
+            application_id=request.application_id,
+            template_id=request.resume.template_id,
+            document_type="tailored_resume",
+        )
+        _, validation = prepare_pack_document(
             request.resume,
             "tailored_resume",
-            application_id=request.application_id,
+            context=context,
         )
         return DocumentPackValidationPayload(validation=validation)
     except GenerationContextError as exc:
@@ -240,17 +267,7 @@ def create_document_pack(
     request: DocumentPackRequest,
     db: Session = Depends(get_db),
 ) -> DocumentPackPayload:
-    request_fingerprint = document_pack_request_fingerprint(request)
     try:
-        existing_job = db.get(DocumentPackJobRecord, request.pack_job_id)
-        if existing_job:
-            if existing_job.request_fingerprint != request_fingerprint:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Pack job ID was already used for a different request",
-                )
-            return document_pack_payload(existing_job, db)
-
         if request.persistence_mode == "atomic" and request.cover_letter is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -262,11 +279,11 @@ def create_document_pack(
             )
 
         try:
-            resume_context, resume_content, resume_validation = prepare_pack_document(
+            resume_context = load_authoritative_generation_context(
                 db,
-                request.resume,
-                "tailored_resume",
                 application_id=request.application_id,
+                template_id=request.resume.template_id,
+                document_type="tailored_resume",
                 expected_job_id=request.job_id,
             )
         except (DocumentValidationError, GenerationContextError, ValueError) as exc:
@@ -281,13 +298,14 @@ def create_document_pack(
             | None
         ) = None
         cover_failure = ""
+        cover_context = None
         if request.cover_letter is not None:
             try:
-                cover_prepared = prepare_pack_document(
+                cover_context = load_authoritative_generation_context(
                     db,
-                    request.cover_letter,
-                    "cover_letter",
                     application_id=request.application_id,
+                    template_id=request.cover_letter.template_id,
+                    document_type="cover_letter",
                     expected_job_id=request.job_id,
                 )
             except (DocumentValidationError, GenerationContextError, ValueError) as exc:
@@ -297,17 +315,51 @@ def create_document_pack(
         else:
             cover_failure = request.partial_reason or "Cover letter generation did not complete"
 
+        request_fingerprint = document_pack_request_fingerprint(
+            request,
+            resume_context=resume_context,
+            cover_context=cover_context,
+        )
+        existing_job = db.get(DocumentPackJobRecord, request.pack_job_id)
+        if existing_job:
+            if existing_job.request_fingerprint != request_fingerprint:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Pack job ID was already used for a different request",
+                )
+            return document_pack_payload(existing_job, db)
+
+        try:
+            resume_content, resume_validation = prepare_pack_document(
+                request.resume,
+                "tailored_resume",
+                context=resume_context,
+            )
+        except (DocumentValidationError, GenerationContextError, ValueError) as exc:
+            raise pack_validation_failed("resume_validation", exc) from exc
+
+        if request.cover_letter is not None and cover_context is not None:
+            try:
+                cover_content, cover_validation = prepare_pack_document(
+                    request.cover_letter,
+                    "cover_letter",
+                    context=cover_context,
+                )
+                cover_prepared = cover_context, cover_content, cover_validation
+            except (DocumentValidationError, GenerationContextError, ValueError) as exc:
+                cover_failure = str(exc)
+                if request.persistence_mode == "atomic":
+                    raise pack_validation_failed("cover_letter_validation", exc) from exc
+
         now = utc_now()
         document_ids = [
             persist_pack_document(
                 db=db,
                 item=request.resume,
                 document_type="tailored_resume",
-                template=resume_context.template,
+                context=resume_context,
                 rendered_content=resume_content,
                 validation=resume_validation,
-                job_id=resume_context.job_id,
-                application_id=request.application_id,
                 created_at=now,
             )
         ]
@@ -327,11 +379,9 @@ def create_document_pack(
                     db=db,
                     item=request.cover_letter,
                     document_type="cover_letter",
-                    template=cover_context.template,
+                    context=cover_context,
                     rendered_content=cover_content,
                     validation=cover_validation,
-                    job_id=cover_context.job_id,
-                    application_id=request.application_id,
                     created_at=now,
                 )
             )
@@ -389,7 +439,11 @@ def create_document_pack(
 @router.get("/{document_id}", response_model=DocumentPayload)
 def get_document(document_id: str, db: Session = Depends(get_db)) -> DocumentPayload:
     try:
-        return document_payload(require_document(db, document_id))
+        record = require_document(db, document_id)
+        return document_payload(
+            record,
+            current_generation_fingerprint=authoritative_current_generation_fingerprint(db, record),
+        )
     except HTTPException:
         raise
     except SQLAlchemyError as exc:
@@ -405,11 +459,7 @@ def update_document(
     try:
         record = require_document(db, document_id)
         fields = request.model_fields_set
-        has_provenance = validate_generation_provenance(
-            request.generation_fingerprint,
-            request.generation_model,
-            request.input_versions,
-        )
+        has_provenance = bool(request.generation_model and request.generation_model.strip())
         if (has_provenance or "template_id" in fields) and (
             "content" not in fields or request.content is None
         ):
@@ -453,8 +503,14 @@ def update_document(
                     template_id = request.template_id
                 else:
                     template_id = current_file.template_id if current_file else None
+                generation_context = None
+                generation_provenance = None
+                if has_provenance and not template_id:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail="Document template is required for generated documents",
+                    )
                 if template_id:
-                    generation_context = None
                     if has_provenance:
                         application_id = request.application_id or single_attachment_application_id(
                             record
@@ -473,6 +529,7 @@ def update_document(
                                 request.job_id if "job_id" in fields else record.job_id
                             ),
                         )
+                        generation_provenance = generation_context.provenance()
                     template = (
                         generation_context.template
                         if generation_context
@@ -523,11 +580,12 @@ def update_document(
                         record.job_id = generation_context.job_id
                         attach_document_record(db, record, generation_context.application_id)
                 if has_provenance:
+                    assert generation_provenance is not None
                     set_current_generation_provenance(
                         record,
-                        request.generation_fingerprint or "",
+                        generation_provenance.generation_fingerprint,
                         request.generation_model or "",
-                        request.input_versions,
+                        generation_provenance.input_versions,
                         now,
                     )
                 current_provenance = record.generation_provenance
@@ -543,7 +601,15 @@ def update_document(
                 record.current_version = next_version
         record.updated_at = utc_now()
         db.commit()
-        return document_payload(require_document(db, document_id))
+        updated = require_document(db, document_id)
+        return document_payload(
+            updated,
+            current_generation_fingerprint=authoritative_current_generation_fingerprint(
+                db,
+                updated,
+                application_id=request.application_id,
+            ),
+        )
     except HTTPException:
         db.rollback()
         raise
@@ -640,7 +706,14 @@ def restore_document_version(
         record.current_version = next_version
         record.updated_at = now
         db.commit()
-        return document_payload(require_document(db, document_id))
+        restored = require_document(db, document_id)
+        return document_payload(
+            restored,
+            current_generation_fingerprint=authoritative_current_generation_fingerprint(
+                db,
+                restored,
+            ),
+        )
     except HTTPException:
         db.rollback()
         raise
@@ -660,7 +733,15 @@ def attach_document(
         attach_document_record(db, record, request.application_id)
         record.updated_at = utc_now()
         db.commit()
-        return document_payload(require_document(db, document_id))
+        attached = require_document(db, document_id)
+        return document_payload(
+            attached,
+            current_generation_fingerprint=authoritative_current_generation_fingerprint(
+                db,
+                attached,
+                application_id=request.application_id,
+            ),
+        )
     except HTTPException:
         db.rollback()
         raise
@@ -867,24 +948,6 @@ def delete_document(document_id: str, db: Session = Depends(get_db)) -> None:
         raise database_unavailable(exc) from exc
 
 
-def validate_generation_provenance(
-    generation_fingerprint: str | None,
-    generation_model: str | None,
-    input_versions: dict[str, object],
-) -> bool:
-    fields_present = (
-        generation_fingerprint is not None,
-        bool(generation_model and generation_model.strip()),
-        bool(input_versions),
-    )
-    if any(fields_present) and not all(fields_present):
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="Generation fingerprint, model, and input versions must be provided together",
-        )
-    return all(fields_present)
-
-
 def set_current_generation_provenance(
     record: DocumentRecord,
     generation_fingerprint: str,
@@ -964,22 +1027,11 @@ def append_document_validation(
 
 
 def prepare_pack_document(
-    db: Session,
     item: DocumentPackItemRequest,
     document_type: str,
     *,
-    application_id: str,
-    expected_job_id: str | None = None,
-) -> tuple[AuthoritativeGenerationContext, bytes, dict[str, object]]:
-    if not item.input_versions:
-        raise DocumentValidationError("Generation input versions are required")
-    context = load_authoritative_generation_context(
-        db,
-        application_id=application_id,
-        template_id=item.template_id,
-        document_type=document_type,
-        expected_job_id=expected_job_id,
-    )
+    context: AuthoritativeGenerationContext,
+) -> tuple[bytes, dict[str, object]]:
     rendered_content = build_document_from_template(
         template_content=context.template.content,
         content=item.content,
@@ -992,7 +1044,7 @@ def prepare_pack_document(
         document_type=document_type,
         evidence=context.validation_evidence(),
     )
-    return context, rendered_content, validation
+    return rendered_content, validation
 
 
 def persist_pack_document(
@@ -1000,13 +1052,12 @@ def persist_pack_document(
     db: Session,
     item: DocumentPackItemRequest,
     document_type: str,
-    template: DocumentTemplateRecord,
+    context: AuthoritativeGenerationContext,
     rendered_content: bytes,
     validation: dict[str, object],
-    job_id: str | None,
-    application_id: str,
     created_at: datetime,
 ) -> str:
+    provenance = context.provenance()
     if item.document_id:
         record = require_document(db, item.document_id)
         if record.type != document_type:
@@ -1016,14 +1067,14 @@ def persist_pack_document(
             )
         next_version = record.current_version + 1
         record.title = item.title.strip()
-        record.job_id = job_id
+        record.job_id = context.job_id
     else:
         document_id = str(uuid4())
         record = DocumentRecord(
             id=document_id,
             type=document_type,
             title=item.title.strip(),
-            job_id=job_id,
+            job_id=context.job_id,
             current_version=1,
             created_at=created_at,
             updated_at=created_at,
@@ -1042,17 +1093,17 @@ def persist_pack_document(
     )
     set_current_generation_provenance(
         record,
-        item.generation_fingerprint,
+        provenance.generation_fingerprint,
         item.generation_model,
-        item.input_versions,
+        provenance.input_versions,
         created_at,
     )
     append_version_generation_provenance(
         record,
         next_version,
-        item.generation_fingerprint,
+        provenance.generation_fingerprint,
         item.generation_model,
-        item.input_versions,
+        provenance.input_versions,
         created_at,
     )
     append_document_validation(record, next_version, validation, created_at)
@@ -1061,20 +1112,32 @@ def persist_pack_document(
             id=str(uuid4()),
             document_id=record.id,
             version=next_version,
-            template_id=template.id,
+            template_id=context.template.id,
             content=rendered_content,
             created_at=created_at,
         )
     )
-    attach_document_record(db, record, application_id)
+    attach_document_record(db, record, context.application_id)
     record.current_version = next_version
     record.updated_at = created_at
     return record.id
 
 
-def document_pack_request_fingerprint(request: DocumentPackRequest) -> str:
+def document_pack_request_fingerprint(
+    request: DocumentPackRequest,
+    *,
+    resume_context: AuthoritativeGenerationContext,
+    cover_context: AuthoritativeGenerationContext | None,
+) -> str:
+    payload = {
+        "request": request.model_dump(mode="json", by_alias=True),
+        "resumeGenerationFingerprint": resume_context.provenance().generation_fingerprint,
+        "coverGenerationFingerprint": (
+            cover_context.provenance().generation_fingerprint if cover_context else None
+        ),
+    }
     canonical = json.dumps(
-        request.model_dump(mode="json", by_alias=True),
+        payload,
         ensure_ascii=True,
         separators=(",", ":"),
         sort_keys=True,
@@ -1083,7 +1146,19 @@ def document_pack_request_fingerprint(request: DocumentPackRequest) -> str:
 
 
 def document_pack_payload(job: DocumentPackJobRecord, db: Session) -> DocumentPackPayload:
-    documents = [document_payload(require_document(db, document_id)) for document_id in job.document_ids]
+    documents = []
+    for document_id in job.document_ids:
+        record = require_document(db, document_id)
+        documents.append(
+            document_payload(
+                record,
+                current_generation_fingerprint=authoritative_current_generation_fingerprint(
+                    db,
+                    record,
+                    application_id=job.application_id,
+                ),
+            )
+        )
     return DocumentPackPayload(
         pack_job_id=job.id,
         status=job.status,
@@ -1211,7 +1286,38 @@ def current_version_record(record: DocumentRecord) -> DocumentVersionRecord:
     return current
 
 
-def document_payload(record: DocumentRecord) -> DocumentPayload:
+def authoritative_current_generation_fingerprint(
+    db: Session,
+    record: DocumentRecord,
+    *,
+    application_id: str | None = None,
+) -> str | None:
+    if record.generation_provenance is None:
+        return None
+    current_file = document_file_record(db, record.id, record.current_version)
+    if current_file is None or not current_file.template_id:
+        return None
+    resolved_application_id = application_id or single_attachment_application_id(record)
+    if not resolved_application_id:
+        return None
+    try:
+        context = load_authoritative_generation_context(
+            db,
+            application_id=resolved_application_id,
+            template_id=current_file.template_id,
+            document_type=record.type,
+            expected_job_id=record.job_id,
+        )
+    except GenerationContextError:
+        return None
+    return context.provenance().generation_fingerprint
+
+
+def document_payload(
+    record: DocumentRecord,
+    *,
+    current_generation_fingerprint: str | None = None,
+) -> DocumentPayload:
     provenance = record.generation_provenance
     rendered_versions = {file.version for file in record.files}
     validations_by_version = {
@@ -1227,6 +1333,7 @@ def document_payload(record: DocumentRecord) -> DocumentPayload:
         created_at=record.created_at,
         updated_at=record.updated_at,
         generation_fingerprint=provenance.generation_fingerprint if provenance else None,
+        current_generation_fingerprint=current_generation_fingerprint,
         generation_model=provenance.generation_model if provenance else None,
         input_versions=provenance.input_versions if provenance else {},
         versions=[

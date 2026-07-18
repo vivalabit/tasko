@@ -144,6 +144,7 @@ describe("ApplicationWorkspace", () => {
           createdAt: "2026-07-17T10:00:00.000Z",
           updatedAt: "2026-07-17T10:00:00.000Z",
           generationFingerprint: "a".repeat(64),
+          currentGenerationFingerprint: "c".repeat(64),
           generationModel: "test-model",
           inputVersions: {},
           versions: [
@@ -194,6 +195,7 @@ describe("ApplicationWorkspace", () => {
           createdAt: "2026-07-17T10:00:00.000Z",
           updatedAt: "2026-07-17T10:00:00.000Z",
           generationFingerprint: "b".repeat(64),
+          currentGenerationFingerprint: "b".repeat(64),
           generationModel: "test-model",
           inputVersions: {},
           versions: [

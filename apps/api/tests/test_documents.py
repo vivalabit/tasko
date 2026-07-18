@@ -61,17 +61,6 @@ def test_document_versions_download_and_application_attachments() -> None:
                 "content": "Dear Hiring Team,\n\nI am applying for the role.",
                 "jobId": "job-figma",
                 "applicationId": "application-one",
-                "generationFingerprint": "a" * 64,
-                "generationModel": "openai/gpt-5.6-terra",
-                "inputVersions": {
-                    "fingerprintVersion": "generation-fingerprint-v1",
-                    "vacancy": "vacancy-v1",
-                    "profile": "profile-v2",
-                    "applicationGuide": "guide-v3",
-                    "sourceDocument": {"id": "source-one", "fingerprint": "docx-v1"},
-                    "language": "english-v1",
-                    "confirmations": "confirmations-v2",
-                },
             },
         )
         document_id = created.json()["id"]
@@ -79,12 +68,6 @@ def test_document_versions_download_and_application_attachments() -> None:
             f"/documents/{document_id}",
             json={
                 "content": "Dear Hiring Team,\n\nUpdated evidence-based letter.",
-                "generationFingerprint": "b" * 64,
-                "generationModel": "openai/gpt-5.7",
-                "inputVersions": {
-                    "fingerprintVersion": "generation-fingerprint-v1",
-                    "vacancy": "vacancy-v2",
-                },
             },
         )
         restored = client.post(
@@ -117,26 +100,26 @@ def test_document_versions_download_and_application_attachments() -> None:
     assert created.status_code == 201
     assert created.json()["currentVersion"] == 1
     assert created.json()["applicationIds"] == ["application-one"]
-    assert created.json()["generationFingerprint"] == "a" * 64
-    assert created.json()["generationModel"] == "openai/gpt-5.6-terra"
-    assert created.json()["inputVersions"]["applicationGuide"] == "guide-v3"
+    assert created.json()["generationFingerprint"] is None
+    assert created.json()["generationModel"] is None
+    assert created.json()["inputVersions"] == {}
     assert created.json()["versions"][0]["hasRenderedDocx"] is False
     assert updated.status_code == 200
     assert updated.json()["id"] == document_id
     assert updated.json()["currentVersion"] == 2
     assert len(updated.json()["versions"]) == 2
     assert updated.json()["applicationIds"] == ["application-one"]
-    assert updated.json()["generationFingerprint"] == "b" * 64
-    assert updated.json()["generationModel"] == "openai/gpt-5.7"
+    assert updated.json()["generationFingerprint"] is None
+    assert updated.json()["generationModel"] is None
     assert restored.status_code == 200
     assert restored.json()["id"] == document_id
     assert restored.json()["currentVersion"] == 3
     assert restored.json()["versions"][-1]["content"].startswith("Dear Hiring Team")
     assert restored.json()["applicationIds"] == ["application-one"]
-    assert restored.json()["generationFingerprint"] == "a" * 64
+    assert restored.json()["generationFingerprint"] is None
     assert listed.status_code == 200
     assert listed.json()[0]["jobId"] == "job-figma"
-    assert listed.json()[0]["generationFingerprint"] == "a" * 64
+    assert listed.json()[0]["generationFingerprint"] is None
     assert downloaded.status_code == 200
     assert downloaded.headers["content-type"].startswith(
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -176,7 +159,7 @@ def test_document_attachment_requires_existing_application() -> None:
                 "type": "tailored_resume",
                 "title": "Incomplete provenance",
                 "content": "Verified achievements",
-                "generationFingerprint": "b" * 64,
+                "generationModel": "test-model",
             },
         )
         response = client.post(
@@ -192,7 +175,9 @@ def test_document_attachment_requires_existing_application() -> None:
         app.dependency_overrides.clear()
 
     assert incomplete_provenance.status_code == 422
-    assert "must be provided together" in incomplete_provenance.json()["detail"]
+    assert incomplete_provenance.json()["detail"] == (
+        "Application ID is required for generated documents"
+    )
     assert response.status_code == 404
     assert response.json()["detail"] == "Application not found"
 
@@ -277,6 +262,7 @@ def test_cover_letter_template_preserves_visual_structure() -> None:
     assert listed.status_code == 200
     assert listed.json()[0]["fileName"] == "cover-letter.docx"
     assert created.status_code == 201
+    assert created.json()["generationFingerprint"] is None
     assert downloaded.status_code == 200
     assert header_text == "EDUARD · SOFTWARE ENGINEER"
     assert footer_text == "Private application"
@@ -552,16 +538,37 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
             validation_count = db.scalar(
                 select(func.count()).select_from(DocumentVersionValidationRecord)
             )
+            profile = db.get(ProfileRecord, "default")
+            assert profile is not None
+            profile.data = {**profile.data, "skills": "Python, PostgreSQL"}
+            db.commit()
+        refreshed = client.get("/documents?applicationId=application-validated")
     finally:
         app.dependency_overrides.clear()
 
     assert uploaded.status_code == 201
     assert created.status_code == 201
+    assert created.json()["generationFingerprint"] != "f" * 64
+    assert created.json()["generationFingerprint"] == created.json()[
+        "currentGenerationFingerprint"
+    ]
+    assert created.json()["inputVersions"]["fingerprintVersion"] == (
+        "generation-fingerprint-v2"
+    )
+    assert created.json()["inputVersions"]["sourceDocument"]["id"] == uploaded.json()["id"]
+    assert created.json()["inputVersions"]["profile"] != "profile-v1"
     assert created.json()["versions"][0]["hasRenderedDocx"] is True
     assert created.json()["versions"][0]["factualValidation"]["status"] == "passed"
     assert created.json()["versions"][0]["visualValidation"]["renderedPageCount"] == 1
     assert created.json()["versions"][0]["diff"] == expected_diff
     assert listed.json()[0]["versions"][0]["diff"] == expected_diff
+    assert refreshed.status_code == 200
+    assert refreshed.json()[0]["generationFingerprint"] == created.json()[
+        "generationFingerprint"
+    ]
+    assert refreshed.json()[0]["currentGenerationFingerprint"] != created.json()[
+        "generationFingerprint"
+    ]
     assert validation_count == 1
     assert captured_evidence["language"] == "German"
     assert captured_evidence["profile"]["experience"].startswith("Built a Python service")

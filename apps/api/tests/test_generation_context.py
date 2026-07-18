@@ -141,3 +141,46 @@ def test_rejects_generation_when_required_confirmation_is_missing() -> None:
                 template_id="template-context",
                 document_type="cover_letter",
             )
+
+
+def test_computes_stable_provenance_from_authoritative_context() -> None:
+    with generation_context_session() as db:
+        context = load_authoritative_generation_context(
+            db,
+            application_id="application-context",
+            template_id="template-context",
+            document_type="cover_letter",
+        )
+
+        first = context.provenance()
+        second = context.provenance()
+
+        assert first == second
+        assert len(first.generation_fingerprint) == 64
+        assert first.input_versions["fingerprintVersion"] == "generation-fingerprint-v2"
+        assert first.input_versions["sourceDocument"]["id"] == "template-context"
+        assert len(first.input_versions["sourceDocument"]["contentSha256"]) == 64
+
+
+def test_authoritative_provenance_changes_when_stored_profile_changes() -> None:
+    with generation_context_session() as db:
+        before = load_authoritative_generation_context(
+            db,
+            application_id="application-context",
+            template_id="template-context",
+            document_type="cover_letter",
+        ).provenance()
+        profile = db.get(ProfileRecord, "default")
+        assert profile is not None
+        profile.data = {**profile.data, "skills": "Python, PostgreSQL"}
+        db.commit()
+
+        after = load_authoritative_generation_context(
+            db,
+            application_id="application-context",
+            template_id="template-context",
+            document_type="cover_letter",
+        ).provenance()
+
+        assert after.generation_fingerprint != before.generation_fingerprint
+        assert after.input_versions["profile"] != before.input_versions["profile"]

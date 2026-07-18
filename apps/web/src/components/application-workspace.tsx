@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -39,12 +39,7 @@ import {
   type CandidateConfirmation,
   type CandidateConfirmationResponse,
 } from "@/lib/candidate-confirmations";
-import {
-  createGenerationProvenance,
-  isGeneratedDocumentOutdated,
-  type GenerationFingerprintInputs,
-  type GenerationInputVersions,
-} from "@/lib/generation-provenance";
+import { isGeneratedDocumentOutdated } from "@/lib/generation-provenance";
 import {
   getDocumentVersionDownloadWarnings,
   getGeneratedDocumentReadiness,
@@ -202,8 +197,9 @@ type GeneratedDocument = {
   createdAt: string;
   updatedAt: string;
   generationFingerprint: string | null;
+  currentGenerationFingerprint: string | null;
   generationModel: string | null;
-  inputVersions: GenerationInputVersions | Record<string, unknown>;
+  inputVersions: Record<string, unknown>;
   versions: GeneratedDocumentVersion[];
 };
 
@@ -216,9 +212,7 @@ type GeneratedDocumentDraft = {
   title: string;
   content: string;
   templateId: string;
-  generationFingerprint: string;
   generationModel: string;
-  inputVersions: GenerationInputVersions;
 };
 
 type DocumentPackResponse = {
@@ -247,7 +241,6 @@ type DocumentTemplate = {
 };
 
 type PendingAiGeneration = GeneratedDocument["type"] | "pack" | null;
-type CurrentGenerationFingerprints = Partial<Record<GeneratedDocument["type"], string>>;
 
 type ApplicationWorkspaceProps = {
   application: WorkspaceApplication | null;
@@ -303,16 +296,6 @@ function currentContent(document: GeneratedDocument | undefined) {
   }
 }
 
-function generationFingerprintsEqual(
-  current: CurrentGenerationFingerprints,
-  next: CurrentGenerationFingerprints,
-) {
-  return (
-    current.tailored_resume === next.tailored_resume
-    && current.cover_letter === next.cover_letter
-  );
-}
-
 function documentFileName(document: GeneratedDocument, version = document.currentVersion) {
   const base = document.title.trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "") || "tasko-document";
   return `${base}-v${version}.docx`;
@@ -333,44 +316,6 @@ function formatVersionTimestamp(value: string) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
-}
-
-function generationFingerprintInputs(
-  application: WorkspaceApplication,
-  profile: WorkspaceProfile,
-  applicationGuide: ApplicationGuide | undefined,
-  sourceDocument: ProfileSourceDocument,
-  language: string,
-  clarificationQuestions: NonNullable<ApplicationGuide["clarificationQuestions"]>,
-  candidateConfirmations: Record<string, CandidateConfirmation>,
-): GenerationFingerprintInputs {
-  const job = application.job;
-  return {
-    vacancy: serializeJob(job),
-    profile,
-    applicationGuide: applicationGuide ?? null,
-    sourceDocument: {
-      id: sourceDocument.id,
-      title: sourceDocument.title,
-      category: sourceDocument.category,
-      fileName: sourceDocument.file_name,
-      fileType: sourceDocument.file_type,
-      uploadedAt: sourceDocument.uploaded_at,
-      dataUrl: sourceDocument.data_url,
-    },
-    language,
-    confirmations: clarificationQuestions.flatMap((question) => {
-      const confirmation = candidateConfirmations[question.id];
-      if (!confirmation) return [];
-      return [{
-        questionId: question.id,
-        requirement: question.requirement,
-        blocking: question.blocking,
-        response: confirmation.response,
-        exampleText: confirmation.exampleText.trim(),
-      }];
-    }),
-  };
 }
 
 function inferSourceLanguage(fileName: string, title = "") {
@@ -530,13 +475,6 @@ export function ApplicationWorkspace({
   const [packPersistenceMode, setPackPersistenceMode] = useState<PackPersistenceMode>("atomic");
   const [packProgress, setPackProgress] = useState<PackProgress | null>(null);
   const [restoringVersionKey, setRestoringVersionKey] = useState("");
-  const [currentGenerationFingerprints, setCurrentGenerationFingerprints] = useState<CurrentGenerationFingerprints>({});
-  const currentGenerationFingerprintsRef = useRef<CurrentGenerationFingerprints>({});
-  const updateCurrentGenerationFingerprints = useCallback((next: CurrentGenerationFingerprints) => {
-    if (generationFingerprintsEqual(currentGenerationFingerprintsRef.current, next)) return;
-    currentGenerationFingerprintsRef.current = next;
-    setCurrentGenerationFingerprints(next);
-  }, []);
   const [documentError, setDocumentError] = useState("");
   const [candidateConfirmations, setCandidateConfirmations] = useState<Record<string, CandidateConfirmation>>({});
   const [confirmationsDirty, setConfirmationsDirty] = useState(false);
@@ -620,14 +558,6 @@ export function ApplicationWorkspace({
   );
   const vacancyLanguage = applicationGuide?.language || (application ? detectLegacyJobLanguage(application.job) : "");
   const effectiveLanguage = languageMode === "auto" ? vacancyLanguage : languageMode;
-  const fingerprintSources = useMemo<Array<[GeneratedDocument["type"], ProfileSourceDocument | undefined]>>(
-    () => [
-      ["tailored_resume", profileSources.find((source) => source.id === selectedResumeSourceId)],
-      ["cover_letter", profileSources.find((source) => source.id === selectedCoverSourceId)],
-    ],
-    [profileSources, selectedCoverSourceId, selectedResumeSourceId],
-  );
-
   useEffect(() => {
     setLanguageMode("auto");
     setIsResumeSourceManual(false);
@@ -772,39 +702,6 @@ export function ApplicationWorkspace({
     }
   }, [coverSources, effectiveLanguage, isCoverSourceManual, isResumeSourceManual, resumeSources]);
 
-  useEffect(() => {
-    updateCurrentGenerationFingerprints({});
-    if (!application || !applicationGuide || !effectiveLanguage) return;
-
-    let cancelled = false;
-    const timeoutId = window.setTimeout(async () => {
-      const fingerprints = await Promise.all(fingerprintSources.map(async ([type, source]) => {
-        if (!source) return [type, undefined] as const;
-        const provenance = await createGenerationProvenance(generationFingerprintInputs(
-          application,
-          profile,
-          applicationGuide,
-          source,
-          effectiveLanguage || source.language || "English",
-          clarificationQuestions,
-          candidateConfirmations,
-        ));
-        return [type, provenance.generationFingerprint] as const;
-      }));
-      if (!cancelled) {
-        const nextFingerprints = Object.fromEntries(
-          fingerprints.filter((entry): entry is [GeneratedDocument["type"], string] => Boolean(entry[1])),
-        );
-        updateCurrentGenerationFingerprints(nextFingerprints);
-      }
-    }, 120);
-
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timeoutId);
-    };
-  }, [application, applicationGuide, candidateConfirmations, clarificationQuestions, effectiveLanguage, fingerprintSources, profile, updateCurrentGenerationFingerprints]);
-
   if (!application) {
     return (
       <section className="grid min-w-0 flex-1 place-items-center p-6">
@@ -824,11 +721,11 @@ export function ApplicationWorkspace({
   const analysisRequiredLabel = isAnalysisOutdated ? "Refresh analysis first" : "AI Match required";
   const isResumeOutdated = Boolean(latestResume && isGeneratedDocumentOutdated(
     latestResume.generationFingerprint,
-    currentGenerationFingerprints.tailored_resume,
+    latestResume.currentGenerationFingerprint,
   ));
   const isCoverLetterOutdated = Boolean(latestCoverLetter && isGeneratedDocumentOutdated(
     latestCoverLetter.generationFingerprint,
-    currentGenerationFingerprints.cover_letter,
+    latestCoverLetter.currentGenerationFingerprint,
   ));
   const resumeReady = getGeneratedDocumentReadiness(latestResume, isResumeOutdated).ready;
   const coverLetterReady = getGeneratedDocumentReadiness(latestCoverLetter, isCoverLetterOutdated).ready;
@@ -949,15 +846,6 @@ export function ApplicationWorkspace({
       }];
     });
     const targetLanguage = effectiveLanguage || selectedSource.language || "English";
-    const provenance = await createGenerationProvenance(generationFingerprintInputs(
-      activeApplication,
-      profile,
-      applicationGuide,
-      selectedSource,
-      targetLanguage,
-      clarificationQuestions,
-      candidateConfirmations,
-    ));
     const prompt = isCoverLetter
       ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the guide's positioning, evidence map, risks, and cover-letter plan. Candidate confirmations take precedence over inferred evidence; a negative answer means the claim must be omitted. Use only verified facts and never invent achievements or metrics. Return only the complete letter text without Markdown or commentary, with a greeting, focused body paragraphs, and a professional closing.`
       : `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v1 and contains blocks with stable blockId, type, and original fields. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0001","original":"exact original block text","replacement":"new text","reason":"short evidence-based reason"}]}. Include only blocks that should change. Copy blockId and original exactly from CONTEXT_JSON. Never change a block whose type is immutable. Preserve every tab (\\t) and line break (\\n) at the same position in the replacement's inline structure so DOCX hyperlinks, runs, and formatting remain valid. Do not add IDs, remove blocks, merge blocks, split blocks, use Markdown, or invent facts or metrics. Prefer targeted replacements for summary, skill, and achievement blocks; preserve headings, contacts, and table structure.`;
@@ -973,27 +861,16 @@ export function ApplicationWorkspace({
       title: `${isCoverLetter ? "Cover letter" : "Tailored CV"} · ${activeApplication.job.title} · ${activeApplication.job.company}`,
       content: assistantResult.message,
       templateId,
-      generationFingerprint: provenance.generationFingerprint,
       generationModel: assistantResult.model,
-      inputVersions: provenance.inputVersions,
     };
   }
 
-  function applySavedPack(
-    payload: DocumentPackResponse,
-    resumeDraft: GeneratedDocumentDraft,
-    coverDraft?: GeneratedDocumentDraft,
-  ) {
+  function applySavedPack(payload: DocumentPackResponse) {
     const savedIds = new Set(payload.documents.map((document) => document.id));
     setDocuments((current) => [
       ...payload.documents,
       ...current.filter((document) => !savedIds.has(document.id)),
     ]);
-    setCurrentGenerationFingerprints((current) => ({
-      ...current,
-      tailored_resume: resumeDraft.generationFingerprint,
-      ...(coverDraft ? { cover_letter: coverDraft.generationFingerprint } : {}),
-    }));
     payload.documents.forEach((saved) => onDocumentAttached(activeApplication.id, {
       artifactId: saved.id,
       title: saved.title,
@@ -1031,10 +908,6 @@ export function ApplicationWorkspace({
       if (!response.ok) throw new Error(await readApiError(response, "Document save failed"));
       const saved = await response.json() as GeneratedDocument;
       setDocuments((current) => [saved, ...current.filter((document) => document.id !== saved.id)]);
-      setCurrentGenerationFingerprints((current) => ({
-        ...current,
-        [type]: draft.generationFingerprint,
-      }));
       onDocumentAttached(activeApplication.id, {
         artifactId: saved.id,
         title: saved.title,
@@ -1166,7 +1039,7 @@ export function ApplicationWorkspace({
         throw new Error(message);
       }
       const savedPack = await packResponse.json() as DocumentPackResponse;
-      applySavedPack(savedPack, resumeDraft, coverDraft);
+      applySavedPack(savedPack);
       updateProgress(
         "saving",
         savedPack.status === "partial" ? "partial" : "completed",

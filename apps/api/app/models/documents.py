@@ -250,6 +250,10 @@ class DocumentPayload(BaseModel):
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
     generation_fingerprint: str | None = Field(default=None, alias="generationFingerprint")
+    current_generation_fingerprint: str | None = Field(
+        default=None,
+        alias="currentGenerationFingerprint",
+    )
     generation_model: str | None = Field(default=None, alias="generationModel")
     input_versions: dict[str, Any] = Field(default_factory=dict, alias="inputVersions")
     versions: list[DocumentVersionPayload]
@@ -264,21 +268,12 @@ class DocumentCreateRequest(BaseModel):
     job_id: str | None = Field(default=None, max_length=160, alias="jobId")
     application_id: str | None = Field(default=None, max_length=160, alias="applicationId")
     template_id: str | None = Field(default=None, max_length=36, alias="templateId")
-    generation_fingerprint: str | None = Field(
-        default=None,
-        min_length=64,
-        max_length=64,
-        pattern=r"^[a-f0-9]{64}$",
-        alias="generationFingerprint",
-    )
     generation_model: str | None = Field(
         default=None,
         min_length=1,
         max_length=160,
         alias="generationModel",
     )
-    input_versions: dict[str, Any] = Field(default_factory=dict, alias="inputVersions")
-
     model_config = {"populate_by_name": True}
 
 
@@ -288,21 +283,12 @@ class DocumentUpdateRequest(BaseModel):
     job_id: str | None = Field(default=None, max_length=160, alias="jobId")
     application_id: str | None = Field(default=None, max_length=160, alias="applicationId")
     template_id: str | None = Field(default=None, max_length=36, alias="templateId")
-    generation_fingerprint: str | None = Field(
-        default=None,
-        min_length=64,
-        max_length=64,
-        pattern=r"^[a-f0-9]{64}$",
-        alias="generationFingerprint",
-    )
     generation_model: str | None = Field(
         default=None,
         min_length=1,
         max_length=160,
         alias="generationModel",
     )
-    input_versions: dict[str, Any] = Field(default_factory=dict, alias="inputVersions")
-
     model_config = {"populate_by_name": True}
 
 
@@ -311,19 +297,11 @@ class DocumentPackItemRequest(BaseModel):
     title: str = Field(min_length=1, max_length=240)
     content: str = Field(min_length=1, max_length=200_000)
     template_id: str = Field(min_length=1, max_length=36, alias="templateId")
-    generation_fingerprint: str = Field(
-        min_length=64,
-        max_length=64,
-        pattern=r"^[a-f0-9]{64}$",
-        alias="generationFingerprint",
-    )
     generation_model: str = Field(
         min_length=1,
         max_length=160,
         alias="generationModel",
     )
-    input_versions: dict[str, Any] = Field(alias="inputVersions")
-
     model_config = {"populate_by_name": True}
 
 

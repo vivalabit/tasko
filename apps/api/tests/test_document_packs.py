@@ -212,7 +212,10 @@ def test_atomic_pack_commits_both_documents_and_retry_is_idempotent(
     request = pack_request(resume_template_id, cover_template_id)
 
     created = client.post("/documents/packs", json=request)
-    retried = client.post("/documents/packs", json=request)
+    retry_request = json.loads(json.dumps(request))
+    retry_request["resume"]["generationFingerprint"] = "c" * 64
+    retry_request["resume"]["inputVersions"] = {"profile": "client-retry-value"}
+    retried = client.post("/documents/packs", json=retry_request)
 
     with testing_session_local() as db:
         document_count = db.scalar(select(func.count()).select_from(DocumentRecord))
@@ -222,6 +225,16 @@ def test_atomic_pack_commits_both_documents_and_retry_is_idempotent(
     assert created.status_code == 201
     assert created.json()["status"] == "completed"
     assert len(created.json()["documents"]) == 2
+    assert created.json()["documents"][0]["generationFingerprint"] != "a" * 64
+    assert created.json()["documents"][1]["generationFingerprint"] != "b" * 64
+    assert all(
+        document["generationFingerprint"] == document["currentGenerationFingerprint"]
+        for document in created.json()["documents"]
+    )
+    assert all(
+        document["inputVersions"]["fingerprintVersion"] == "generation-fingerprint-v2"
+        for document in created.json()["documents"]
+    )
     assert [stage["status"] for stage in created.json()["stages"]] == [
         "completed",
         "completed",

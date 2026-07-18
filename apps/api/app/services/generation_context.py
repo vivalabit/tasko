@@ -1,4 +1,8 @@
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import asdict, dataclass
+from datetime import date, datetime
+from math import isfinite
 from typing import Any
 
 from pydantic import ValidationError
@@ -10,6 +14,8 @@ from app.models.jobs import JobMatchRecord, StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.ai_match import MATCHER_VERSION, detect_job_language
 from app.services.job_match_store import match_record_to_ai_match
+
+GENERATION_FINGERPRINT_VERSION = "generation-fingerprint-v2"
 
 
 class GenerationContextError(ValueError):
@@ -37,6 +43,12 @@ class AuthoritativeConfirmation:
 
 
 @dataclass(frozen=True)
+class AuthoritativeGenerationProvenance:
+    generation_fingerprint: str
+    input_versions: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class AuthoritativeGenerationContext:
     application_id: str
     job_id: str
@@ -47,6 +59,42 @@ class AuthoritativeGenerationContext:
     confirmations: tuple[AuthoritativeConfirmation, ...]
     language: str
     template: DocumentTemplateRecord
+
+    def provenance(self) -> AuthoritativeGenerationProvenance:
+        confirmations = [asdict(confirmation) for confirmation in self.confirmations]
+        source_document = {
+            "id": self.template.id,
+            "name": self.template.name,
+            "fileName": self.template.file_name,
+            "contentType": self.template.content_type,
+            "updatedAt": self.template.updated_at,
+            "contentSha256": hashlib.sha256(self.template.content).hexdigest(),
+        }
+        fingerprint_inputs = {
+            "fingerprintVersion": GENERATION_FINGERPRINT_VERSION,
+            "vacancy": self.vacancy,
+            "profile": self.profile,
+            "applicationGuide": self.application_guide,
+            "sourceDocument": source_document,
+            "language": self.language,
+            "confirmations": confirmations,
+        }
+        input_versions: dict[str, Any] = {
+            "fingerprintVersion": GENERATION_FINGERPRINT_VERSION,
+            "vacancy": canonical_hash(self.vacancy),
+            "profile": canonical_hash(self.profile),
+            "applicationGuide": canonical_hash(self.application_guide),
+            "sourceDocument": {
+                **canonical_value(source_document),
+                "fingerprint": canonical_hash(source_document),
+            },
+            "language": canonical_hash(self.language),
+            "confirmations": canonical_hash(confirmations),
+        }
+        return AuthoritativeGenerationProvenance(
+            generation_fingerprint=canonical_hash(fingerprint_inputs),
+            input_versions=input_versions,
+        )
 
     def validation_evidence(self) -> dict[str, Any]:
         profile_fields = (
@@ -253,3 +301,27 @@ def meaningful_confirmation(*, response: str, example_text: str) -> bool:
         word for word in normalized.split(" ") if any(character.isalnum() for character in word)
     ]
     return len(normalized) >= 10 and len(words) >= 2
+
+
+def canonical_hash(value: Any) -> str:
+    encoded = json.dumps(
+        canonical_value(value),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def canonical_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): canonical_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [canonical_value(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, float) and not isfinite(value):
+        return None
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
