@@ -1,7 +1,9 @@
 import json
+import subprocess
 import time
 from collections.abc import Generator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,7 +28,9 @@ from app.services.ai_match import (
 )
 from app.services.candidate_snapshot import (
     CandidateSnapshotError,
+    build_openclaw_candidate_snapshot_prompt,
     build_profile_input_hash,
+    build_snapshot_with_openclaw,
     extract_openclaw_candidate_snapshot_payload,
 )
 
@@ -341,6 +345,62 @@ def test_openclaw_candidate_snapshot_reads_top_level_payloads_text() -> None:
 
     assert payload["roles"] == ["Backend Developer"]
     assert payload["skills"] == ["Python", "FastAPI"]
+
+
+def test_candidate_snapshot_prompt_omits_embedded_document_data() -> None:
+    embedded_data = "data:application/octet-stream;base64," + ("A" * 200_000)
+    profile = ProfilePayload(
+        avatar_url="data:image/png;base64," + ("B" * 20_000),
+        current_role="Backend Developer",
+        documents=json.dumps(
+            [
+                {
+                    "id": "resume-1",
+                    "title": "Main CV",
+                    "category": "CV / Resume",
+                    "file_name": "resume.docx",
+                    "data_url": embedded_data,
+                }
+            ]
+        ),
+    )
+
+    prompt = build_openclaw_candidate_snapshot_prompt(profile, {"roles": []})
+
+    assert embedded_data not in prompt
+    assert "resume.docx" in prompt
+    assert "[attached]" in prompt
+    assert len(prompt) < 20_000
+
+
+def test_candidate_snapshot_uses_message_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured_prompt = ""
+    captured_path = ""
+
+    def fake_run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        nonlocal captured_path, captured_prompt
+        assert "--message" not in args
+        message_file_index = args.index("--message-file") + 1
+        captured_path = args[message_file_index]
+        captured_prompt = Path(captured_path).read_text(encoding="utf-8")
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=json.dumps({"candidate": {"roles": ["Backend Developer"]}}),
+            stderr="",
+        )
+
+    monkeypatch.setattr("app.services.candidate_snapshot.subprocess.run", fake_run)
+
+    snapshot = build_snapshot_with_openclaw(
+        profile=ProfilePayload(current_role="Backend Developer"),
+        fallback_snapshot={"roles": []},
+        settings=Settings(openclaw_ai_match_enabled=True),
+    )
+
+    assert snapshot["roles"] == ["Backend Developer"]
+    assert "Normalize this candidate" in captured_prompt
+    assert not Path(captured_path).exists()
 
 
 def test_openclaw_ai_match_reads_top_level_payloads_text() -> None:

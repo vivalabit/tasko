@@ -71,6 +71,7 @@ import { DashboardGreeting, useHydrationSafeCurrentTime } from "@/components/das
 import { legacyAiMatchVersion } from "@/lib/ai-match";
 import { findWorkspaceApplication, getHashForView, getRouteFromHash, type View } from "@/lib/app-route";
 import { cn } from "@/lib/utils";
+import { runSequentially } from "@/lib/async-queue";
 
 type AiMatchMetadata = {
   version: string;
@@ -571,7 +572,6 @@ const snapshotPollMaxAttempts = 30;
 const aiMatchStatusPollDelayMs = 2500;
 const aiMatchStatusPollMaxAttempts = 720;
 const importedJobsStorageKey = "tasko.importedJobs.v1";
-const aiMatchRunStorageKey = "tasko.aiMatchRun.v1";
 const savedJobIdsStorageKey = "tasko.savedJobIds.v1";
 const archivedJobIdsStorageKey = "tasko.archivedJobIds.v1";
 const deletedJobIdsStorageKey = "tasko.deletedJobIds.v1";
@@ -1905,45 +1905,6 @@ function createClientId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function createAiMatchProfileSignature(profile: CandidateProfile) {
-  return JSON.stringify({
-    current_role: profile.current_role,
-    desired_role: profile.desired_role,
-    location: profile.location,
-    work_format: profile.work_format,
-    headline: profile.headline,
-    experience: profile.experience,
-    skills: profile.skills,
-    education: profile.education,
-    job_preferences: profile.job_preferences,
-    dealbreakers: profile.dealbreakers,
-    additional_notes: profile.additional_notes,
-    documents: profile.documents,
-    resume_file_name: profile.resume_file_name,
-    resume_updated_at: profile.resume_updated_at,
-  });
-}
-
-function createAiMatchJobSignature(jobsToMatch: Job[]) {
-  return jobsToMatch
-    .map((job) =>
-      [
-        job.id,
-        job.title,
-        job.company,
-        job.location,
-        job.type,
-        job.salary,
-        job.experience,
-        job.overview,
-        job.requirements.join(","),
-        job.skills.join(","),
-      ].join("::"),
-    )
-    .sort()
-    .join("|");
-}
-
 function normalizeParserSearchConfigs(configs: ParserSearchConfig[]) {
   const normalizedConfigs = configs
     .filter((config) => config.id && config.name && config.form)
@@ -2755,12 +2716,6 @@ export default function HomePage() {
   const [areUiSettingsLoaded, setAreUiSettingsLoaded] = useState(false);
   const [appLogs, setAppLogs] = useState<AppLogEntry[]>([]);
   const [areAppLogsLoaded, setAreAppLogsLoaded] = useState(false);
-  const aiMatchProfileSignature = useMemo(() => createAiMatchProfileSignature(profile), [profile]);
-  const importedJobSignature = useMemo(
-    () => createAiMatchJobSignature(jobList.filter(isImportedJob)),
-    [jobList],
-  );
-
   const availableJobs = useMemo(
     () =>
       jobList
@@ -3229,15 +3184,6 @@ export default function HomePage() {
       abortController.abort();
     };
   }, []);
-
-  useEffect(() => {
-    if (!isProfileLoaded || !importedJobSignature) return;
-
-    const runSignature = `${aiMatchProfileSignature}:${importedJobSignature}`;
-    if (window.localStorage.getItem(aiMatchRunStorageKey) === runSignature) return;
-
-    void refreshAiMatches(jobList.filter(isImportedJob), runSignature);
-  }, [aiMatchProfileSignature, importedJobSignature, isProfileLoaded, jobList]);
 
   function changeView(view: View, applicationId?: string) {
     setActiveView(view);
@@ -4797,8 +4743,7 @@ export default function HomePage() {
     });
   }
 
-  async function refreshAiMatches(jobsToMatch: Job[], runSignature?: string, force = false) {
-    if (jobsToMatch.length === 0) return false;
+  async function refreshAiMatch(job: Job, force = false, conflictRetry = false): Promise<boolean> {
     setAiMatchErrorMessage("");
 
     try {
@@ -4806,22 +4751,20 @@ export default function HomePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          jobs: jobsToMatch.map((job) => ({ id: job.id, data: job })),
+          jobs: [{ id: job.id, data: job }],
         }),
       });
 
       if (response.status === 409) {
-        return pollAiMatchStatus();
+        const previousRunCompleted = await pollAiMatchStatus();
+        if (!previousRunCompleted || conflictRetry) return false;
+        return refreshAiMatch(job, force, true);
       }
 
       if (!response.ok) {
         const message = await readApiErrorMessage(response, "AI match run could not start");
         reportAiMatchError(message, `HTTP ${response.status}`);
         return false;
-      }
-
-      if (runSignature) {
-        window.localStorage.setItem(aiMatchRunStorageKey, runSignature);
       }
 
       const startedStatus = (await response.json()) as AiMatchJobStatus;
@@ -4838,7 +4781,7 @@ export default function HomePage() {
   async function rerunAiMatch(job: Job) {
     setForceMatchingJobId(job.id);
     try {
-      await refreshAiMatches([job], undefined, true);
+      await refreshAiMatch(job, true);
     } finally {
       setForceMatchingJobId((currentId) => (currentId === job.id ? "" : currentId));
     }
@@ -4908,6 +4851,8 @@ export default function HomePage() {
     const importedJobs = parsedJobs.map((job, index) => mapParsedJobToJob(job, index));
 
     if (importedJobs.length > 0) {
+      const existingJobIds = new Set(jobList.map((job) => job.id));
+      const newJobs = importedJobs.filter((job) => !existingJobIds.has(job.id));
       setJobList((currentJobs) => {
         const nextJobs = mergeJobs(importedJobs, currentJobs);
         const nextImportedJobs = nextJobs.filter(isImportedJob);
@@ -4916,7 +4861,7 @@ export default function HomePage() {
       });
       setSelectedJobId(importedJobs[0].id);
       setActiveTab("Overview");
-      void refreshAiMatches(importedJobs);
+      void runSequentially(newJobs, (job) => refreshAiMatch(job));
     }
 
     return importedJobs.length;

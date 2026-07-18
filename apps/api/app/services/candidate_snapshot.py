@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -215,24 +216,27 @@ def build_snapshot_with_openclaw(
     executable = shutil.which(settings.openclaw_command) or settings.openclaw_command
     prompt = build_openclaw_candidate_snapshot_prompt(profile, fallback_snapshot)
     try:
-        result = subprocess.run(
-            [
-                executable,
-                "agent",
-                "--local",
-                "--agent",
-                settings.openclaw_agent_id,
-                "--message",
-                prompt,
-                "--thinking",
-                settings.openclaw_ai_match_thinking,
-                "--json",
-            ],
-            capture_output=True,
-            check=True,
-            text=True,
-            timeout=settings.openclaw_ai_match_timeout_seconds,
-        )
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".txt") as prompt_file:
+            prompt_file.write(prompt)
+            prompt_file.flush()
+            result = subprocess.run(
+                [
+                    executable,
+                    "agent",
+                    "--local",
+                    "--agent",
+                    settings.openclaw_agent_id,
+                    "--message-file",
+                    prompt_file.name,
+                    "--thinking",
+                    settings.openclaw_ai_match_thinking,
+                    "--json",
+                ],
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=settings.openclaw_ai_match_timeout_seconds,
+            )
     except FileNotFoundError as exc:
         raise CandidateSnapshotError(
             f"OpenClaw command was not found: {settings.openclaw_command}. Install OpenClaw or "
@@ -243,6 +247,8 @@ def build_snapshot_with_openclaw(
     except subprocess.CalledProcessError as exc:
         error_output = (exc.stderr or exc.stdout or "OpenClaw command failed").strip()
         raise CandidateSnapshotError(summarize_openclaw_error(error_output)) from exc
+    except OSError as exc:
+        raise CandidateSnapshotError(f"OpenClaw command could not start: {exc}") from exc
 
     snapshot = extract_openclaw_candidate_snapshot_payload(result.stdout)
     if not snapshot:
@@ -262,6 +268,8 @@ def build_openclaw_candidate_snapshot_prompt(
             resume_text = ""
 
     profile_payload = profile.model_dump()
+    profile_payload["avatar_url"] = "[attached]" if profile.avatar_url.startswith("data:") else profile.avatar_url
+    profile_payload["documents"] = summarize_profile_documents(profile.documents)
     profile_payload["resume_data_url"] = "[attached]" if profile.resume_data_url else ""
     payload = json.dumps(
         {
@@ -282,6 +290,37 @@ def build_openclaw_candidate_snapshot_prompt(
         "salary currency, skills, domains, priorities, dealbreakers, and evidence.\n"
         f"Input JSON:\n{payload}"
     )
+
+
+def summarize_profile_documents(value: str) -> list[dict[str, Any]] | str:
+    if not value:
+        return ""
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return "[attached documents omitted]"
+    if not isinstance(parsed, list):
+        return "[attached documents omitted]"
+
+    metadata_fields = (
+        "id",
+        "title",
+        "category",
+        "language",
+        "file_name",
+        "file_size",
+        "file_type",
+        "uploaded_at",
+    )
+    return [
+        {
+            field: document[field]
+            for field in metadata_fields
+            if field in document and isinstance(document[field], (str, int, float, bool))
+        }
+        for document in parsed
+        if isinstance(document, dict)
+    ]
 
 
 def extract_openclaw_candidate_snapshot_payload(value: str) -> dict[str, Any]:
