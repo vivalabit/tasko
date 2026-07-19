@@ -141,6 +141,8 @@ def test_loads_complete_authoritative_generation_context() -> None:
         assert context.vacancy["title"] == "Platform Engineer"
         assert context.profile["skills"] == "Python"
         assert context.application_guide["language"] == "German"
+        assert context.analysis_revision == "match-context"
+        assert len(context.analysis_fingerprint) == 64
         assert context.language == "German"
         assert context.template.id == "template-context"
         assert context.confirmations[0].requirement == "Production Python"
@@ -199,7 +201,9 @@ def test_computes_stable_provenance_from_authoritative_context() -> None:
 
         assert first == second
         assert len(first.generation_fingerprint) == 64
-        assert first.input_versions["fingerprintVersion"] == "generation-fingerprint-v2"
+        assert first.input_versions["fingerprintVersion"] == "generation-fingerprint-v3"
+        assert first.input_versions["analysisRevision"] == "match-context"
+        assert first.input_versions["analysisFingerprint"] == context.analysis_fingerprint
         assert first.input_versions["sourceDocument"]["id"] == "template-context"
         assert len(first.input_versions["sourceDocument"]["contentSha256"]) == 64
 

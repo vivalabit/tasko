@@ -92,6 +92,8 @@ export function createV3WorkspaceApplication(
       ...overrides.job,
       aiMatch: overrides.job?.aiMatch ?? {
         version: "ai-match-v3",
+        revision: "match-revision-v3",
+        fingerprint: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         reasons: ["Strong product discovery background"],
         gaps: ["Confirm formal people-management experience"],
         updatedAt: "2026-07-15T10:00:00.000Z",

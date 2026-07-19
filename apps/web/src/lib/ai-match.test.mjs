@@ -29,9 +29,11 @@ test("does not accept a v3 percentage without an application guide", () => {
   );
 });
 
-test("accepts an ai-match-v3 application guide", () => {
+test("accepts only an authoritative ai-match-v3 application guide", () => {
   const migratedMatch = {
     version: "ai-match-v3",
+    revision: "match-revision",
+    fingerprint: "a".repeat(64),
     score: 88,
     applicationGuide: {
       language: "English",
@@ -41,4 +43,12 @@ test("accepts an ai-match-v3 application guide", () => {
 
   assert.equal(getAiMatchAnalysisStatus(migratedMatch), "current");
   assert.equal(hasCurrentApplicationGuide(migratedMatch), true);
+  assert.equal(
+    getAiMatchAnalysisStatus({
+      ...migratedMatch,
+      revision: undefined,
+      fingerprint: undefined,
+    }),
+    "outdated",
+  );
 });

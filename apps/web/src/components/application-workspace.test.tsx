@@ -66,6 +66,12 @@ describe("ApplicationWorkspace", () => {
     expect(
       screen.getByRole("button", { name: "Refresh analysis" }),
     ).toBeInTheDocument();
+    expect(screen.getByText("match-revision-v3")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      ),
+    ).toBeInTheDocument();
 
     await waitFor(() => {
       expect(

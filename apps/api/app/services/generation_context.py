@@ -10,13 +10,17 @@ from sqlalchemy.orm import Session
 
 from app.models.applications import CandidateConfirmationRecord, StoredApplicationRecord
 from app.models.documents import DocumentTemplateRecord
-from app.models.jobs import JobMatchRecord, StoredJobRecord
+from app.models.jobs import StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
-from app.services.ai_match import MATCHER_VERSION, detect_job_language
+from app.services.ai_match import detect_job_language
 from app.services.experience_evidence import build_atomic_experience_evidence
-from app.services.job_match_store import match_record_to_ai_match
+from app.services.job_match_store import (
+    authoritative_match_record,
+    authoritative_match_to_ai_match,
+    match_record_to_ai_match,
+)
 
-GENERATION_FINGERPRINT_VERSION = "generation-fingerprint-v2"
+GENERATION_FINGERPRINT_VERSION = "generation-fingerprint-v3"
 PROFILE_EVIDENCE_FIELDS = (
     "name",
     "current_role",
@@ -70,6 +74,8 @@ class AuthoritativeGenerationContext:
     vacancy: dict[str, Any]
     profile: dict[str, Any]
     application_guide: dict[str, Any]
+    analysis_revision: str
+    analysis_fingerprint: str
     confirmations: tuple[AuthoritativeConfirmation, ...]
     language: str
     template: DocumentTemplateRecord
@@ -89,6 +95,8 @@ class AuthoritativeGenerationContext:
             "vacancy": self.vacancy,
             "profile": self.profile,
             "applicationGuide": self.application_guide,
+            "analysisRevision": self.analysis_revision,
+            "analysisFingerprint": self.analysis_fingerprint,
             "sourceDocument": source_document,
             "language": self.language,
             "confirmations": confirmations,
@@ -98,6 +106,8 @@ class AuthoritativeGenerationContext:
             "vacancy": canonical_hash(self.vacancy),
             "profile": canonical_hash(self.profile),
             "applicationGuide": canonical_hash(self.application_guide),
+            "analysisRevision": self.analysis_revision,
+            "analysisFingerprint": self.analysis_fingerprint,
             "sourceDocument": {
                 **canonical_value(source_document),
                 "fingerprint": canonical_hash(source_document),
@@ -215,7 +225,13 @@ def load_authoritative_generation_context(
     except ValidationError as exc:
         raise GenerationContextError("Candidate profile is invalid") from exc
 
-    application_guide = load_stored_application_guide(db, job_id=job_id)
+    match_record = authoritative_match_record(db, job_id=job_id)
+    if not match_record:
+        raise GenerationContextError("Stored ai-match-v3 is required")
+    authoritative_analysis = authoritative_match_to_ai_match(match_record)
+    application_guide = authoritative_analysis.get("applicationGuide")
+    if not isinstance(application_guide, dict):
+        raise GenerationContextError("Stored ai-match-v3 application guide is unavailable")
     questions = clarification_questions(application_guide)
     confirmation_records = {
         record.question_id: record
@@ -277,6 +293,8 @@ def load_authoritative_generation_context(
         vacancy=vacancy,
         profile=profile,
         application_guide=application_guide,
+        analysis_revision=str(authoritative_analysis["revision"]),
+        analysis_fingerprint=str(authoritative_analysis["fingerprint"]),
         confirmations=tuple(confirmations),
         language=language,
         template=template,
@@ -284,15 +302,7 @@ def load_authoritative_generation_context(
 
 
 def load_stored_application_guide(db: Session, *, job_id: str) -> dict[str, Any]:
-    match_record = (
-        db.query(JobMatchRecord)
-        .filter(
-            JobMatchRecord.job_id == job_id,
-            JobMatchRecord.matcher_version == MATCHER_VERSION,
-        )
-        .order_by(JobMatchRecord.created_at.desc(), JobMatchRecord.id.desc())
-        .first()
-    )
+    match_record = authoritative_match_record(db, job_id=job_id)
     if not match_record:
         raise GenerationContextError("Stored ai-match-v3 is required")
     application_guide = match_record_to_ai_match(match_record).get("applicationGuide")

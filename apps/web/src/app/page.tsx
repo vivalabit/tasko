@@ -75,6 +75,8 @@ import { runSequentially } from "@/lib/async-queue";
 
 type AiMatchMetadata = {
   version: string;
+  revision?: string;
+  fingerprint?: string;
   cacheKey: string;
   source: "local" | "openclaw";
   score: number;
@@ -2913,7 +2915,7 @@ export default function HomePage() {
 
     async function saveStoredApplications() {
       try {
-        await fetch(`${apiBaseUrl}/applications`, {
+        const response = await fetch(`${apiBaseUrl}/applications`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2923,6 +2925,24 @@ export default function HomePage() {
             })),
           }),
           signal: abortController.signal,
+        });
+        if (!response.ok) return;
+        const storedApplications = (await response.json()) as Array<{
+          id: string;
+          data: unknown;
+        }>;
+        const authoritativeApplications = normalizeStoredApplications(
+          storedApplications.map((application) => application.data),
+        );
+        if (authoritativeApplications.length === 0) return;
+        setApplications((currentApplications) => {
+          if (
+            JSON.stringify(currentApplications)
+            === JSON.stringify(authoritativeApplications)
+          ) {
+            return currentApplications;
+          }
+          return authoritativeApplications;
         });
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -3345,12 +3365,38 @@ export default function HomePage() {
         return;
       }
 
-      updateApplicationJob(application.id, matchedJob);
+      const authoritativeResponse = await fetch(
+        `${apiBaseUrl}/applications/${encodeURIComponent(application.id)}/analysis`,
+        { cache: "no-store" },
+      );
+      if (!authoritativeResponse.ok) {
+        throw new Error(
+          await readApiErrorMessage(
+            authoritativeResponse,
+            "Authoritative application analysis could not be loaded",
+          ),
+        );
+      }
+      const authoritativePayload = (await authoritativeResponse.json()) as {
+        id: string;
+        data: unknown;
+      };
+      const authoritativeApplication = normalizeStoredApplications([
+        authoritativePayload.data,
+      ])[0];
+      if (!authoritativeApplication || authoritativeApplication.id !== application.id) {
+        throw new Error("Authoritative application analysis returned an invalid payload");
+      }
+      setApplications((currentApplications) =>
+        currentApplications.map((item) =>
+          item.id === application.id ? authoritativeApplication : item,
+        ),
+      );
       appendAppLog({
         level: "success",
         area: "AI Match",
         message: `AI analysis completed for ${application.job.title} at ${application.job.company}`,
-        details: `Score: ${formatMatchValue(matchedJob)}`,
+        details: `Score: ${formatMatchValue(authoritativeApplication.job)}`,
       });
     } catch (error) {
       appendAppLog({

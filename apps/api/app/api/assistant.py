@@ -43,7 +43,7 @@ from app.models.documents import (
     DocumentRecord,
     DocumentVersionRecord,
 )
-from app.models.jobs import JobMatchRecord, StoredJobRecord
+from app.models.jobs import StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.assistant import (
     OpenClawAssistantRun,
@@ -56,14 +56,16 @@ from app.services.assistant import (
     preflight_source_documents,
     run_openclaw_assistant,
 )
-from app.services.ai_match import MATCHER_VERSION
 from app.services.generation_context import (
     AuthoritativeGenerationContext,
     GenerationContextError,
     clarification_questions,
     load_authoritative_generation_context,
 )
-from app.services.job_match_store import match_record_to_ai_match
+from app.services.job_match_store import (
+    authoritative_match_record,
+    match_record_to_ai_match,
+)
 from app.services.profile_versions import record_profile_version
 
 router = APIRouter()
@@ -821,15 +823,7 @@ def load_server_job_context(
         job_data = dict(record.data)
         job_data["id"] = job_id
         job_data.pop("aiMatch", None)
-        match_record = (
-            db.query(JobMatchRecord)
-            .filter(
-                JobMatchRecord.job_id == job_id,
-                JobMatchRecord.matcher_version == MATCHER_VERSION,
-            )
-            .order_by(JobMatchRecord.created_at.desc(), JobMatchRecord.id.desc())
-            .first()
-        )
+        match_record = authoritative_match_record(db, job_id=job_id)
         if match_record:
             job_data["aiMatch"] = match_record_to_ai_match(match_record)
         return AssistantJobContext.model_validate(job_data)

@@ -635,7 +635,7 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
         "currentGenerationFingerprint"
     ]
     assert created.json()["inputVersions"]["fingerprintVersion"] == (
-        "generation-fingerprint-v2"
+        "generation-fingerprint-v3"
     )
     assert created.json()["inputVersions"]["sourceDocument"]["id"] == uploaded.json()["id"]
     assert created.json()["inputVersions"]["profile"] != "profile-v1"

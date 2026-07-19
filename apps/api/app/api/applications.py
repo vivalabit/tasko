@@ -18,6 +18,7 @@ from app.models.applications import (
     StoredApplicationRecord,
     StoredApplicationsRequest,
 )
+from app.models.jobs import StoredJobRecord
 from app.services.generation_context import (
     ClarificationQuestion,
     GenerationContextError,
@@ -25,8 +26,46 @@ from app.services.generation_context import (
     load_stored_application_guide,
     meaningful_confirmation,
 )
+from app.services.job_match_store import (
+    authoritative_match_record,
+    authoritative_match_to_ai_match,
+)
 
 router = APIRouter()
+
+
+def application_payload(
+    db: Session,
+    record: StoredApplicationRecord,
+) -> StoredApplicationPayload:
+    data = dict(record.data) if isinstance(record.data, dict) else {}
+    raw_job = data.get("job")
+    job_id = str(raw_job.get("id") or "").strip() if isinstance(raw_job, dict) else ""
+    stored_job = db.get(StoredJobRecord, job_id) if job_id else None
+    if stored_job and isinstance(stored_job.data, dict):
+        job = dict(stored_job.data)
+        job["id"] = job_id
+    else:
+        job = dict(raw_job) if isinstance(raw_job, dict) else {}
+    job.pop("aiMatch", None)
+
+    match_record = authoritative_match_record(db, job_id=job_id) if job_id else None
+    if match_record:
+        job["match"] = match_record.score
+        job["aiMatch"] = authoritative_match_to_ai_match(match_record)
+    if job:
+        data["job"] = job
+    return StoredApplicationPayload(id=record.id, data=data)
+
+
+def strip_client_application_analysis(data: dict[str, object]) -> dict[str, object]:
+    sanitized = dict(data)
+    raw_job = sanitized.get("job")
+    if isinstance(raw_job, dict):
+        job = dict(raw_job)
+        job.pop("aiMatch", None)
+        sanitized["job"] = job
+    return sanitized
 
 
 def is_meaningful_confirmation(confirmation: CandidateConfirmationInput) -> bool:
@@ -77,7 +116,7 @@ def stored_clarification_questions(
 def list_applications(db: Session = Depends(get_db)) -> list[StoredApplicationPayload]:
     try:
         records = db.query(StoredApplicationRecord).order_by(StoredApplicationRecord.id.desc()).all()
-        return [StoredApplicationPayload(id=record.id, data=record.data) for record in records]
+        return [application_payload(db, record) for record in records]
     except SQLAlchemyError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -92,11 +131,12 @@ def upsert_applications(
 ) -> list[StoredApplicationPayload]:
     try:
         for application in request.applications:
+            sanitized_data = strip_client_application_analysis(application.data)
             record = db.get(StoredApplicationRecord, application.id)
             if record:
-                record.data = application.data
+                record.data = sanitized_data
             else:
-                db.add(StoredApplicationRecord(id=application.id, data=application.data))
+                db.add(StoredApplicationRecord(id=application.id, data=sanitized_data))
 
         db.commit()
         return list_applications(db)
@@ -105,6 +145,28 @@ def upsert_applications(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Applications database is unavailable",
+        ) from exc
+
+
+@router.get("/{application_id}/analysis", response_model=StoredApplicationPayload)
+def get_authoritative_application_analysis(
+    application_id: str,
+    db: Session = Depends(get_db),
+) -> StoredApplicationPayload:
+    try:
+        record = db.get(StoredApplicationRecord, application_id)
+        if not record:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Application not found",
+            )
+        return application_payload(db, record)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authoritative application analysis is unavailable",
         ) from exc
 
 

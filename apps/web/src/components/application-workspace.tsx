@@ -71,6 +71,8 @@ type WorkspaceJob = {
   sourceUrl?: string;
   aiMatch?: {
     version?: string;
+    revision?: string;
+    fingerprint?: string;
     reasons: string[];
     gaps: string[];
     updatedAt?: string;
@@ -1441,6 +1443,10 @@ export function ApplicationWorkspace({
                       <div className="rounded-xl border border-white/[0.08] bg-black/20 p-4">
                         <div className="flex items-center justify-between gap-2"><span className="text-[9px] font-black uppercase tracking-[0.1em] text-muted">Analysis status</span><span className={cn("rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-wide", applicationGuide.readiness === "ready" ? "border-success/30 bg-success/10 text-success" : applicationGuide.readiness === "weak_fit" ? "border-red-400/30 bg-red-500/10 text-red-200" : "border-amber-400/30 bg-amber-400/10 text-amber-200")}>{(applicationGuide.readiness ?? "needs_confirmation").replace("_", " ")}</span></div>
                         <div className="mt-4 flex flex-wrap gap-1.5">{(applicationGuide.keywords ?? []).slice(0, 8).map((keyword) => <span key={keyword} className="rounded-md border border-white/[0.07] bg-white/[0.04] px-2 py-1 text-[9px] font-semibold text-[#cbd3df]">{keyword}</span>)}</div>
+                        <dl className="mt-4 grid gap-2 border-t border-white/[0.07] pt-3 text-[9px]">
+                          <div className="flex items-center justify-between gap-3"><dt className="font-bold uppercase tracking-wide text-muted">Revision</dt><dd className="max-w-[145px] truncate font-mono text-[#d7dee8]" title={application.job.aiMatch?.revision}>{application.job.aiMatch?.revision || "Unavailable"}</dd></div>
+                          <div className="flex items-center justify-between gap-3"><dt className="font-bold uppercase tracking-wide text-muted">Fingerprint</dt><dd className="max-w-[145px] truncate font-mono text-[#d7dee8]" title={application.job.aiMatch?.fingerprint}>{application.job.aiMatch?.fingerprint || "Unavailable"}</dd></div>
+                        </dl>
                       </div>
                     </div>
                   </article>

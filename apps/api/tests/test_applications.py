@@ -1,5 +1,5 @@
 from collections.abc import Generator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -8,9 +8,10 @@ from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base, get_db
 from app.main import app
-from app.models.applications import CandidateConfirmationRecord
-from app.models.jobs import JobMatchRecord
+from app.models.applications import CandidateConfirmationRecord, StoredApplicationRecord
+from app.models.jobs import JobMatchRecord, StoredJobRecord
 from app.services.ai_match import MATCHER_VERSION
+from app.services.generation_context import load_stored_application_guide
 from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
 
 
@@ -126,6 +127,117 @@ def test_applications_and_events_can_be_upserted_and_read() -> None:
         assert events_after_application_delete_response.json() == []
     finally:
         app.dependency_overrides.clear()
+
+
+def test_applications_expose_the_generators_authoritative_analysis_revision() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        db = testing_session_local()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    now = datetime.now(UTC)
+    with testing_session_local() as db:
+        db.add(
+            StoredJobRecord(
+                id="job-revision",
+                data={
+                    "id": "job-revision",
+                    "title": "Authoritative title",
+                    "company": "Acme",
+                },
+            )
+        )
+        for revision, created_at, positioning in (
+            ("match-old", now - timedelta(minutes=5), "Old positioning"),
+            ("match-current", now, "Current positioning"),
+        ):
+            db.add(
+                JobMatchRecord(
+                    id=revision,
+                    job_id="job-revision",
+                    profile_hash=f"profile-{revision}",
+                    matcher_version=MATCHER_VERSION,
+                    cache_key=f"cache-{revision}",
+                    score=92,
+                    source="openclaw",
+                    confidence="high",
+                    breakdown={
+                        APPLICATION_GUIDE_STORAGE_KEY: {
+                            "language": "English",
+                            "positioning": positioning,
+                        }
+                    },
+                    reasons=[positioning],
+                    gaps=[],
+                    heuristic_score=90,
+                    created_at=created_at,
+                )
+            )
+        db.commit()
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        upsert_response = client.put(
+            "/applications",
+            json={
+                "applications": [
+                    {
+                        "id": "application-revision",
+                        "data": {
+                            "id": "application-revision",
+                            "status": "draft",
+                            "job": {
+                                "id": "job-revision",
+                                "title": "Client snapshot",
+                                "aiMatch": {
+                                    "version": MATCHER_VERSION,
+                                    "revision": "client-spoof",
+                                    "fingerprint": "client-spoof",
+                                    "applicationGuide": {
+                                        "positioning": "Client positioning"
+                                    },
+                                },
+                            },
+                        },
+                    }
+                ]
+            },
+        )
+        list_response = client.get("/applications")
+        analysis_response = client.get("/applications/application-revision/analysis")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert upsert_response.status_code == 200
+    assert list_response.status_code == 200
+    assert analysis_response.status_code == 200
+    listed_match = list_response.json()[0]["data"]["job"]["aiMatch"]
+    analysis_match = analysis_response.json()["data"]["job"]["aiMatch"]
+    assert listed_match == analysis_match
+    assert analysis_match["revision"] == "match-current"
+    assert len(analysis_match["fingerprint"]) == 64
+    assert analysis_match["applicationGuide"]["positioning"] == "Current positioning"
+    assert analysis_response.json()["data"]["job"]["title"] == "Authoritative title"
+
+    with testing_session_local() as db:
+        stored = db.get(StoredApplicationRecord, "application-revision")
+        assert stored is not None
+        assert "aiMatch" not in stored.data["job"]
+        assert load_stored_application_guide(db, job_id="job-revision") == {
+            "language": "English",
+            "positioning": "Current positioning",
+        }
 
 
 def test_candidate_confirmations_are_structured_validated_and_persisted() -> None:

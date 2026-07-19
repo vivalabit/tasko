@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -54,6 +56,33 @@ def latest_match_record(db: Session, *, job_id: str, profile_hash: str) -> JobMa
         .order_by(JobMatchRecord.created_at.desc(), JobMatchRecord.id.desc())
         .first()
     )
+
+
+def authoritative_match_record(db: Session, *, job_id: str) -> JobMatchRecord | None:
+    return (
+        db.query(JobMatchRecord)
+        .filter(
+            JobMatchRecord.job_id == job_id,
+            JobMatchRecord.matcher_version == MATCHER_VERSION,
+        )
+        .order_by(JobMatchRecord.created_at.desc(), JobMatchRecord.id.desc())
+        .first()
+    )
+
+
+def authoritative_match_to_ai_match(record: JobMatchRecord) -> dict[str, Any]:
+    ai_match = match_record_to_ai_match(record)
+    encoded = json.dumps(
+        ai_match,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        **ai_match,
+        "revision": record.id,
+        "fingerprint": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def strip_ai_match(job_data: dict[str, Any]) -> dict[str, Any]:

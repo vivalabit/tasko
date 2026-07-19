@@ -242,7 +242,7 @@ def test_atomic_pack_commits_both_documents_and_retry_is_idempotent(
         for document in created.json()["documents"]
     )
     assert all(
-        document["inputVersions"]["fingerprintVersion"] == "generation-fingerprint-v2"
+        document["inputVersions"]["fingerprintVersion"] == "generation-fingerprint-v3"
         for document in created.json()["documents"]
     )
     assert [stage["status"] for stage in created.json()["stages"]] == [
