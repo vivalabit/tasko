@@ -13,6 +13,7 @@ from app.models.documents import DocumentTemplateRecord
 from app.models.jobs import JobMatchRecord, StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.ai_match import MATCHER_VERSION, detect_job_language
+from app.services.experience_evidence import build_atomic_experience_evidence
 from app.services.job_match_store import match_record_to_ai_match
 
 GENERATION_FINGERPRINT_VERSION = "generation-fingerprint-v2"
@@ -25,6 +26,9 @@ PROFILE_EVIDENCE_FIELDS = (
     "skills",
     "experience",
     "education",
+)
+DIRECT_PROFILE_EVIDENCE_FIELDS = tuple(
+    field for field in PROFILE_EVIDENCE_FIELDS if field != "experience"
 )
 
 
@@ -126,9 +130,12 @@ class AuthoritativeGenerationContext:
                 "type": "profile",
                 "text": str(self.profile.get(field) or "").strip(),
             }
-            for field in PROFILE_EVIDENCE_FIELDS
+            for field in DIRECT_PROFILE_EVIDENCE_FIELDS
             if str(self.profile.get(field) or "").strip()
         ]
+        experience_evidence = build_atomic_experience_evidence(
+            self.profile.get("experience")
+        )
         confirmation_evidence = [
             {
                 "id": f"confirmation:{confirmation.question_id}",
@@ -161,7 +168,11 @@ class AuthoritativeGenerationContext:
             ],
             "verifiedGuideEvidence": verified_guide_evidence,
             "language": self.language,
-            "evidenceCatalog": [*profile_evidence, *confirmation_evidence],
+            "evidenceCatalog": [
+                *profile_evidence,
+                *experience_evidence,
+                *confirmation_evidence,
+            ],
         }
 
 

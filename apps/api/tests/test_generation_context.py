@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 import hashlib
+import json
 
 import pytest
 from sqlalchemy import create_engine
@@ -50,7 +51,22 @@ def generation_context_session(*, include_confirmation: bool = True) -> Session:
             data={
                 "name": "Alex",
                 "skills": "Python",
-                "experience": "Built production Python services.",
+                "experience": json.dumps(
+                    [
+                        {
+                            "id": "experience-acme",
+                            "title": "Platform Engineer",
+                            "company": "Acme",
+                            "start_date": "2022-01",
+                            "end_date": "2024-06",
+                            "is_current": False,
+                            "description": (
+                                "Built production Python and FastAPI services. "
+                                "Reduced request latency by 30%."
+                            ),
+                        }
+                    ]
+                ),
             },
         ),
         JobMatchRecord(
@@ -130,11 +146,29 @@ def test_loads_complete_authoritative_generation_context() -> None:
         assert context.confirmations[0].requirement == "Production Python"
         assert context.confirmations[0].blocking is True
         evidence = context.validation_evidence()
-        assert {item["id"] for item in evidence["evidenceCatalog"]} >= {
+        evidence_by_id = {
+            item["id"]: item for item in evidence["evidenceCatalog"]
+        }
+        assert set(evidence_by_id) >= {
             "profile:skills",
-            "profile:experience",
+            "profile:experience:experience-acme:employer",
+            "profile:experience:experience-acme:title",
+            "profile:experience:experience-acme:period",
             "confirmation:production-python",
         }
+        experience_claims = [
+            item
+            for item in evidence["evidenceCatalog"]
+            if item["id"].startswith("profile:experience:")
+        ]
+        assert {item["claimType"] for item in experience_claims} == {
+            "employer",
+            "title",
+            "period",
+            "technology",
+            "achievement",
+        }
+        assert "profile:experience" not in evidence_by_id
 
 
 def test_rejects_generation_when_required_confirmation_is_missing() -> None:

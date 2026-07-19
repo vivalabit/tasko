@@ -118,6 +118,10 @@ def test_build_openclaw_assistant_prompt_omits_empty_fields_and_duplicate_resume
     assert '"resume_attached":true' in prompt
     assert '"resume_text"' not in prompt
     assert '"current_role"' not in prompt
+    assert '"experience_claims"' in prompt
+    assert '"claimType":"achievement"' in prompt
+    assert '"profile:experience:legacy-0001:achievement-' in prompt
+    assert '"experience":"profile:experience"' not in prompt
 
 
 def test_assistant_prompt_uses_only_selected_profile_source_documents() -> None:

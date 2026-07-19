@@ -36,7 +36,8 @@ from app.services.cover_letter_blocks import (
     parse_cover_letter_blocks,
 )
 from app.services.document_security import DocumentSecurityError, validate_docx_package
-from app.services.generation_context import PROFILE_EVIDENCE_FIELDS
+from app.services.experience_evidence import build_atomic_experience_evidence
+from app.services.generation_context import DIRECT_PROFILE_EVIDENCE_FIELDS
 from app.services.resume_import import (
     decode_resume_data_url,
     extract_docx_body_text,
@@ -440,11 +441,25 @@ def build_profile_context(profile: ProfilePayload) -> dict[str, Any]:
         exclude_defaults=True,
     )
     profile_context["resume_attached"] = bool(profile.resume_file_name and profile.resume_data_url)
+    experience_claims = build_atomic_experience_evidence(profile.experience)
     profile_context["evidence_ids"] = {
         field: f"profile:{field}"
-        for field in PROFILE_EVIDENCE_FIELDS
+        for field in DIRECT_PROFILE_EVIDENCE_FIELDS
         if str(profile_context.get(field) or "").strip()
     }
+    if experience_claims:
+        profile_context["evidence_ids"]["experience"] = [
+            claim["id"] for claim in experience_claims
+        ]
+        profile_context["experience_claims"] = [
+            {
+                "evidenceId": claim["id"],
+                "experienceId": claim["experienceId"],
+                "claimType": claim["claimType"],
+                "text": claim["text"],
+            }
+            for claim in experience_claims
+        ]
     structured_profile = "".join((profile.experience, profile.skills, profile.education)).strip()
 
     if profile.resume_file_name and profile.resume_data_url and not structured_profile:

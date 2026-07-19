@@ -677,7 +677,19 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
     evidence_catalog = {
         item["id"]: item for item in captured_evidence["evidenceCatalog"]
     }
-    assert evidence_catalog["profile:experience"]["text"].startswith(
-        "Built a Python service"
+    experience_evidence = [
+        item
+        for item in evidence_catalog.values()
+        if item["id"].startswith("profile:experience:")
+    ]
+    assert "profile:experience" not in evidence_catalog
+    assert any(
+        item["claimType"] == "achievement"
+        and item["text"].startswith("Built a Python service")
+        for item in experience_evidence
+    )
+    assert any(
+        item["claimType"] == "technology" and item["text"] == "Python"
+        for item in experience_evidence
     )
     assert evidence_catalog["confirmation:production-python"]["type"] == "confirmation"

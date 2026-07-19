@@ -124,7 +124,9 @@ def test_cover_letter_renderer_preserves_distinct_paragraph_and_run_styles() -> 
                     "original": "First reusable paragraph.",
                     "replacement": "First targeted paragraph.",
                     "reason": "Tailors the first body paragraph",
-                    "evidenceIds": ["profile:experience"],
+                    "evidenceIds": [
+                        "profile:experience:experience-acme:achievement-a1b2c3d4e5"
+                    ],
                 },
                 {
                     "paragraphId": "paragraph-0003",
@@ -346,7 +348,9 @@ def test_cover_letter_renderer_rejects_protected_or_stale_replacements() -> None
                     "original": "Stale original",
                     "replacement": "Targeted introduction",
                     "reason": "Stale model response",
-                    "evidenceIds": ["profile:experience"],
+                    "evidenceIds": [
+                        "profile:experience:experience-acme:achievement-a1b2c3d4e5"
+                    ],
                 }
             ]
         }
