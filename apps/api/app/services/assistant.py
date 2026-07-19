@@ -7,13 +7,9 @@ import logging
 import re
 import shutil
 import time
-import zipfile
 from dataclasses import dataclass
-from io import BytesIO
 from typing import Any
 
-from docx.oxml.ns import qn
-from lxml import etree
 from pydantic import ValidationError
 
 from app.models.assistant import (
@@ -30,28 +26,23 @@ from app.models.assistant import (
     UpdateProfileFieldProposal,
 )
 from app.models.profile import ProfilePayload
-from app.services.cover_letter_blocks import (
-    UnsupportedCoverLetterStructureError,
-    extract_cover_letter_blocks_from_docx,
-    parse_cover_letter_blocks,
+from app.services.cover_letter_blocks import UnsupportedCoverLetterStructureError
+from app.services.document_analysis import (
+    DocumentAnalysisResult,
+    analyze_docx_source,
+    serialized_length,
 )
-from app.services.document_security import DocumentSecurityError, validate_docx_package
+from app.services.document_security import DocumentSecurityError
 from app.services.experience_evidence import build_atomic_experience_evidence
 from app.services.generation_context import DIRECT_PROFILE_EVIDENCE_FIELDS
 from app.services.resume_import import (
     decode_resume_data_url,
-    extract_docx_body_text,
     extract_json_objects,
     extract_openclaw_text_payloads,
     extract_resume_text,
     summarize_openclaw_error,
 )
-from app.services.resume_blocks import (
-    UnsupportedResumeStructureError,
-    extract_resume_blocks_from_docx,
-    find_unsupported_word_constructions,
-    parse_resume_blocks,
-)
+from app.services.resume_blocks import UnsupportedResumeStructureError
 
 
 logger = logging.getLogger("uvicorn.error")
@@ -545,74 +536,32 @@ def build_profile_context(profile: ProfilePayload) -> dict[str, Any]:
 def build_source_document_context(
     source_documents: list[AssistantSourceDocument],
 ) -> list[dict[str, Any]]:
-    preflight_source_documents(source_documents)
+    analyses = preflight_source_documents(source_documents)
     context: list[dict[str, Any]] = []
     remaining_chars = 16_000
-    for source in source_documents:
+    for source, analysis in zip(source_documents, analyses, strict=True):
         if remaining_chars <= 0:
             break
         try:
             is_resume_docx = is_resume_source_document(source)
-            if is_resume_docx:
-                _, binary_content = decode_resume_data_url(source.data_url)
-                blocks = extract_resume_blocks_from_docx(binary_content)
-                source_context: dict[str, Any] = {
-                    "id": source.id,
-                    "title": source.title,
-                    "category": source.category,
-                    "file_name": source.file_name,
-                    "format": "resume-blocks-v2",
-                    "blocks": [],
-                }
-                for block in blocks:
-                    candidate = {**source_context, "blocks": [*source_context["blocks"], block]}
-                    serialized_length = len(
-                        json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
-                    )
-                    if serialized_length > min(10_000, remaining_chars):
-                        break
-                    source_context = candidate
-                if not source_context["blocks"]:
+            if is_resume_docx or is_cover_letter_source_document(source):
+                if analysis is None:
                     continue
-                used_chars = len(
-                    json.dumps(source_context, ensure_ascii=False, separators=(",", ":"))
+                source_context = analysis.build_ai_context(
+                    source_id=source.id,
+                    title=source.title,
+                    category=source.category,
+                    file_name=source.file_name,
+                    max_characters=min(10_000, remaining_chars),
                 )
-                remaining_chars -= used_chars
-                context.append(source_context)
-                continue
-            if is_cover_letter_source_document(source):
-                _, binary_content = decode_resume_data_url(source.data_url)
-                paragraphs = extract_cover_letter_blocks_from_docx(binary_content)
-                source_context = {
-                    "id": source.id,
-                    "title": source.title,
-                    "category": source.category,
-                    "file_name": source.file_name,
-                    "format": "cover-letter-blocks-v1",
-                    "paragraphs": [],
-                }
-                for paragraph in paragraphs:
-                    candidate = {
-                        **source_context,
-                        "paragraphs": [*source_context["paragraphs"], paragraph],
-                    }
-                    serialized_length = len(
-                        json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
-                    )
-                    if serialized_length > min(10_000, remaining_chars):
-                        break
-                    source_context = candidate
-                if not source_context["paragraphs"]:
+                if not source_context[analysis.elements_key]:
                     continue
-                used_chars = len(
-                    json.dumps(source_context, ensure_ascii=False, separators=(",", ":"))
-                )
+                used_chars = serialized_length(source_context)
                 remaining_chars -= used_chars
                 context.append(source_context)
                 continue
             if source.file_name.lower().endswith(".docx"):
-                _, binary_content = decode_resume_data_url(source.data_url)
-                extracted_text = extract_docx_body_text(binary_content).strip()
+                extracted_text = analysis.extracted_text.strip() if analysis else ""
             else:
                 extracted_text = extract_resume_text(
                     source.file_name,
@@ -643,17 +592,25 @@ def build_source_document_context(
 
 def preflight_source_documents(
     source_documents: list[AssistantSourceDocument],
-) -> None:
+) -> list[DocumentAnalysisResult | None]:
     """Validate every source DOCX completely before an AI process can start."""
     unsupported_elements: list[dict[str, str]] = []
+    analyses: list[DocumentAnalysisResult | None] = []
     for source in source_documents:
         if not source.file_name.lower().endswith(".docx"):
+            analyses.append(None)
             continue
         try:
             _, content = decode_resume_data_url(source.data_url)
-            validate_docx_package(content)
-            with zipfile.ZipFile(BytesIO(content)) as archive:
-                root = etree.fromstring(archive.read("word/document.xml"))
+            document_type = (
+                "tailored_resume"
+                if is_resume_source_document(source)
+                else "cover_letter"
+                if is_cover_letter_source_document(source)
+                else "generic"
+            )
+            analysis = analyze_docx_source(content, document_type)
+            analyses.append(analysis)
         except DocumentSecurityError as exc:
             raise SourceDocumentPreflightError(
                 f"{source.file_name}: {exc}",
@@ -665,49 +622,26 @@ def preflight_source_documents(
                 f"{source.file_name}: DOCX could not be read safely",
                 code="invalid_document",
             ) from exc
-
-        body = root.find(qn("w:body"))
-        if body is None:
+        if not analysis.structure_error:
+            continue
+        rejected_elements = analysis.preflight_report().get("rejectedElements", [])
+        if any(issue.get("element") == "documentBody" for issue in rejected_elements):
             raise SourceDocumentPreflightError(
                 f"{source.file_name}: DOCX has no document body",
                 code="invalid_document",
             )
-        document_issues = find_unsupported_word_constructions(body)
-        for issue in document_issues:
+        for issue in rejected_elements:
+            element = str(issue.get("element") or "documentStructure")
+            if element == "mixedFormat" and document_type == "cover_letter":
+                element = "coverLetterStructure"
             unsupported_elements.append(
                 {
                     "documentId": source.id,
                     "fileName": source.file_name,
-                    "element": issue.element,
-                    "description": issue.description,
+                    "element": element,
+                    "description": str(issue.get("description") or analysis.structure_error),
                 }
             )
-        if not document_issues and is_resume_source_document(source):
-            try:
-                parse_resume_blocks(body)
-            except UnsupportedResumeStructureError as exc:
-                description = str(exc).removeprefix("Unsupported DOCX construction: ")
-                unsupported_elements.append(
-                    {
-                        "documentId": source.id,
-                        "fileName": source.file_name,
-                        "element": "mixedFormat",
-                        "description": description,
-                    }
-                )
-        if not document_issues and is_cover_letter_source_document(source):
-            try:
-                parse_cover_letter_blocks(body)
-            except UnsupportedCoverLetterStructureError as exc:
-                description = str(exc).removeprefix("Unsupported DOCX construction: ")
-                unsupported_elements.append(
-                    {
-                        "documentId": source.id,
-                        "fileName": source.file_name,
-                        "element": "coverLetterStructure",
-                        "description": description,
-                    }
-                )
 
     if unsupported_elements:
         descriptions = ", ".join(
@@ -720,6 +654,7 @@ def preflight_source_documents(
             code="unsupported_document",
             unsupported_elements=unsupported_elements,
         )
+    return analyses
 
 
 def is_resume_source_document(source: AssistantSourceDocument) -> bool:

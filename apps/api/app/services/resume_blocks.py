@@ -1,13 +1,10 @@
 import re
-import zipfile
 from dataclasses import dataclass
-from io import BytesIO
 from typing import Any, Literal
 
 from docx.oxml.ns import qn
 from lxml import etree
 
-from app.services.document_security import validate_docx_package
 from app.services.resume_headings import (
     ACHIEVEMENT_HEADINGS,
     ALL_RESUME_HEADINGS,
@@ -156,17 +153,21 @@ class ResumeBlock:
 
 
 def extract_resume_blocks_from_docx(content: bytes) -> list[dict[str, Any]]:
-    validate_docx_package(content)
-    with zipfile.ZipFile(BytesIO(content)) as archive:
-        root = etree.fromstring(archive.read("word/document.xml"))
-    body = root.find(qn("w:body"))
-    if body is None:
-        raise ValueError("Resume template has no document body")
-    return [block.as_context() for block in parse_resume_blocks(body)]
+    from app.services.document_analysis import analyze_docx_source
+
+    analysis = analyze_docx_source(content, "tailored_resume")
+    if analysis.structure_error:
+        raise UnsupportedResumeStructureError(analysis.structure_error)
+    return analysis.structured_elements()
 
 
-def parse_resume_blocks(body: Any) -> list[ResumeBlock]:
-    validate_supported_word_structure(body)
+def parse_resume_blocks(
+    body: Any,
+    *,
+    validate_structure: bool = True,
+) -> list[ResumeBlock]:
+    if validate_structure:
+        validate_supported_word_structure(body)
     blocks: list[ResumeBlock] = []
     document_section = ""
     table_column_sections: dict[Any, dict[int, str]] = {}

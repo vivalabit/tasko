@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import stat
 import zipfile
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import PurePosixPath
+from types import MappingProxyType
+from typing import Mapping
 from xml.etree import ElementTree
 
 
@@ -26,8 +29,24 @@ class DocumentSecurityError(ValueError):
         self.limit_exceeded = limit_exceeded
 
 
+@dataclass(frozen=True)
+class ValidatedDocxPackage:
+    parts: Mapping[str, bytes]
+
+    def read(self, name: str) -> bytes:
+        try:
+            return self.parts[name]
+        except KeyError as exc:
+            raise DocumentSecurityError(f"DOCX is missing package part: {name}") from exc
+
+
 def validate_docx_package(content: bytes) -> None:
     """Validate a DOCX ZIP before any XML is handed to python-docx or lxml."""
+    validate_and_read_docx_package(content)
+
+
+def validate_and_read_docx_package(content: bytes) -> ValidatedDocxPackage:
+    """Validate a DOCX ZIP and retain the parts read during that single pass."""
     try:
         with zipfile.ZipFile(BytesIO(content)) as archive:
             entries = archive.infolist()
@@ -54,8 +73,10 @@ def validate_docx_package(content: bytes) -> None:
             read_size = 0
             xml_size = 0
             element_count = 0
+            parts: dict[str, bytes] = {}
             for entry in entries:
                 part = read_bounded_part(archive, entry)
+                parts[entry.filename] = part
                 read_size += len(part)
                 if read_size > MAX_UNCOMPRESSED_ZIP_BYTES:
                     raise limit_error(
@@ -73,6 +94,7 @@ def validate_docx_package(content: bytes) -> None:
                     raise limit_error(
                         f"DOCX XML element count exceeds {MAX_XML_ELEMENTS}"
                     )
+            return ValidatedDocxPackage(parts=MappingProxyType(parts))
     except DocumentSecurityError:
         raise
     except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as exc:

@@ -3,10 +3,8 @@ import hashlib
 import json
 import re
 from datetime import datetime, timedelta
-from io import BytesIO
 from uuid import uuid4
 
-from docx import Document
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
@@ -60,13 +58,14 @@ from app.services.assistant import (
     analyze_openclaw_assistant_context,
     build_source_document_context,
 )
+from app.services.document_analysis import analyze_docx_source
 from app.services.document_export import build_document_docx, build_document_from_template
 from app.services.generation_context import (
     AuthoritativeGenerationContext,
     GenerationContextError,
     load_authoritative_generation_context,
 )
-from app.services.document_security import DocumentSecurityError, validate_docx_package
+from app.services.document_security import DocumentSecurityError
 from app.services.document_validation import (
     DocumentValidationError,
     validate_generated_document,
@@ -1182,7 +1181,10 @@ def create_workspace_source_document(
             detail="Workspace source must be a non-empty DOCX file under 10 MB",
         )
     try:
-        validate_docx_package(content)
+        analyze_docx_source(
+            content,
+            "tailored_resume" if request.category == "CV / Resume" else "cover_letter",
+        )
     except DocumentSecurityError as exc:
         raise HTTPException(
             status_code=(
@@ -1272,7 +1274,7 @@ def create_document_template(
             detail="Template must be a non-empty DOCX file under 10 MB",
         )
     try:
-        validate_docx_package(content)
+        analysis = analyze_docx_source(content, request.type)
     except DocumentSecurityError as exc:
         raise HTTPException(
             status_code=(
@@ -1283,7 +1285,7 @@ def create_document_template(
             detail=str(exc),
         ) from exc
 
-    content_sha256 = hashlib.sha256(content).hexdigest()
+    content_sha256 = analysis.content_sha256
     try:
         duplicate = db.scalar(
             select(DocumentTemplateRecord).where(
@@ -1296,17 +1298,7 @@ def create_document_template(
     except SQLAlchemyError as exc:
         raise database_unavailable(exc) from exc
 
-    try:
-        document = Document(BytesIO(content))
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Template is not a valid DOCX file",
-        ) from exc
-
-    extracted_text = "\n".join(
-        paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()
-    )
+    extracted_text = analysis.extracted_text
     now = utc_now()
     record = DocumentTemplateRecord(
         id=str(uuid4()),

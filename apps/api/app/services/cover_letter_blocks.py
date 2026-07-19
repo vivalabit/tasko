@@ -1,12 +1,10 @@
 import zipfile
 from dataclasses import dataclass
-from io import BytesIO
 from typing import Any, Literal
 
 from docx.oxml.ns import qn
 from lxml import etree
 
-from app.services.document_security import validate_docx_package
 from app.services.resume_blocks import (
     set_text_node_value,
     symbol_label,
@@ -189,28 +187,22 @@ class InlineToken:
 
 
 def extract_cover_letter_blocks_from_docx(content: bytes) -> list[dict[str, Any]]:
-    validate_docx_package(content)
-    with zipfile.ZipFile(BytesIO(content)) as archive:
-        root = etree.fromstring(archive.read("word/document.xml"))
-        hyperlink_targets = extract_hyperlink_targets(archive)
-    body = root.find(qn("w:body"))
-    if body is None:
-        raise ValueError("Cover-letter template has no document body")
-    return [
-        paragraph.as_context()
-        for paragraph in parse_cover_letter_blocks(
-            body,
-            hyperlink_targets=hyperlink_targets,
-        )
-    ]
+    from app.services.document_analysis import analyze_docx_source
+
+    analysis = analyze_docx_source(content, "cover_letter")
+    if analysis.structure_error:
+        raise UnsupportedCoverLetterStructureError(analysis.structure_error)
+    return analysis.structured_elements()
 
 
 def parse_cover_letter_blocks(
     body: Any,
     *,
     hyperlink_targets: dict[str, str] | None = None,
+    validate_structure: bool = True,
 ) -> list[CoverLetterParagraph]:
-    validate_supported_word_structure(body)
+    if validate_structure:
+        validate_supported_word_structure(body)
     targets = hyperlink_targets or {}
     elements = list(body.iter(qn("w:p")))
     originals = [paragraph_text(element) for element in elements]
@@ -537,6 +529,19 @@ def extract_hyperlink_targets(archive: zipfile.ZipFile) -> dict[str, str]:
     if relationships_path not in archive.namelist():
         return {}
     root = etree.fromstring(archive.read(relationships_path))
+    return {
+        relationship.get("Id", ""): relationship.get("Target", "")
+        for relationship in root
+        if relationship.get("Type", "").endswith("/hyperlink")
+    }
+
+
+def extract_hyperlink_targets_from_parts(parts: dict[str, bytes] | Any) -> dict[str, str]:
+    relationships_path = "word/_rels/document.xml.rels"
+    relationships = parts.get(relationships_path)
+    if relationships is None:
+        return {}
+    root = etree.fromstring(relationships)
     return {
         relationship.get("Id", ""): relationship.get("Target", "")
         for relationship in root
