@@ -145,3 +145,29 @@ next steps, interview events, documents, and individual profile fields. These
 proposals are stored with the assistant message and rendered as previews. No
 mutation runs during generation; FastAPI executes an idempotent action only
 after the user clicks Apply.
+
+## Workspace Docker E2E
+
+Install the browser-test dependency and Chromium once:
+
+```bash
+python3 -m pip install -r tests/e2e/requirements.txt
+python3 -m playwright install chromium
+```
+
+Run the complete workspace scenario from the repository root:
+
+```bash
+pnpm test:e2e:workspace
+```
+
+The runner creates an isolated Docker Compose project with PostgreSQL, Redis,
+the API, and the Next.js frontend. A real headless Chromium session migrates
+legacy browser data, completes confirmations and server-side AI consent,
+generates a CV, cover letter, and atomic pack, verifies validation and Unicode
+download filenames, exercises an API outage and retry, then restarts PostgreSQL
+and verifies persisted downloads. AI output is supplied by a deterministic
+OpenClaw test double, including one transient pack-generation failure so the
+retry path is covered without an external model call. Containers and volumes
+are removed after the run; API, web, PostgreSQL, and Redis ports can be
+overridden with `API_PORT`, `WEB_PORT`, `POSTGRES_PORT`, and `REDIS_PORT`.

@@ -44,14 +44,14 @@ def upgrade() -> None:
 
     with op.batch_alter_table("document_validation_artifacts") as batch_op:
         batch_op.create_foreign_key(
-            "fk_document_validation_artifacts_application_id_stored_applications",
+            "fk_validation_artifacts_application",
             "stored_applications",
             ["application_id"],
             ["id"],
             ondelete="CASCADE",
         )
         batch_op.create_foreign_key(
-            "fk_document_validation_artifacts_template_id_document_templates",
+            "fk_validation_artifacts_template",
             "document_templates",
             ["template_id"],
             ["id"],
@@ -74,11 +74,11 @@ def downgrade() -> None:
         batch_op.drop_index(op.f("ix_document_validation_artifacts_expires_at"))
         batch_op.drop_index(op.f("ix_document_validation_artifacts_template_id"))
         batch_op.drop_constraint(
-            "fk_document_validation_artifacts_template_id_document_templates",
+            "fk_validation_artifacts_template",
             type_="foreignkey",
         )
         batch_op.drop_constraint(
-            "fk_document_validation_artifacts_application_id_stored_applications",
+            "fk_validation_artifacts_application",
             type_="foreignkey",
         )
 

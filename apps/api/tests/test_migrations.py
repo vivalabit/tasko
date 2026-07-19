@@ -46,6 +46,11 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
         artifact_foreign_keys = inspect(engine).get_foreign_keys(
             "document_validation_artifacts"
         )
+        assert all(
+            len(foreign_key["name"]) <= 63
+            for foreign_key in artifact_foreign_keys
+            if foreign_key["name"]
+        )
         assert {
             (
                 tuple(foreign_key["constrained_columns"]),
