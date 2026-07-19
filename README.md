@@ -7,6 +7,19 @@ Personal AI assistant for job search workflows: profile setup, vacancy search, m
 The API applies all pending Alembic migrations before it starts accepting
 requests. A migration or database connection failure aborts startup.
 
+### Request identity and ownership
+
+Application data is scoped by the authenticated owner identity supplied in the
+`X-Tasko-Owner-Id` header. In non-local environments the header is required and
+must be injected by a trusted authentication proxy; that proxy must strip any
+client-supplied value before forwarding the request. Local development falls
+back to `local-owner` for compatibility with the single-user setup.
+
+Applications, application events, confirmations, document templates, workspace
+sources, documents, validation artifacts, pack jobs, and DOCX downloads are
+filtered by this identity. New records receive the request owner automatically,
+and legacy records are assigned to `local-owner` by the ownership migration.
+
 Run migrations manually from the repository root with:
 
 ```bash

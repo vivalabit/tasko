@@ -1,0 +1,195 @@
+from collections.abc import Generator
+from datetime import UTC, datetime, timedelta
+
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.core.database import Base, get_db
+from app.core.settings import Settings, get_settings
+from app.main import app
+from app.models.applications import CandidateConfirmationRecord, StoredApplicationRecord
+from app.models.documents import (
+    DocumentFileRecord,
+    DocumentPackJobRecord,
+    DocumentRecord,
+    DocumentTemplateRecord,
+    DocumentVersionRecord,
+)
+
+
+def test_application_data_is_scoped_to_request_owner() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        with testing_session_local() as db:
+            yield db
+
+    now = datetime.now(UTC)
+    with testing_session_local() as db:
+        for owner_id, suffix in (("owner-a", "a"), ("owner-b", "b")):
+            application = StoredApplicationRecord(
+                id=f"application-{suffix}",
+                owner_id=owner_id,
+                data={"id": f"application-{suffix}", "status": "draft"},
+            )
+            template = DocumentTemplateRecord(
+                id=f"template-{suffix}",
+                owner_id=owner_id,
+                type="tailored_resume",
+                name=f"Template {suffix}",
+                file_name=f"template-{suffix}.docx",
+                content_type=(
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ),
+                content_sha256="a" * 64,
+                content=b"same-template",
+                extracted_text="",
+                created_at=now,
+                updated_at=now,
+            )
+            document = DocumentRecord(
+                id=f"document-{suffix}",
+                owner_id=owner_id,
+                type="tailored_resume",
+                title=f"Document {suffix}",
+                current_version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            document.versions.append(
+                DocumentVersionRecord(
+                    id=f"version-{suffix}",
+                    document_id=document.id,
+                    version=1,
+                    content='{"replacements": []}',
+                    created_at=now,
+                )
+            )
+            document.files.append(
+                DocumentFileRecord(
+                    id=f"file-{suffix}",
+                    document_id=document.id,
+                    version=1,
+                    template_id=template.id,
+                    content=f"rendered-{suffix}".encode(),
+                    created_at=now,
+                )
+            )
+            db.add_all(
+                [
+                    application,
+                    CandidateConfirmationRecord(
+                        application_id=application.id,
+                        question_id=f"question-{suffix}",
+                        owner_id=owner_id,
+                        requirement="Requirement",
+                        response="yes",
+                        example_text="Evidence",
+                        blocking=False,
+                        updated_at=now,
+                    ),
+                    template,
+                    document,
+                    DocumentPackJobRecord(
+                        id=f"pack-{suffix}",
+                        owner_id=owner_id,
+                        request_fingerprint=suffix * 64,
+                        application_id=application.id,
+                        persistence_mode="atomic",
+                        status="completed",
+                        document_ids=[document.id],
+                        stages=[],
+                        message="completed",
+                        created_at=now,
+                        updated_at=now,
+                        expires_at=now + timedelta(days=1),
+                    ),
+                ]
+            )
+        db.commit()
+
+    owner_a = {"X-Tasko-Owner-Id": "owner-a"}
+    owner_b = {"X-Tasko-Owner-Id": "owner-b"}
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        applications_a = client.get("/applications", headers=owner_a)
+        applications_b = client.get("/applications", headers=owner_b)
+        confirmations_a = client.get(
+            "/applications/application-a/confirmations",
+            headers=owner_a,
+        )
+        foreign_confirmations = client.get(
+            "/applications/application-a/confirmations",
+            headers=owner_b,
+        )
+        templates_a = client.get("/documents/templates/library", headers=owner_a)
+        templates_b = client.get("/documents/templates/library", headers=owner_b)
+        documents_a = client.get("/documents", headers=owner_a)
+        documents_b = client.get("/documents", headers=owner_b)
+        own_download = client.get("/documents/document-a/download", headers=owner_a)
+        foreign_document = client.get("/documents/document-a", headers=owner_b)
+        foreign_download = client.get("/documents/document-a/download", headers=owner_b)
+        own_pack = client.get(
+            "/documents/packs/pack-a?applicationId=application-a",
+            headers=owner_a,
+        )
+        foreign_pack = client.get(
+            "/documents/packs/pack-a?applicationId=application-a",
+            headers=owner_b,
+        )
+        created_for_b = client.put(
+            "/applications",
+            headers=owner_b,
+            json={
+                "applications": [
+                    {
+                        "id": "created-for-b",
+                        "data": {"id": "created-for-b", "status": "draft"},
+                    }
+                ]
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert [item["id"] for item in applications_a.json()] == ["application-a"]
+    assert [item["id"] for item in applications_b.json()] == ["application-b"]
+    assert [item["questionId"] for item in confirmations_a.json()] == ["question-a"]
+    assert foreign_confirmations.status_code == 404
+    assert [item["id"] for item in templates_a.json()] == ["template-a"]
+    assert [item["id"] for item in templates_b.json()] == ["template-b"]
+    assert [item["id"] for item in documents_a.json()] == ["document-a"]
+    assert [item["id"] for item in documents_b.json()] == ["document-b"]
+    assert own_download.status_code == 200
+    assert own_download.content == b"rendered-a"
+    assert foreign_document.status_code == 404
+    assert foreign_download.status_code == 404
+    assert own_pack.status_code == 200
+    assert foreign_pack.status_code == 404
+    assert {item["id"] for item in created_for_b.json()} == {
+        "application-b",
+        "created-for-b",
+    }
+    with testing_session_local() as db:
+        assert db.get(StoredApplicationRecord, "created-for-b").owner_id == "owner-b"
+
+
+def test_non_local_requests_require_authenticated_owner_identity() -> None:
+    app.dependency_overrides[get_settings] = lambda: Settings(app_env="production")
+    client = TestClient(app)
+    try:
+        response = client.get("/applications")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Authenticated owner identity is required"

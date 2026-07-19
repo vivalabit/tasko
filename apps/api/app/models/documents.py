@@ -5,14 +5,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.database import Base
+from app.core.database import Base, OwnerScoped
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class DocumentRecord(Base):
+class DocumentRecord(OwnerScoped, Base):
     __tablename__ = "documents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -150,7 +150,7 @@ class DocumentVersionValidationRecord(Base):
     document: Mapped[DocumentRecord] = relationship(back_populates="version_validations")
 
 
-class DocumentPackJobRecord(Base):
+class DocumentPackJobRecord(OwnerScoped, Base):
     __tablename__ = "document_pack_jobs"
 
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
@@ -179,7 +179,7 @@ class DocumentPackJobRecord(Base):
     )
 
 
-class DocumentValidationArtifactRecord(Base):
+class DocumentValidationArtifactRecord(OwnerScoped, Base):
     __tablename__ = "document_validation_artifacts"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -211,10 +211,15 @@ class DocumentValidationArtifactRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
-class DocumentTemplateRecord(Base):
+class DocumentTemplateRecord(OwnerScoped, Base):
     __tablename__ = "document_templates"
     __table_args__ = (
-        UniqueConstraint("type", "content_sha256", name="uq_document_templates_type_content_sha256"),
+        UniqueConstraint(
+            "owner_id",
+            "type",
+            "content_sha256",
+            name="uq_document_templates_owner_type_content_sha256",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -237,7 +242,7 @@ class DocumentTemplateRecord(Base):
     )
 
 
-class WorkspaceSourceDocumentRecord(Base):
+class WorkspaceSourceDocumentRecord(OwnerScoped, Base):
     __tablename__ = "workspace_source_documents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

@@ -5,17 +5,17 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, Boolean, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
+from app.core.database import Base, OwnerScoped
 
 
-class StoredApplicationRecord(Base):
+class StoredApplicationRecord(OwnerScoped, Base):
     __tablename__ = "stored_applications"
 
     id: Mapped[str] = mapped_column(String(160), primary_key=True)
     data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
 
-class StoredApplicationEventRecord(Base):
+class StoredApplicationEventRecord(OwnerScoped, Base):
     __tablename__ = "stored_application_events"
 
     id: Mapped[str] = mapped_column(String(160), primary_key=True)
@@ -23,7 +23,7 @@ class StoredApplicationEventRecord(Base):
     data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
 
-class CandidateConfirmationRecord(Base):
+class CandidateConfirmationRecord(OwnerScoped, Base):
     __tablename__ = "candidate_confirmations"
 
     application_id: Mapped[str] = mapped_column(String(160), primary_key=True)

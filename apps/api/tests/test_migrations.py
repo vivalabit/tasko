@@ -30,7 +30,7 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
         assert {
             tuple(constraint["column_names"])
             for constraint in template_constraints
-        } == {("type", "content_sha256")}
+        } == {("owner_id", "type", "content_sha256")}
         pack_indexes = inspect(engine).get_indexes("document_pack_jobs")
         assert any(index["column_names"] == ["expires_at"] for index in pack_indexes)
         pack_foreign_keys = inspect(engine).get_foreign_keys("document_pack_jobs")
@@ -63,12 +63,33 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             ("expires_at",),
             ("template_id",),
         }
+        owner_tables = {
+            "stored_applications",
+            "stored_application_events",
+            "candidate_confirmations",
+            "documents",
+            "document_pack_jobs",
+            "document_validation_artifacts",
+            "document_templates",
+            "workspace_source_documents",
+        }
+        for table_name in owner_tables:
+            owner_column = next(
+                column
+                for column in inspect(engine).get_columns(table_name)
+                if column["name"] == "owner_id"
+            )
+            assert owner_column["nullable"] is False
+            assert any(
+                index["column_names"] == ["owner_id"]
+                for index in inspect(engine).get_indexes(table_name)
+            )
 
         with engine.connect() as connection:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260719_0005"
+        assert revision == "20260719_0006"
     finally:
         engine.dispose()
 
@@ -91,6 +112,28 @@ def test_storage_foreign_key_migration_removes_existing_orphans(tmp_path) -> Non
     engine = create_engine(database_url)
     try:
         with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO stored_applications (id, data) "
+                    "VALUES ('legacy-application', '{}')"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO document_templates "
+                    "(id, type, name, file_name, content_type, content, extracted_text, "
+                    "created_at, updated_at, content_sha256) "
+                    "VALUES ('legacy-template', 'tailored_resume', 'Legacy', 'legacy.docx', "
+                    "'application/vnd.openxmlformats-officedocument.wordprocessingml.document', "
+                    ":content, '', :created_at, :updated_at, :content_sha256)"
+                ),
+                {
+                    "content": b"legacy-template",
+                    "created_at": now.isoformat(),
+                    "updated_at": now.isoformat(),
+                    "content_sha256": "f" * 64,
+                },
+            )
             connection.execute(
                 text(
                     "INSERT INTO document_pack_jobs "
@@ -145,6 +188,18 @@ def test_storage_foreign_key_migration_removes_existing_orphans(tmp_path) -> Non
             assert connection.execute(
                 text("SELECT COUNT(*) FROM document_validation_artifacts")
             ).scalar_one() == 0
+            assert connection.execute(
+                text(
+                    "SELECT owner_id FROM stored_applications "
+                    "WHERE id = 'legacy-application'"
+                )
+            ).scalar_one() == "local-owner"
+            assert connection.execute(
+                text(
+                    "SELECT owner_id FROM document_templates "
+                    "WHERE id = 'legacy-template'"
+                )
+            ).scalar_one() == "local-owner"
     finally:
         engine.dispose()
 
@@ -169,7 +224,7 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260719_0005"
+        assert revision == "20260719_0006"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))

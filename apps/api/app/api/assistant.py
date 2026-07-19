@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.core.database import get_db
+from app.core.identity import bind_request_identity
 from app.core.settings import Settings, get_settings
 from app.models.applications import (
     CandidateConfirmationRecord,
@@ -68,7 +69,7 @@ from app.services.job_match_store import (
 )
 from app.services.profile_versions import record_profile_version
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
 StreamStatus = Literal["generating", "complete", "error", "stopped"]
 STREAM_RETENTION_SECONDS = 600

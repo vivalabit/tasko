@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, selectinload
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.core.database import get_db
+from app.core.identity import bind_request_identity
 from app.core.settings import Settings, get_settings
 from app.models.applications import StoredApplicationRecord
 from app.models.assistant import (
@@ -79,7 +80,7 @@ from app.services.document_validation import (
 )
 from app.services.document_preflight import analyze_document_template
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
 DOCX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 MAX_TEMPLATE_BYTES = 10_000_000

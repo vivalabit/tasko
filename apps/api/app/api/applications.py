@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.database import get_db
+from app.core.identity import bind_request_identity
 from app.models.applications import (
     CandidateConfirmationPayload,
     CandidateConfirmationRecord,
@@ -30,7 +31,7 @@ from app.services.job_match_store import (
     authoritative_match_to_ai_match,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
 
 def application_payload(
