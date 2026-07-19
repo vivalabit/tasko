@@ -107,6 +107,12 @@ already-generated DOCX files downloadable. Deleting a document removes all of
 its versions, attachments, validation/provenance records, and generated DOCX
 files. Neither source templates nor generated documents expire automatically.
 
+Temporary pack jobs and validation artifacts are removed by a background API
+task, independently of endpoint traffic. The cleanup runs on startup and every
+`STORAGE_CLEANUP_INTERVAL_SECONDS` seconds (default: 300). Deleting an owning
+application or template also removes dependent temporary records through
+database-level cascading foreign keys.
+
 Before the first document-generation request, the application identifies the
 data sent through OpenClaw to the configured AI provider and requires explicit
 acknowledgement. Provider-side processing and retention remain governed by the

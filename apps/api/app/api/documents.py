@@ -10,7 +10,7 @@ from typing import Mapping
 from urllib.parse import quote
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
@@ -252,7 +252,6 @@ def validate_resume_pack_item(
     db: Session = Depends(get_db),
 ) -> DocumentPackValidationPayload:
     try:
-        cleanup_expired_pack_storage(db)
         require_pack_document_ownership(
             db,
             request.resume,
@@ -308,7 +307,6 @@ def create_document_pack(
     db: Session = Depends(get_db),
 ) -> DocumentPackPayload:
     try:
-        cleanup_expired_pack_storage(db)
         if request.persistence_mode == "atomic" and request.cover_letter is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -510,7 +508,6 @@ def get_document_pack_status(
     db: Session = Depends(get_db),
 ) -> DocumentPackPayload:
     try:
-        cleanup_expired_pack_storage(db)
         job = db.get(DocumentPackJobRecord, pack_job_id)
         if not job:
             raise HTTPException(
@@ -1686,19 +1683,6 @@ def document_pack_payload(job: DocumentPackJobRecord, db: Session) -> DocumentPa
         message=job.message,
         expires_at=job.expires_at,
     )
-
-
-def cleanup_expired_pack_storage(db: Session) -> None:
-    now = utc_now()
-    db.execute(
-        delete(DocumentValidationArtifactRecord).where(
-            DocumentValidationArtifactRecord.expires_at <= now
-        )
-    )
-    db.execute(
-        delete(DocumentPackJobRecord).where(DocumentPackJobRecord.expires_at <= now)
-    )
-    db.commit()
 
 
 def pack_validation_failed(stage: str, exc: Exception) -> HTTPException:

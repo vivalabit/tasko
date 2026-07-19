@@ -29,6 +29,7 @@ from app.models.profile import ProfileRecord
 from app.services.ai_match import MATCHER_VERSION
 from app.services.document_validation import DocumentValidationError
 from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
+from app.services.storage_cleanup import cleanup_expired_document_storage
 
 
 @pytest.fixture
@@ -397,7 +398,7 @@ def test_pack_status_can_be_recovered_after_response_loss(pack_client, monkeypat
     assert missing.status_code == 404
 
 
-def test_pack_status_lookup_cleans_up_expired_jobs_and_validation_artifacts(
+def test_expiration_cleanup_removes_expired_jobs_and_validation_artifacts(
     pack_client,
 ) -> None:
     client, testing_session_local = pack_client
@@ -450,9 +451,11 @@ def test_pack_status_lookup_cleans_up_expired_jobs_and_validation_artifacts(
         )
         db.commit()
 
-    response = client.get(
-        "/documents/packs/active-pack?applicationId=application-pack"
+    deleted_artifacts, deleted_jobs = cleanup_expired_document_storage(
+        testing_session_local,
+        now=now,
     )
+    response = client.get("/documents/packs/active-pack?applicationId=application-pack")
 
     with testing_session_local() as db:
         expired_job = db.get(DocumentPackJobRecord, "expired-pack")
@@ -464,9 +467,114 @@ def test_pack_status_lookup_cleans_up_expired_jobs_and_validation_artifacts(
 
     assert response.status_code == 200
     assert response.json()["expiresAt"]
+    assert (deleted_artifacts, deleted_jobs) == (1, 1)
     assert expired_job is None
     assert active_job is not None
     assert expired_artifact is None
+
+
+def test_pack_storage_foreign_keys_cascade_application_and_template_deletes() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(connection, _record) -> None:
+        connection.execute("PRAGMA foreign_keys=ON")
+
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    now = datetime.now(UTC)
+
+    with testing_session_local() as db:
+        application = StoredApplicationRecord(id="cascade-application", data={})
+        template = DocumentTemplateRecord(
+            id="cascade-template",
+            type="tailored_resume",
+            name="Cascade template",
+            file_name="cascade.docx",
+            content_type=(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            content_sha256="a" * 64,
+            content=b"template",
+            extracted_text="",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add_all([application, template])
+        db.flush()
+        db.add_all(
+            [
+                DocumentPackJobRecord(
+                    id="cascade-pack",
+                    request_fingerprint="b" * 64,
+                    application_id=application.id,
+                    persistence_mode="atomic",
+                    status="completed",
+                    document_ids=[],
+                    stages=[],
+                    message="",
+                    created_at=now,
+                    updated_at=now,
+                    expires_at=now + timedelta(days=1),
+                ),
+                DocumentValidationArtifactRecord(
+                    id="cascade-artifact",
+                    application_id=application.id,
+                    document_type="tailored_resume",
+                    template_id=template.id,
+                    template_hash="c" * 64,
+                    result_hash="d" * 64,
+                    evidence_hash="e" * 64,
+                    rendered_hash="f" * 64,
+                    rendered_content=b"rendered",
+                    validation_report={},
+                    consumed_at=None,
+                    expires_at=now + timedelta(minutes=30),
+                    created_at=now,
+                ),
+            ]
+        )
+        db.commit()
+
+        db.delete(application)
+        db.commit()
+
+        assert db.get(DocumentPackJobRecord, "cascade-pack") is None
+        assert db.get(DocumentValidationArtifactRecord, "cascade-artifact") is None
+
+        replacement_application = StoredApplicationRecord(
+            id="cascade-template-application",
+            data={},
+        )
+        db.add(replacement_application)
+        db.flush()
+        db.add(
+            DocumentValidationArtifactRecord(
+                id="template-cascade-artifact",
+                application_id=replacement_application.id,
+                document_type="tailored_resume",
+                template_id=template.id,
+                template_hash="c" * 64,
+                result_hash="d" * 64,
+                evidence_hash="e" * 64,
+                rendered_hash="f" * 64,
+                rendered_content=b"rendered",
+                validation_report={},
+                consumed_at=None,
+                expires_at=now + timedelta(minutes=30),
+                created_at=now,
+            )
+        )
+        db.commit()
+
+        db.delete(template)
+        db.commit()
+
+        assert db.get(DocumentValidationArtifactRecord, "template-cascade-artifact") is None
 
 
 def test_resume_preflight_validates_without_saving(pack_client, monkeypatch) -> None:

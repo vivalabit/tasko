@@ -155,7 +155,12 @@ class DocumentPackJobRecord(Base):
 
     id: Mapped[str] = mapped_column(String(80), primary_key=True)
     request_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
-    application_id: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    application_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("stored_applications.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     persistence_mode: Mapped[str] = mapped_column(String(16), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     document_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False)
@@ -178,9 +183,19 @@ class DocumentValidationArtifactRecord(Base):
     __tablename__ = "document_validation_artifacts"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    application_id: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    application_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("stored_applications.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     document_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    template_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    template_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("document_templates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     template_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     result_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -188,7 +203,11 @@ class DocumentValidationArtifactRecord(Base):
     rendered_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     validation_report: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

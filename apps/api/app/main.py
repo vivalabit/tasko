@@ -1,5 +1,6 @@
+import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +16,7 @@ from app.api.profile import router as profile_router
 from app.api.settings import router as settings_router
 from app.core.migrations import upgrade_database
 from app.core.settings import get_settings
+from app.services.storage_cleanup import run_expiration_cleanup
 
 settings = get_settings()
 
@@ -22,7 +24,16 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     upgrade_database()
-    yield
+    cleanup_task = asyncio.create_task(
+        run_expiration_cleanup(settings.storage_cleanup_interval_seconds),
+        name="document-storage-expiration-cleanup",
+    )
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await cleanup_task
 
 
 app = FastAPI(
