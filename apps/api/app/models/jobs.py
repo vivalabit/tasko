@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
+from app.core.database import Base, OwnerScoped
 
 
 class StoredJobRecord(Base):
@@ -15,7 +15,7 @@ class StoredJobRecord(Base):
     data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
 
 
-class JobMatchRecord(Base):
+class JobMatchRecord(OwnerScoped, Base):
     __tablename__ = "job_matches"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

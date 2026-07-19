@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
+from app.core.database import Base, OwnerScoped
 
 
 class AssistantAiMatchContext(BaseModel):
@@ -214,7 +214,7 @@ class AssistantActionApplyResponse(BaseModel):
     model_config = {"populate_by_name": True}
 
 
-class AppliedAssistantActionRecord(Base):
+class AppliedAssistantActionRecord(OwnerScoped, Base):
     __tablename__ = "applied_assistant_actions"
 
     id: Mapped[str] = mapped_column(String(160), primary_key=True)

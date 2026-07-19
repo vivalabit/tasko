@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.database import get_db
+from app.core.identity import bind_request_identity
 from app.core.settings import Settings, get_settings
 from app.models.profile import (
     ProfilePayload,
@@ -24,8 +25,9 @@ from app.services.profile_versions import (
     is_suspicious_profile_replacement,
     record_profile_version,
 )
+from app.services.ai_privacy import require_current_ai_consent
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
 default_profile = ProfilePayload()
 
@@ -132,6 +134,7 @@ def update_profile(
 @router.post("/import-experience-from-resume", response_model=ResumeExperienceImportResponse)
 def import_experience_from_resume(
     payload: ResumeExperienceImportRequest,
+    _consent=Depends(require_current_ai_consent),
     settings: Settings = Depends(get_settings),
 ) -> ResumeExperienceImportResponse:
     text = extract_resume_text(payload.resume_file_name, payload.resume_data_url)
@@ -176,6 +179,7 @@ def import_experience_from_resume(
 @router.post("/import-education-from-resume", response_model=ResumeEducationImportResponse)
 def import_education_from_resume(
     payload: ResumeExperienceImportRequest,
+    _consent=Depends(require_current_ai_consent),
     settings: Settings = Depends(get_settings),
 ) -> ResumeEducationImportResponse:
     text = extract_resume_text(payload.resume_file_name, payload.resume_data_url)
@@ -220,6 +224,7 @@ def import_education_from_resume(
 @router.post("/import-skills-from-resume", response_model=ResumeSkillsImportResponse)
 def import_skills_from_resume(
     payload: ResumeExperienceImportRequest,
+    _consent=Depends(require_current_ai_consent),
     settings: Settings = Depends(get_settings),
 ) -> ResumeSkillsImportResponse:
     text = extract_resume_text(payload.resume_file_name, payload.resume_data_url)

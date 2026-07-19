@@ -20,6 +20,14 @@ type WorkspaceApiOptions = {
   documents?: unknown[];
   templates?: unknown[];
   workspaceSources?: unknown[];
+  aiPrivacySettings?: Partial<{
+    consentVersion: string | null;
+    consentedAt: string | null;
+    hasCurrentConsent: boolean;
+    retentionDays: number;
+    lastAiActivityAt: string | null;
+    aiDataExpiresAt: string | null;
+  }>;
   requestHandler?: (
     url: URL,
     method: string,
@@ -186,6 +194,7 @@ export function installApplicationWorkspaceApiMock({
   documents = [],
   templates = [],
   workspaceSources = [],
+  aiPrivacySettings = {},
   requestHandler,
 }: WorkspaceApiOptions = {}) {
   const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
@@ -264,6 +273,35 @@ export function installApplicationWorkspaceApiMock({
         providerName: "OpenAI",
         consentVersion: "2026-07-18.v2",
       });
+    }
+    if (url.pathname === "/privacy/ai-consent" && method === "GET") {
+      return Response.json({
+        providerName: "OpenAI",
+        currentConsentVersion: "2026-07-18.v2",
+        consentVersion: null,
+        consentedAt: null,
+        hasCurrentConsent: false,
+        retentionDays: 30,
+        lastAiActivityAt: null,
+        aiDataExpiresAt: null,
+        ...aiPrivacySettings,
+      });
+    }
+    if (url.pathname === "/privacy/ai-consent" && method === "PUT") {
+      const request = JSON.parse(String(init?.body)) as { version: string; retentionDays: number };
+      return Response.json({
+        providerName: "OpenAI",
+        currentConsentVersion: "2026-07-18.v2",
+        consentVersion: request.version,
+        consentedAt: "2026-07-19T10:00:00.000Z",
+        hasCurrentConsent: true,
+        retentionDays: request.retentionDays,
+        lastAiActivityAt: null,
+        aiDataExpiresAt: null,
+      });
+    }
+    if (url.pathname === "/privacy/ai-consent" && method === "DELETE") {
+      return new Response(null, { status: 204 });
     }
     if (
       /^\/applications\/[^/]+\/confirmations$/.test(url.pathname) &&

@@ -12,6 +12,7 @@ from app.models.documents import (
     DocumentValidationArtifactRecord,
     utc_now,
 )
+from app.services.ai_privacy import cleanup_expired_ai_data
 
 logger = logging.getLogger(__name__)
 
@@ -40,15 +41,25 @@ def cleanup_expired_document_storage(
 async def run_expiration_cleanup(interval_seconds: int) -> None:
     while True:
         try:
-            deleted_artifacts, deleted_jobs = await asyncio.to_thread(
-                cleanup_expired_document_storage
+            deleted_artifacts, deleted_jobs, expired_owners, deleted_ai_records = (
+                await asyncio.to_thread(cleanup_expired_storage)
             )
-            if deleted_artifacts or deleted_jobs:
+            if deleted_artifacts or deleted_jobs or expired_owners:
                 logger.info(
-                    "Expired document storage cleaned up: artifacts=%d jobs=%d",
+                    "Expired storage cleaned up: artifacts=%d jobs=%d ai_owners=%d "
+                    "ai_records=%d",
                     deleted_artifacts,
                     deleted_jobs,
+                    expired_owners,
+                    deleted_ai_records,
                 )
         except Exception:
-            logger.exception("Scheduled document storage cleanup failed")
+            logger.exception("Scheduled storage cleanup failed")
         await asyncio.sleep(interval_seconds)
+
+
+def cleanup_expired_storage() -> tuple[int, int, int, int]:
+    deleted_artifacts, deleted_jobs = cleanup_expired_document_storage()
+    with SessionLocal() as db:
+        expired_owners, deleted_ai_records = cleanup_expired_ai_data(db)
+    return deleted_artifacts, deleted_jobs, expired_owners, deleted_ai_records

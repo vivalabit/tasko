@@ -5,14 +5,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from app.core.database import Base
+from app.core.database import Base, OwnerScoped
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class ConversationRecord(Base):
+class ConversationRecord(OwnerScoped, Base):
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String(160), primary_key=True)

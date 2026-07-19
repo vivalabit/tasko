@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import JSON, DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.core.database import Base
+from app.core.database import Base, OwnerScoped
 
 
 class ProfileRecord(Base):
@@ -30,7 +30,7 @@ class ProfileVersionRecord(Base):
     )
 
 
-class CandidateMatchSnapshotRecord(Base):
+class CandidateMatchSnapshotRecord(OwnerScoped, Base):
     __tablename__ = "candidate_match_snapshots"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

@@ -114,11 +114,13 @@ uploaded bytes. Before storage, Tasko rejects unsafe ZIP paths, encrypted or
 symlinked entries, malformed XML, DTDs/entities, and packages that exceed the
 entry-count, uncompressed-size, XML-size, or XML-element limits.
 
-Source templates and generated files have independent retention. Deleting a
+Source templates and AI-generated files have independent retention. Deleting a
 source template removes its original bytes and extracted text but keeps any
 already-generated DOCX files downloadable. Deleting a document removes all of
 its versions, attachments, validation/provenance records, and generated DOCX
-files. Neither source templates nor generated documents expire automatically.
+files. Source templates remain until explicitly deleted. AI results use the
+owner-selected retention period (1–365 days) and are deleted after the last AI
+activity reaches that TTL.
 
 Temporary pack jobs and validation artifacts are removed by a background API
 task, independently of endpoint traffic. The cleanup runs on startup and every
@@ -126,10 +128,17 @@ task, independently of endpoint traffic. The cleanup runs on startup and every
 application or template also removes dependent temporary records through
 database-level cascading foreign keys.
 
-Before the first document-generation request, the application identifies the
-data sent through OpenClaw to the configured AI provider and requires explicit
-acknowledgement. Provider-side processing and retention remain governed by the
-provider configured for the deployment.
+AI consent is authoritative on the API, not in browser storage. `PUT
+/privacy/ai-consent` records the current consent version, a server timestamp,
+and the owner's retention period. Assistant, AI matching, and resume-import AI
+routes return `403 ai_consent_required` unless that stored version matches the
+deployment's `AI_CONSENT_VERSION`. `PUT /privacy/ai-retention` changes the TTL;
+`DELETE /privacy/ai-data` removes retained AI results immediately; and `DELETE
+/privacy/ai-consent` revokes consent and deletes AI results by default.
+Conversations, generated documents, assistant action records, match data, and
+temporary generation artifacts are covered; source templates and manually
+confirmed candidate facts are preserved. Provider-side processing and
+retention remain governed by the provider configured for the deployment.
 
 OpenClaw can propose a small allowlist of Tasko actions: application notes and
 next steps, interview events, documents, and individual profile fields. These

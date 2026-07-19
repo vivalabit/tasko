@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, selectinload
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.database import get_db
+from app.core.identity import bind_request_identity
 from app.models.conversations import (
     ConversationPayload,
     ConversationRecord,
@@ -18,7 +19,7 @@ from app.models.conversations import (
     utc_now,
 )
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
 
 @router.get("", response_model=list[ConversationPayload])

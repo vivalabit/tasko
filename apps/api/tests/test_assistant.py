@@ -42,7 +42,17 @@ from app.services.assistant import (
     run_openclaw_assistant,
 )
 from app.services.ai_match import MATCHER_VERSION
+from app.services.ai_privacy import require_current_ai_consent
 from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
+
+
+@pytest.fixture(autouse=True)
+def bypass_ai_consent_boundary() -> Generator[None, None, None]:
+    app.dependency_overrides[require_current_ai_consent] = lambda: None
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(require_current_ai_consent, None)
 
 
 def test_extract_openclaw_assistant_text_reads_payload_wrapper() -> None:

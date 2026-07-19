@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.database import get_db
+from app.core.identity import RequestIdentity, bind_request_identity, get_request_identity
 from app.core.settings import Settings, get_settings
 from app.models.jobs import (
     AiMatchJobStatus,
@@ -27,8 +28,9 @@ from app.services.job_match_store import (
     persist_match_feedback,
     strip_ai_match,
 )
+from app.services.ai_privacy import require_current_ai_consent
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
 
 @router.get("", response_model=list[StoredJobPayload])
@@ -82,6 +84,7 @@ def upsert_jobs(request: StoredJobsRequest, db: Session = Depends(get_db)) -> li
 def match_jobs(
     request: StoredJobsRequest,
     force: bool = False,
+    _consent=Depends(require_current_ai_consent),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> list[StoredJobPayload]:
@@ -160,6 +163,8 @@ def match_jobs(
 def run_match_jobs(
     request: StoredJobsRequest,
     force: bool = False,
+    identity: RequestIdentity = Depends(get_request_identity),
+    _consent=Depends(require_current_ai_consent),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> AiMatchJobStatus:
@@ -189,6 +194,7 @@ def run_match_jobs(
         db.commit()
         session_factory = sessionmaker(bind=db.get_bind(), autoflush=False, autocommit=False)
         started, current_status = ai_match_jobs.start(
+            owner_id=identity.owner_id,
             profile=profile,
             jobs=jobs_to_match,
             profile_hash=candidate_snapshot.profile_hash,
@@ -219,8 +225,10 @@ def run_match_jobs(
 
 
 @router.get("/ai-match/status", response_model=AiMatchJobStatus)
-def get_match_jobs_status() -> AiMatchJobStatus:
-    return ai_match_jobs.status()
+def get_match_jobs_status(
+    identity: RequestIdentity = Depends(get_request_identity),
+) -> AiMatchJobStatus:
+    return ai_match_jobs.status(identity.owner_id)
 
 
 def get_current_profile(db: Session) -> ProfilePayload:

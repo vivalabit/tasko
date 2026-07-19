@@ -13,6 +13,7 @@ from app.api.health import router as health_router
 from app.api.jobs import router as jobs_router
 from app.api.parsers import router as parsers_router
 from app.api.profile import router as profile_router
+from app.api.privacy import router as privacy_router
 from app.api.settings import router as settings_router
 from app.core.migrations import upgrade_database
 from app.core.settings import get_settings
@@ -26,7 +27,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     upgrade_database()
     cleanup_task = asyncio.create_task(
         run_expiration_cleanup(settings.storage_cleanup_interval_seconds),
-        name="document-storage-expiration-cleanup",
+        name="storage-expiration-cleanup",
     )
     try:
         yield
@@ -64,6 +65,7 @@ app.include_router(
 app.include_router(documents_router, prefix="/documents", tags=["documents"])
 app.include_router(parsers_router, prefix="/parsers", tags=["parsers"])
 app.include_router(profile_router, prefix="/profile", tags=["profile"])
+app.include_router(privacy_router, prefix="/privacy", tags=["privacy"])
 app.include_router(settings_router, prefix="/settings", tags=["settings"])
 
 

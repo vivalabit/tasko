@@ -1,12 +1,15 @@
 import base64
 import json
 import subprocess
+from collections.abc import Generator
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.core.settings import Settings, get_settings
 from app.main import app
+from app.services.ai_privacy import require_current_ai_consent
 from app.services.resume_import import (
     OpenClawResumeImportError,
     extract_json_object,
@@ -17,6 +20,15 @@ from app.services.resume_import import (
     parse_experience_with_openclaw,
     parse_skills_from_text,
 )
+
+
+@pytest.fixture(autouse=True)
+def bypass_ai_consent_boundary() -> Generator[None, None, None]:
+    app.dependency_overrides[require_current_ai_consent] = lambda: None
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(require_current_ai_consent, None)
 
 
 def test_parse_experience_from_resume_text() -> None:

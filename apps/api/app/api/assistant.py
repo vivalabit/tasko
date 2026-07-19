@@ -19,7 +19,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
 from app.core.database import get_db
-from app.core.identity import bind_request_identity
+from app.core.identity import (
+    RequestIdentity,
+    bind_request_identity,
+    get_request_identity,
+)
 from app.core.settings import Settings, get_settings
 from app.models.applications import (
     CandidateConfirmationRecord,
@@ -68,6 +72,7 @@ from app.services.job_match_store import (
     match_record_to_ai_match,
 )
 from app.services.profile_versions import record_profile_version
+from app.services.ai_privacy import require_current_ai_consent
 
 router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
@@ -79,6 +84,7 @@ STREAM_RETENTION_SECONDS = 600
 class AssistantStreamState:
     request_id: str
     fingerprint: str
+    owner_id: str
     status: StreamStatus = "generating"
     text: str = ""
     error: str = ""
@@ -111,6 +117,7 @@ def get_assistant_config(settings: Settings = Depends(get_settings)) -> dict[str
 @router.post("/chat", response_model=AssistantChatResponse)
 async def chat_with_assistant(
     request: AssistantChatRequest,
+    _consent=Depends(require_current_ai_consent),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> AssistantChatResponse:
@@ -184,6 +191,8 @@ async def chat_with_assistant(
 @router.post("/chat/stream")
 async def stream_chat_with_assistant(
     request: AssistantStreamRequest,
+    _consent=Depends(require_current_ai_consent),
+    identity: RequestIdentity = Depends(get_request_identity),
     db: Session = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> StreamingResponse:
@@ -199,6 +208,11 @@ async def stream_chat_with_assistant(
     prune_assistant_streams()
     fingerprint = stream_request_fingerprint(request)
     stream = assistant_streams.get(request.request_id)
+    if stream and stream.owner_id != identity.owner_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Assistant stream was not found",
+        )
     if stream and stream.fingerprint != fingerprint:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -218,6 +232,7 @@ async def stream_chat_with_assistant(
         stream = AssistantStreamState(
             request_id=request.request_id,
             fingerprint=fingerprint,
+            owner_id=identity.owner_id,
         )
         try:
             _, assistant_message_id = prepare_stream_history(db, request)
@@ -260,9 +275,12 @@ async def stream_chat_with_assistant(
 
 
 @router.delete("/chat/stream/{request_id}", status_code=status.HTTP_202_ACCEPTED)
-async def stop_chat_stream(request_id: str) -> dict[str, str]:
+async def stop_chat_stream(
+    request_id: str,
+    identity: RequestIdentity = Depends(get_request_identity),
+) -> dict[str, str]:
     stream = assistant_streams.get(request_id)
-    if not stream:
+    if not stream or stream.owner_id != identity.owner_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Assistant stream was not found",
@@ -273,6 +291,21 @@ async def stop_chat_stream(request_id: str) -> dict[str, str]:
     if stream.status == "generating":
         update_stream_status(stream, "stopped")
     return {"status": stream.status}
+
+
+def discard_owner_assistant_streams(owner_id: str) -> int:
+    request_ids = [
+        request_id
+        for request_id, stream in assistant_streams.items()
+        if stream.owner_id == owner_id
+    ]
+    for request_id in request_ids:
+        stream = assistant_streams.pop(request_id)
+        if stream.task and not stream.task.done():
+            stream.task.cancel()
+        if stream.status == "generating":
+            update_stream_status(stream, "stopped")
+    return len(request_ids)
 
 
 @router.post("/actions/apply", response_model=AssistantActionApplyResponse)

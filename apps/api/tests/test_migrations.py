@@ -72,6 +72,10 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             "document_validation_artifacts",
             "document_templates",
             "workspace_source_documents",
+            "conversations",
+            "applied_assistant_actions",
+            "job_matches",
+            "candidate_match_snapshots",
         }
         for table_name in owner_tables:
             owner_column = next(
@@ -89,7 +93,7 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260719_0006"
+        assert revision == "20260719_0007"
     finally:
         engine.dispose()
 
@@ -224,7 +228,7 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260719_0006"
+        assert revision == "20260719_0007"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))

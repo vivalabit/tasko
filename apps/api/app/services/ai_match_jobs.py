@@ -8,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.core.identity import current_owner_id
 from app.core.settings import Settings
 from app.models.jobs import AiMatchJobStatus, StoredJobPayload
 from app.models.profile import ProfilePayload
@@ -20,11 +21,12 @@ SessionFactory = Callable[[], Session]
 class AiMatchJobManager:
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._status = AiMatchJobStatus()
+        self._statuses: dict[str, AiMatchJobStatus] = {}
 
     def start(
         self,
         *,
+        owner_id: str,
         profile: ProfilePayload,
         jobs: list[dict[str, Any]],
         profile_hash: str,
@@ -34,11 +36,12 @@ class AiMatchJobManager:
         force: bool = False,
     ) -> tuple[bool, AiMatchJobStatus]:
         with self._lock:
-            if self._status.status in {"queued", "running"}:
-                return False, self._status.model_copy(deep=True)
+            owner_status = self._statuses.get(owner_id, AiMatchJobStatus())
+            if owner_status.status in {"queued", "running"}:
+                return False, owner_status.model_copy(deep=True)
 
             run_id = uuid4().hex
-            self._status = AiMatchJobStatus(
+            self._statuses[owner_id] = AiMatchJobStatus(
                 runId=run_id,
                 status="queued",
                 total=len(jobs),
@@ -50,6 +53,7 @@ class AiMatchJobManager:
             target=self._run,
             kwargs={
                 "run_id": run_id,
+                "owner_id": owner_id,
                 "profile": profile,
                 "jobs": jobs,
                 "profile_hash": profile_hash,
@@ -61,16 +65,17 @@ class AiMatchJobManager:
             daemon=True,
         )
         thread.start()
-        return True, self.status()
+        return True, self.status(owner_id)
 
-    def status(self) -> AiMatchJobStatus:
+    def status(self, owner_id: str) -> AiMatchJobStatus:
         with self._lock:
-            return self._status.model_copy(deep=True)
+            return self._statuses.get(owner_id, AiMatchJobStatus()).model_copy(deep=True)
 
     def _run(
         self,
         *,
         run_id: str,
+        owner_id: str,
         profile: ProfilePayload,
         jobs: list[dict[str, Any]],
         profile_hash: str,
@@ -79,7 +84,8 @@ class AiMatchJobManager:
         session_factory: SessionFactory,
         force: bool,
     ) -> None:
-        self._update(run_id, status="running")
+        owner_token = current_owner_id.set(owner_id)
+        self._update(owner_id, run_id, status="running")
 
         try:
             batch_size = max(1, settings.openclaw_ai_match_max_jobs)
@@ -107,15 +113,17 @@ class AiMatchJobManager:
                     job_id = str(job.get("id") or "")
                     openclaw_job = matched_by_id.get(job_id)
                     if not openclaw_job:
-                        self._increment(run_id)
+                        self._increment(owner_id, run_id)
                         continue
 
                     hydrated_job = self._persist_job(session_factory, openclaw_job, profile_hash)
-                    self._append_update(run_id, hydrated_job)
+                    self._append_update(owner_id, run_id, hydrated_job)
 
-            self._update(run_id, status="completed")
+            self._update(owner_id, run_id, status="completed")
         except Exception as exc:
-            self._update(run_id, status="failed", error=str(exc)[:240])
+            self._update(owner_id, run_id, status="failed", error=str(exc)[:240])
+        finally:
+            current_owner_id.reset(owner_token)
 
     def _persist_job(
         self,
@@ -139,40 +147,44 @@ class AiMatchJobManager:
         finally:
             db.close()
 
-    def _append_update(self, run_id: str, job: dict[str, Any]) -> None:
+    def _append_update(self, owner_id: str, run_id: str, job: dict[str, Any]) -> None:
         job_id = str(job.get("id") or "")
         if not job_id:
-            self._increment(run_id)
+            self._increment(owner_id, run_id)
             return
 
         payload = StoredJobPayload(id=job_id, data=job)
         with self._lock:
-            if self._status.run_id != run_id:
+            owner_status = self._statuses.get(owner_id)
+            if owner_status is None or owner_status.run_id != run_id:
                 return
 
-            updates = [item for item in self._status.updated_jobs if item.id != job_id]
+            updates = [item for item in owner_status.updated_jobs if item.id != job_id]
             updates.append(payload)
-            self._status.updated_jobs = updates
-            self._status.processed = min(self._status.total, self._status.processed + 1)
+            owner_status.updated_jobs = updates
+            owner_status.processed = min(owner_status.total, owner_status.processed + 1)
 
-    def _increment(self, run_id: str) -> None:
+    def _increment(self, owner_id: str, run_id: str) -> None:
         with self._lock:
-            if self._status.run_id != run_id:
+            owner_status = self._statuses.get(owner_id)
+            if owner_status is None or owner_status.run_id != run_id:
                 return
-            self._status.processed = min(self._status.total, self._status.processed + 1)
+            owner_status.processed = min(owner_status.total, owner_status.processed + 1)
 
-    def _add_total(self, run_id: str, amount: int) -> None:
+    def _add_total(self, owner_id: str, run_id: str, amount: int) -> None:
         with self._lock:
-            if self._status.run_id != run_id:
+            owner_status = self._statuses.get(owner_id)
+            if owner_status is None or owner_status.run_id != run_id:
                 return
-            self._status.total += amount
+            owner_status.total += amount
 
-    def _update(self, run_id: str, **changes: Any) -> None:
+    def _update(self, owner_id: str, run_id: str, **changes: Any) -> None:
         with self._lock:
-            if self._status.run_id != run_id:
+            owner_status = self._statuses.get(owner_id)
+            if owner_status is None or owner_status.run_id != run_id:
                 return
             for key, value in changes.items():
-                setattr(self._status, key, value)
+                setattr(owner_status, key, value)
 
 
 ai_match_jobs = AiMatchJobManager()

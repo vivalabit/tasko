@@ -26,6 +26,7 @@ from app.services.ai_match import (
     infer_seniority,
     parse_number,
 )
+from app.services.ai_privacy import require_current_ai_consent
 from app.services.candidate_snapshot import (
     CandidateSnapshotError,
     build_openclaw_candidate_snapshot_prompt,
@@ -33,6 +34,15 @@ from app.services.candidate_snapshot import (
     build_snapshot_with_openclaw,
     extract_openclaw_candidate_snapshot_payload,
 )
+
+
+@pytest.fixture(autouse=True)
+def bypass_ai_consent_boundary() -> Generator[None, None, None]:
+    app.dependency_overrides[require_current_ai_consent] = lambda: None
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(require_current_ai_consent, None)
 
 
 def install_openclaw_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
