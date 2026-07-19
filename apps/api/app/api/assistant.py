@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import hashlib
 import json
 import re
@@ -19,15 +20,21 @@ from fastapi.responses import StreamingResponse
 
 from app.core.database import get_db
 from app.core.settings import Settings, get_settings
-from app.models.applications import StoredApplicationEventRecord, StoredApplicationRecord
+from app.models.applications import (
+    CandidateConfirmationRecord,
+    StoredApplicationEventRecord,
+    StoredApplicationRecord,
+)
 from app.models.assistant import (
     AppliedAssistantActionRecord,
     AssistantActionApplyRequest,
     AssistantActionApplyResponse,
     AssistantApplicationContext,
+    AssistantCandidateConfirmation,
     AssistantChatRequest,
     AssistantChatResponse,
     AssistantJobContext,
+    AssistantSourceDocument,
     AssistantStreamRequest,
 )
 from app.models.conversations import ConversationRecord, MessageRecord, utc_now
@@ -36,7 +43,7 @@ from app.models.documents import (
     DocumentRecord,
     DocumentVersionRecord,
 )
-from app.models.jobs import StoredJobRecord
+from app.models.jobs import JobMatchRecord, StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.assistant import (
     OpenClawAssistantRun,
@@ -49,6 +56,14 @@ from app.services.assistant import (
     preflight_source_documents,
     run_openclaw_assistant,
 )
+from app.services.ai_match import MATCHER_VERSION
+from app.services.generation_context import (
+    AuthoritativeGenerationContext,
+    GenerationContextError,
+    clarification_questions,
+    load_authoritative_generation_context,
+)
+from app.services.job_match_store import match_record_to_ai_match
 from app.services.profile_versions import record_profile_version
 
 router = APIRouter()
@@ -68,6 +83,15 @@ class AssistantStreamState:
     updated_at: float = field(default_factory=time.monotonic)
     updated: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task[None] | None = None
+
+
+@dataclass(frozen=True)
+class AuthoritativeAssistantInputs:
+    profile: ProfilePayload
+    job: AssistantJobContext | None
+    application: AssistantApplicationContext | None
+    source_documents: tuple[AssistantSourceDocument, ...] = ()
+    confirmations: tuple[AssistantCandidateConfirmation, ...] = ()
 
 
 assistant_streams: dict[str, AssistantStreamState] = {}
@@ -93,13 +117,10 @@ async def chat_with_assistant(
             detail="The assistant is temporarily disabled. Check the server configuration.",
         )
     validate_assistant_message_length(request.message, settings)
-    await preflight_assistant_source_documents(request)
+    if request.generation_context is None:
+        await preflight_assistant_source_documents(request)
 
-    profile = load_profile(db)
-    job = load_job_context(db, request)
-    application = load_application_context(db, request)
-    if application:
-        job = application.job
+    inputs = load_authoritative_assistant_inputs(db, request)
     history = load_compact_conversation_history(db, request.thread_id, settings)
 
     try:
@@ -107,17 +128,17 @@ async def chat_with_assistant(
             thread_id=request.thread_id,
             message=request.message,
             context_kind=request.context_kind,
-            profile=profile,
-            job=job,
-            application=application,
+            profile=inputs.profile,
+            job=inputs.job,
+            application=inputs.application,
             command=settings.openclaw_command,
             agent_id=settings.openclaw_assistant_agent_id,
             thinking=settings.openclaw_assistant_thinking,
             timeout_seconds=settings.openclaw_assistant_timeout_seconds,
             model=settings.openclaw_assistant_model,
             history=history,
-            source_documents=request.source_documents,
-            candidate_confirmations=request.candidate_confirmations,
+            source_documents=list(inputs.source_documents),
+            candidate_confirmations=list(inputs.confirmations),
             session_scope=uuid4().hex,
             max_prompt_chars=settings.openclaw_assistant_max_prompt_chars,
             max_attempts=settings.openclaw_assistant_max_attempts,
@@ -140,9 +161,9 @@ async def chat_with_assistant(
         request_id=request.thread_id,
         context_kind=request.context_kind,
         context_id=request.context_id,
-        profile=profile,
-        job=job,
-        application=application,
+        profile=inputs.profile,
+        job=inputs.job,
+        application=inputs.application,
     )
     return AssistantChatResponse(
         message=visible_message,
@@ -169,7 +190,8 @@ async def stream_chat_with_assistant(
             detail="The assistant is temporarily disabled. Check the server configuration.",
         )
     validate_assistant_message_length(request.message, settings)
-    await preflight_assistant_source_documents(request)
+    if request.generation_context is None:
+        await preflight_assistant_source_documents(request)
 
     prune_assistant_streams()
     fingerprint = stream_request_fingerprint(request)
@@ -188,11 +210,7 @@ async def stream_chat_with_assistant(
 
     if not stream:
         history = load_compact_conversation_history(db, request.thread_id, settings)
-        profile = load_profile(db)
-        job = load_job_context(db, request)
-        application = load_application_context(db, request)
-        if application:
-            job = application.job
+        inputs = load_authoritative_assistant_inputs(db, request)
 
         stream = AssistantStreamState(
             request_id=request.request_id,
@@ -214,9 +232,11 @@ async def stream_chat_with_assistant(
             generate_assistant_stream(
                 stream=stream,
                 request=request,
-                profile=profile,
-                job=job,
-                application=application,
+                profile=inputs.profile,
+                job=inputs.job,
+                application=inputs.application,
+                source_documents=list(inputs.source_documents),
+                candidate_confirmations=list(inputs.confirmations),
                 settings=settings,
                 history=history,
                 history_bind=history_bind,
@@ -291,6 +311,8 @@ async def generate_assistant_stream(
     profile: ProfilePayload,
     job: AssistantJobContext | None,
     application: AssistantApplicationContext | None,
+    source_documents: list[AssistantSourceDocument],
+    candidate_confirmations: list[AssistantCandidateConfirmation],
     settings: Settings,
     history: dict[str, object],
     history_bind: Engine | Connection,
@@ -310,8 +332,8 @@ async def generate_assistant_stream(
             timeout_seconds=settings.openclaw_assistant_timeout_seconds,
             model=settings.openclaw_assistant_model,
             history=history,
-            source_documents=request.source_documents,
-            candidate_confirmations=request.candidate_confirmations,
+            source_documents=source_documents,
+            candidate_confirmations=candidate_confirmations,
             session_scope=request.request_id,
             max_prompt_chars=settings.openclaw_assistant_max_prompt_chars,
             max_attempts=settings.openclaw_assistant_max_attempts,
@@ -455,7 +477,10 @@ def format_sse_event(event: str, payload: dict[str, object], *, event_id: int) -
 
 
 def stream_request_fingerprint(request: AssistantStreamRequest) -> str:
-    payload = request.model_dump(by_alias=True, exclude={"offset"})
+    excluded = {"offset", "job", "application", "candidate_confirmations"}
+    if request.generation_context is not None:
+        excluded.add("source_documents")
+    payload = request.model_dump(by_alias=True, exclude=excluded)
     serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
@@ -684,38 +709,199 @@ def load_profile(db: Session) -> ProfilePayload:
         return ProfilePayload()
 
 
-def load_job_context(
+def load_authoritative_assistant_inputs(
     db: Session,
     request: AssistantChatRequest,
+) -> AuthoritativeAssistantInputs:
+    if request.generation_context is not None:
+        reference = request.generation_context
+        if (
+            request.context_kind != "application"
+            or request.context_id != reference.application_id
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Generation context must match the application assistant context",
+            )
+        try:
+            context = load_authoritative_generation_context(
+                db,
+                application_id=reference.application_id,
+                template_id=reference.template_id,
+                document_type=reference.document_type,
+            )
+        except GenerationContextError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return assistant_inputs_from_generation_context(context)
+
+    profile = load_profile(db)
+    if request.context_kind == "job":
+        job = load_server_job_context(db, request.context_id)
+        return AuthoritativeAssistantInputs(
+            profile=profile,
+            job=job,
+            application=None,
+            source_documents=tuple(request.source_documents),
+        )
+    if request.context_kind == "application":
+        application, guide = load_server_application_context(db, request.context_id)
+        return AuthoritativeAssistantInputs(
+            profile=profile,
+            job=application.job,
+            application=application,
+            source_documents=tuple(request.source_documents),
+            confirmations=load_saved_assistant_confirmations(
+                db,
+                application_id=application.id,
+                application_guide=guide,
+            ),
+        )
+    return AuthoritativeAssistantInputs(
+        profile=profile,
+        job=None,
+        application=None,
+        source_documents=tuple(request.source_documents),
+    )
+
+
+def assistant_inputs_from_generation_context(
+    context: AuthoritativeGenerationContext,
+) -> AuthoritativeAssistantInputs:
+    profile = ProfilePayload.model_validate(context.profile)
+    job_data = dict(context.vacancy)
+    job_data["aiMatch"] = {"applicationGuide": context.application_guide}
+    job = AssistantJobContext.model_validate(job_data)
+    application_data = dict(context.application)
+    application_data["job"] = job.model_dump(by_alias=True)
+    application = AssistantApplicationContext.model_validate(application_data)
+    confirmations = tuple(
+        AssistantCandidateConfirmation(
+            questionId=confirmation.question_id,
+            requirement=confirmation.requirement,
+            question=confirmation.question,
+            answer=(
+                confirmation.response.upper()
+                + (f": {confirmation.example_text}" if confirmation.example_text else "")
+            ),
+        )
+        for confirmation in context.confirmations
+    )
+    encoded_template = base64.b64encode(context.template.content).decode("ascii")
+    source_document = AssistantSourceDocument(
+        id=context.template.id,
+        title=context.template.name,
+        category=(
+            "Cover Letter"
+            if context.template.type == "cover_letter"
+            else "CV / Resume"
+        ),
+        fileName=context.template.file_name,
+        dataUrl=f"data:{context.template.content_type};base64,{encoded_template}",
+    )
+    return AuthoritativeAssistantInputs(
+        profile=profile,
+        job=job,
+        application=application,
+        source_documents=(source_document,),
+        confirmations=confirmations,
+    )
+
+
+def load_server_job_context(
+    db: Session,
+    job_id: str,
 ) -> AssistantJobContext | None:
-    if request.context_kind != "job":
-        return request.job
+    if not job_id:
+        return None
 
     try:
-        record = db.get(StoredJobRecord, request.context_id) if request.context_id else None
-        if record:
-            return AssistantJobContext.model_validate(record.data)
+        record = db.get(StoredJobRecord, job_id)
+        if not record or not isinstance(record.data, dict):
+            return None
+        job_data = dict(record.data)
+        job_data["id"] = job_id
+        job_data.pop("aiMatch", None)
+        match_record = (
+            db.query(JobMatchRecord)
+            .filter(
+                JobMatchRecord.job_id == job_id,
+                JobMatchRecord.matcher_version == MATCHER_VERSION,
+            )
+            .order_by(JobMatchRecord.created_at.desc(), JobMatchRecord.id.desc())
+            .first()
+        )
+        if match_record:
+            job_data["aiMatch"] = match_record_to_ai_match(match_record)
+        return AssistantJobContext.model_validate(job_data)
     except (SQLAlchemyError, ValidationError):
-        pass
-
-    return request.job
+        return None
 
 
-def load_application_context(
+def load_server_application_context(
     db: Session,
-    request: AssistantChatRequest,
-) -> AssistantApplicationContext | None:
-    if request.context_kind != "application":
-        return request.application
-
+    application_id: str,
+) -> tuple[AssistantApplicationContext, dict[str, object]]:
     try:
-        record = db.get(StoredApplicationRecord, request.context_id) if request.context_id else None
-        if record:
-            return AssistantApplicationContext.model_validate(record.data)
-    except (SQLAlchemyError, ValidationError):
-        pass
+        record = db.get(StoredApplicationRecord, application_id) if application_id else None
+        if not record or not isinstance(record.data, dict):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Application not found")
+        raw_job = record.data.get("job")
+        job_id = str(raw_job.get("id") or "").strip() if isinstance(raw_job, dict) else ""
+        job = load_server_job_context(db, job_id)
+        if job is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Stored application vacancy is unavailable",
+            )
+        application_data = dict(record.data)
+        application_data["id"] = application_id
+        application_data["job"] = job.model_dump(by_alias=True)
+        guide = job.ai_match.application_guide if job.ai_match else None
+        return (
+            AssistantApplicationContext.model_validate(application_data),
+            guide if isinstance(guide, dict) else {},
+        )
+    except HTTPException:
+        raise
+    except (SQLAlchemyError, ValidationError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Authoritative application context is unavailable",
+        ) from exc
 
-    return request.application
+
+def load_saved_assistant_confirmations(
+    db: Session,
+    *,
+    application_id: str,
+    application_guide: dict[str, object],
+) -> tuple[AssistantCandidateConfirmation, ...]:
+    questions = {question.question_id: question for question in clarification_questions(application_guide)}
+    try:
+        records = (
+            db.query(CandidateConfirmationRecord)
+            .filter(CandidateConfirmationRecord.application_id == application_id)
+            .all()
+        )
+    except SQLAlchemyError:
+        return ()
+    confirmations: list[AssistantCandidateConfirmation] = []
+    for record in records:
+        question = questions.get(record.question_id)
+        if question is None or record.response not in {"yes", "no", "partial"}:
+            continue
+        confirmations.append(
+            AssistantCandidateConfirmation(
+                questionId=question.question_id,
+                requirement=question.requirement,
+                question=question.question,
+                answer=(
+                    record.response.upper()
+                    + (f": {record.example_text.strip()}" if record.example_text.strip() else "")
+                ),
+            )
+        )
+    return tuple(confirmations)
 
 
 PROFILE_ACTION_FIELDS = {

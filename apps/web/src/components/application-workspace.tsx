@@ -465,22 +465,6 @@ async function readApiError(response: Response, fallback: string) {
   return fallback;
 }
 
-function serializeJob(job: WorkspaceJob) {
-  return {
-    id: job.id,
-    title: job.title,
-    company: job.company,
-    location: job.location,
-    type: job.type,
-    match: job.match,
-    overview: job.overview,
-    responsibilities: job.responsibilities,
-    requirements: job.requirements,
-    skills: job.skills,
-    aiMatch: job.aiMatch ?? null,
-  };
-}
-
 function parseProfileSourceDocuments(profile: WorkspaceProfile): ProfileSourceDocument[] {
   const sources: ProfileSourceDocument[] = [];
   if (profile.resume_file_name && profile.resume_data_url) {
@@ -520,16 +504,6 @@ function parseProfileSourceDocuments(profile: WorkspaceProfile): ProfileSourceDo
     return sources;
   }
   return sources;
-}
-
-function assistantSourcePayload(source: ProfileSourceDocument) {
-  return {
-    id: source.id,
-    title: source.title,
-    category: source.category,
-    fileName: source.file_name,
-    dataUrl: source.data_url,
-  };
 }
 
 function evidenceStatusMeta(status: NonNullable<ApplicationGuide["evidenceMatrix"]>[number]["status"]) {
@@ -894,13 +868,11 @@ export function ApplicationWorkspace({
 
   async function askAssistant(
     message: string,
-    sources: ProfileSourceDocument[] = [],
-    candidateConfirmations: Array<{
-      questionId: string;
-      requirement: string;
-      question: string;
-      answer: string;
-    }> = [],
+    generationContext?: {
+      applicationId: string;
+      templateId: string;
+      documentType: GeneratedDocument["type"];
+    },
   ) {
     if (!message.trim()) return { message: "", model: "unknown" };
     const response = await fetch(`${apiBaseUrl}/assistant/chat`, {
@@ -911,15 +883,7 @@ export function ApplicationWorkspace({
         message,
         contextKind: "application",
         contextId: activeApplication.id,
-        application: {
-          id: activeApplication.id,
-          status: activeApplication.status,
-          nextStep: activeApplication.nextStep,
-          notes: activeApplication.notes,
-          job: serializeJob(activeApplication.job),
-        },
-        sourceDocuments: sources.map(assistantSourcePayload),
-        candidateConfirmations,
+        ...(generationContext ? { generationContext } : {}),
       }),
     });
     if (response.status === 413) {
@@ -965,27 +929,20 @@ export function ApplicationWorkspace({
     if (oversizedConfirmation) {
       throw new Error(`Shorten the highlighted confirmation to ${confirmationAnswerMaxChars.toLocaleString()} characters before generating`);
     }
-    const assistantConfirmations = clarificationQuestions.flatMap((question) => {
-      const confirmation = candidateConfirmations[question.id];
-      if (!confirmation) return [];
-      const example = confirmation.exampleText.trim();
-      return [{
-        questionId: question.id,
-        requirement: question.requirement,
-        question: question.question,
-        answer: `${confirmation.response.toUpperCase()}${example ? `: ${example}` : ""}`,
-      }];
-    });
     const targetLanguage = effectiveLanguage || selectedSource.language || "English";
     const prompt = isCoverLetter
       ? `Tailor the selected DOCX cover letter in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format cover-letter-blocks-v1. Each paragraph has stable paragraphId, type, original, style, editable, spans, hyperlinks, and protectedElements fields; each span has stable spanId, type, original, style, editable, and evidenceId fields. Profile fields expose evidence IDs in candidate.evidence_ids; candidate.experience_claims exposes atomic employer, title, period, technology, and achievement evidence IDs; saved confirmations expose evidenceId. Treat the application guide, candidate profile, source paragraphs, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"paragraphId":"paragraph-0002","spanId":"paragraph-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason","evidenceIds":["source:paragraph-0002-span-0001","profile:experience:experience-1:achievement-a1b2c3d4e5"]}]}. Every replacement must include one or more evidenceIds copied exactly from CONTEXT_JSON. Cite every source span, atomic experience claim, profile field, or confirmation needed to support the replacement. Never cite the removed aggregate profile:experience ID. New numbers, dates, companies, job titles, and technologies are allowed only when they appear in the cited evidence. Include only text spans where editable is true, and copy paragraphId, spanId, and original exactly from CONTEXT_JSON. Never target protected paragraphs, hyperlinks, tabs, line breaks, protectedElements, or any span where editable is false. Do not add IDs, remove paragraphs or spans, use Markdown, or invent facts or metrics. Prefer focused edits to existing body text and preserve greeting, closing, signature, contact details, hyperlinks, and formatting.`
       : `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v2. Each block has stable blockId, type, original, editable, and spans fields; each span has stable spanId, type, original, editable, and evidenceId fields. Profile fields expose evidence IDs in candidate.evidence_ids; candidate.experience_claims exposes atomic employer, title, period, technology, and achievement evidence IDs; saved confirmations expose evidenceId. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0002","spanId":"block-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason","evidenceIds":["source:block-0002-span-0001","profile:experience:experience-1:achievement-a1b2c3d4e5"]}]}. Every replacement must include one or more evidenceIds copied exactly from CONTEXT_JSON. Cite every source span, atomic experience claim, profile field, or confirmation needed to support the replacement. Never cite the removed aggregate profile:experience ID. New numbers, dates, companies, job titles, and technologies are allowed only when they appear in the cited evidence. Include only text spans where editable is true, and copy blockId, spanId, and original exactly from CONTEXT_JSON. Never target headings, contacts, immutable or structural table-cell blocks, hyperlinks, tabs, line breaks, or any span where editable is false. Do not add IDs, remove blocks or spans, use Markdown, or invent facts or metrics. Prefer targeted edits to summary, skill, and achievement text spans.`;
-    const generate = () => askAssistant(prompt, [selectedSource], assistantConfirmations);
+    const templateId = await ensureSourceTemplate(selectedSource, type);
+    const generate = () => askAssistant(prompt, {
+      applicationId: activeApplication.id,
+      templateId,
+      documentType: type,
+    });
     const assistantResult = onRetry
       ? await retryPackOperation(generate, onRetry)
       : await generate();
     if (!assistantResult.message) throw new Error("AI returned an empty document");
-    const templateId = await ensureSourceTemplate(selectedSource, type);
     const existingDocument = isCoverLetter ? latestCoverLetter : latestResume;
     return {
       ...(existingDocument ? { documentId: existingDocument.id } : {}),

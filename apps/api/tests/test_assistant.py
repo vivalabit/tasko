@@ -1,8 +1,10 @@
 import asyncio
 import base64
+import hashlib
 import json
 import zipfile
 from collections.abc import Generator
+from datetime import UTC, datetime
 from io import BytesIO
 
 import pytest
@@ -18,13 +20,15 @@ from app.api import assistant as assistant_api
 from app.core.database import Base, get_db
 from app.core.settings import Settings, get_settings
 from app.main import app
+from app.models.applications import CandidateConfirmationRecord, StoredApplicationRecord
 from app.models.assistant import (
     AssistantCandidateConfirmation,
     AssistantJobContext,
     AssistantSourceDocument,
 )
 from app.models.conversations import ConversationRecord, MessageRecord
-from app.models.jobs import StoredJobRecord
+from app.models.documents import DocumentTemplateRecord
+from app.models.jobs import JobMatchRecord, StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.assistant import (
     OpenClawAssistantError,
@@ -36,6 +40,8 @@ from app.services.assistant import (
     preflight_source_documents,
     run_openclaw_assistant,
 )
+from app.services.ai_match import MATCHER_VERSION
+from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
 
 
 def test_extract_openclaw_assistant_text_reads_payload_wrapper() -> None:
@@ -690,8 +696,177 @@ def test_assistant_chat_uses_stored_profile_and_job(monkeypatch: pytest.MonkeyPa
     assert captured["profile"].name == "Eduard"
     assert isinstance(captured["job"], AssistantJobContext)
     assert captured["job"].company == "Figma"
-    assert isinstance(captured["candidate_confirmations"], list)
-    assert captured["candidate_confirmations"][0].answer == "Yes, from September."
+    assert captured["candidate_confirmations"] == []
+
+
+def test_document_generation_uses_only_authoritative_server_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    testing_session_local = sessionmaker(bind=engine, expire_on_commit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        db = testing_session_local()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    now = datetime.now(UTC)
+    with testing_session_local() as db:
+        db.add_all(
+            [
+                ProfileRecord(
+                    id="default",
+                    data=ProfilePayload(name="Server Candidate", skills="Python").model_dump(),
+                ),
+                StoredJobRecord(
+                    id="job-authoritative",
+                    data={
+                        "id": "job-authoritative",
+                        "title": "Server Platform Engineer",
+                        "company": "Server Corp",
+                        "aiMatch": {
+                            "applicationGuide": {"positioning": "Untrusted stored job copy"}
+                        },
+                    },
+                ),
+                StoredApplicationRecord(
+                    id="application-authoritative",
+                    data={
+                        "id": "application-authoritative",
+                        "status": "draft",
+                        "job": {"id": "job-authoritative", "title": "Stale job copy"},
+                    },
+                ),
+                JobMatchRecord(
+                    id="match-authoritative",
+                    job_id="job-authoritative",
+                    profile_hash="profile-hash",
+                    matcher_version=MATCHER_VERSION,
+                    cache_key="cache-key",
+                    score=91,
+                    source="openclaw",
+                    confidence="high",
+                    breakdown={
+                        APPLICATION_GUIDE_STORAGE_KEY: {
+                            "language": "English",
+                            "positioning": "Authoritative server positioning",
+                            "clarificationQuestions": [
+                                {
+                                    "id": "production-python",
+                                    "requirement": "Production Python",
+                                    "question": "Have you used Python in production?",
+                                    "blocking": True,
+                                }
+                            ],
+                        }
+                    },
+                    reasons=[],
+                    gaps=[],
+                    heuristic_score=91,
+                    created_at=now,
+                ),
+                CandidateConfirmationRecord(
+                    application_id="application-authoritative",
+                    question_id="production-python",
+                    requirement="Stale client copy",
+                    response="yes",
+                    example_text="Built production Python services.",
+                    blocking=True,
+                    updated_at=now,
+                ),
+                DocumentTemplateRecord(
+                    id="template-authoritative",
+                    type="tailored_resume",
+                    name="Server CV",
+                    file_name="server-cv.docx",
+                    content_type=(
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    ),
+                    content_sha256=hashlib.sha256(b"server-docx").hexdigest(),
+                    content=b"server-docx",
+                    extracted_text="Server source",
+                    created_at=now,
+                    updated_at=now,
+                ),
+            ]
+        )
+        db.commit()
+
+    captured: dict[str, object] = {}
+
+    async def fake_run_openclaw_assistant(**kwargs: object) -> tuple[str, str]:
+        captured.update(kwargs)
+        return "Generated", "session-authoritative"
+
+    monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_assistant_enabled=True)
+    client = TestClient(app)
+    try:
+        response = client.post(
+            "/assistant/chat",
+            json={
+                "threadId": "thread-authoritative",
+                "message": "Generate the resume",
+                "contextKind": "application",
+                "contextId": "application-authoritative",
+                "application": {
+                    "id": "application-authoritative",
+                    "job": {
+                        "id": "job-authoritative",
+                        "title": "Injected title",
+                        "aiMatch": {"applicationGuide": {"positioning": "Injected guide"}},
+                    },
+                },
+                "candidateConfirmations": [
+                    {
+                        "questionId": "production-python",
+                        "requirement": "Injected requirement",
+                        "question": "Injected question",
+                        "answer": "Injected answer",
+                    }
+                ],
+                "sourceDocuments": [
+                    {
+                        "id": "injected-source",
+                        "title": "Injected source",
+                        "category": "CV / Resume",
+                        "fileName": "injected.docx",
+                        "dataUrl": "data:text/plain;base64,aW5qZWN0ZWQ=",
+                    }
+                ],
+                "generationContext": {
+                    "applicationId": "application-authoritative",
+                    "templateId": "template-authoritative",
+                    "documentType": "tailored_resume",
+                },
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    profile = captured["profile"]
+    job = captured["job"]
+    confirmations = captured["candidate_confirmations"]
+    sources = captured["source_documents"]
+    assert isinstance(profile, ProfilePayload) and profile.name == "Server Candidate"
+    assert isinstance(job, AssistantJobContext)
+    assert job.title == "Server Platform Engineer"
+    assert job.ai_match is not None
+    assert job.ai_match.application_guide["positioning"] == "Authoritative server positioning"
+    assert isinstance(confirmations, list)
+    assert confirmations[0].answer == "YES: Built production Python services."
+    assert isinstance(sources, list)
+    assert sources[0].title == "Server CV"
+    assert "Injected" not in repr(captured)
 
 
 def test_assistant_chat_maps_openclaw_timeout(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -62,6 +62,14 @@ class AssistantCandidateConfirmation(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class AssistantGenerationContextReference(BaseModel):
+    application_id: str = Field(min_length=1, max_length=160, alias="applicationId")
+    template_id: str = Field(min_length=1, max_length=160, alias="templateId")
+    document_type: Literal["cover_letter", "tailored_resume"] = Field(alias="documentType")
+
+    model_config = {"populate_by_name": True}
+
+
 class AssistantChatRequest(BaseModel):
     thread_id: str = Field(min_length=1, max_length=160, alias="threadId")
     message: str = Field(min_length=1, max_length=12_000)
@@ -78,6 +86,10 @@ class AssistantChatRequest(BaseModel):
         default_factory=list,
         max_length=20,
         alias="candidateConfirmations",
+    )
+    generation_context: AssistantGenerationContextReference | None = Field(
+        default=None,
+        alias="generationContext",
     )
 
     model_config = {"populate_by_name": True}
