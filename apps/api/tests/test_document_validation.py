@@ -1,8 +1,11 @@
 import base64
 import json
 import shutil
+import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+from threading import Lock
 
 import pytest
 from docx import Document
@@ -11,13 +14,18 @@ from docx.oxml.ns import qn
 from docx.opc.constants import RELATIONSHIP_TYPE
 from docx.shared import Inches
 
+from app.services import document_validation as document_validation_service
 from app.services.document_validation import (
+    DocumentRenderArtifact,
     DocumentValidationError,
     build_authoritative_evidence_catalog,
     build_document_diff,
+    clear_source_render_cache,
     compare_rendered_geometry,
     detect_table_overflow,
+    render_and_inspect_documents,
     render_and_count_pages,
+    source_render_cache_info,
     validate_evidence_id_references,
     validate_factual_changes,
     validate_referenced_factual_changes,
@@ -678,6 +686,102 @@ def test_geometry_comparison_allows_changed_text_but_rejects_unexpected_disappea
     assert report["disappearedSourceTextCount"] == 2
     assert report["disappearedSourceTextSamples"] == ["protected", "header"]
     assert any("source text tokens disappeared unexpectedly" in issue for issue in issues)
+
+
+def test_source_pdf_and_geometry_are_cached_by_content_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_source_render_cache()
+    calls: list[tuple[bytes, str, bool]] = []
+
+    def fake_render(
+        content: bytes,
+        *,
+        executable: str,
+        label: str,
+        rasterize: bool,
+    ) -> DocumentRenderArtifact:
+        assert executable == "/fake/soffice"
+        calls.append((content, label, rasterize))
+        return DocumentRenderArtifact(
+            pdf_content=b"%PDF-1.7\n" + content,
+            geometry_json=json.dumps(pdf_geometry(text=content.decode())),
+        )
+
+    monkeypatch.setattr(document_validation_service.shutil, "which", lambda _name: "/fake/soffice")
+    monkeypatch.setattr(document_validation_service, "render_document_artifact", fake_render)
+    try:
+        first_source, _ = render_and_inspect_documents(b"shared-source", b"output-one")
+        first_source["text"] = "mutated outside cache"
+        second_source, _ = render_and_inspect_documents(b"shared-source", b"output-two")
+        cache_info = source_render_cache_info()
+    finally:
+        clear_source_render_cache()
+
+    assert [call for call in calls if call[1] == "source"] == [
+        (b"shared-source", "source", False)
+    ]
+    assert [call[0] for call in calls if call[1] == "rendered"] == [
+        b"output-one",
+        b"output-two",
+    ]
+    assert second_source["text"] == "shared-source"
+    assert cache_info.hits == 1
+    assert cache_info.misses == 1
+    assert cache_info.size == 1
+    assert cache_info.in_flight == 0
+
+
+def test_independent_conversions_run_with_bounded_parallelism(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clear_source_render_cache()
+    state_lock = Lock()
+    active = 0
+    max_active = 0
+    source_calls = 0
+
+    def fake_render(
+        content: bytes,
+        *,
+        executable: str,
+        label: str,
+        rasterize: bool,
+    ) -> DocumentRenderArtifact:
+        nonlocal active, max_active, source_calls
+        assert executable == "/fake/soffice"
+        assert rasterize is (label == "rendered")
+        with state_lock:
+            active += 1
+            max_active = max(max_active, active)
+            source_calls += label == "source"
+        time.sleep(0.03)
+        with state_lock:
+            active -= 1
+        return DocumentRenderArtifact(
+            pdf_content=b"%PDF-1.7\n" + content,
+            geometry_json=json.dumps(pdf_geometry(text=content.decode())),
+        )
+
+    monkeypatch.setattr(document_validation_service.shutil, "which", lambda _name: "/fake/soffice")
+    monkeypatch.setattr(document_validation_service, "render_document_artifact", fake_render)
+    try:
+        with ThreadPoolExecutor(max_workers=4) as callers:
+            results = list(
+                callers.map(
+                    lambda index: render_and_inspect_documents(
+                        b"shared-source",
+                        f"output-{index}".encode(),
+                    ),
+                    range(4),
+                )
+            )
+    finally:
+        clear_source_render_cache()
+
+    assert len(results) == 4
+    assert source_calls == 1
+    assert max_active == document_validation_service.VALIDATION_CONVERSION_MAX_WORKERS
 
 
 @pytest.mark.skipif(

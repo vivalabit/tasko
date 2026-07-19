@@ -1,15 +1,19 @@
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
 import zipfile
-from collections import Counter
+from collections import Counter, OrderedDict
+from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import date
 from difflib import SequenceMatcher
 from io import BytesIO
 from pathlib import Path
+from threading import RLock
 from typing import Any
 
 from docx import Document
@@ -223,6 +227,8 @@ TITLE_PATTERN = re.compile(
     r"\s+(?:at|bei)\b",
 )
 RENDER_TIMEOUT_SECONDS = 90
+SOURCE_RENDER_CACHE_SIZE = 16
+VALIDATION_CONVERSION_MAX_WORKERS = 2
 GEOMETRY_POSITION_TOLERANCE = 0.03
 GEOMETRY_SIZE_TOLERANCE = 0.25
 PAGE_BOUNDARY_TOLERANCE = 1.5
@@ -230,6 +236,36 @@ PAGE_BOUNDARY_TOLERANCE = 1.5
 
 class DocumentValidationError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class DocumentRenderArtifact:
+    pdf_content: bytes
+    geometry_json: str
+
+    def geometry(self) -> dict[str, Any]:
+        payload = json.loads(self.geometry_json)
+        return payload if isinstance(payload, dict) else {}
+
+
+@dataclass(frozen=True)
+class SourceRenderCacheInfo:
+    hits: int
+    misses: int
+    size: int
+    max_size: int
+    in_flight: int
+
+
+_conversion_executor = ThreadPoolExecutor(
+    max_workers=VALIDATION_CONVERSION_MAX_WORKERS,
+    thread_name_prefix="document-validation-conversion",
+)
+_source_render_cache: OrderedDict[str, DocumentRenderArtifact] = OrderedDict()
+_source_render_futures: dict[str, Future[DocumentRenderArtifact]] = {}
+_source_render_cache_lock = RLock()
+_source_render_cache_hits = 0
+_source_render_cache_misses = 0
 
 
 def validate_generated_document(
@@ -954,22 +990,121 @@ def render_and_inspect_documents(
         raise DocumentValidationError(
             "Document validation failed: LibreOffice is required for page validation"
         )
+    source_future = source_render_future(source, executable=executable)
+    rendered_future = _conversion_executor.submit(
+        render_document_artifact,
+        rendered,
+        executable=executable,
+        label="rendered",
+        rasterize=True,
+    )
+    try:
+        source_artifact = source_future.result()
+        rendered_artifact = rendered_future.result()
+    except Exception:
+        source_future.cancel()
+        rendered_future.cancel()
+        raise
+    return source_artifact.geometry(), rendered_artifact.geometry()
+
+
+def source_render_future(
+    source: bytes,
+    *,
+    executable: str,
+) -> Future[DocumentRenderArtifact]:
+    global _source_render_cache_hits, _source_render_cache_misses
+
+    source_hash = hashlib.sha256(source).hexdigest()
+    with _source_render_cache_lock:
+        cached = _source_render_cache.get(source_hash)
+        if cached is not None:
+            _source_render_cache.move_to_end(source_hash)
+            _source_render_cache_hits += 1
+            completed: Future[DocumentRenderArtifact] = Future()
+            completed.set_result(cached)
+            return completed
+        existing = _source_render_futures.get(source_hash)
+        if existing is not None:
+            _source_render_cache_hits += 1
+            return existing
+        _source_render_cache_misses += 1
+        future = _conversion_executor.submit(
+            render_document_artifact,
+            source,
+            executable=executable,
+            label="source",
+            rasterize=False,
+        )
+        _source_render_futures[source_hash] = future
+        future.add_done_callback(
+            lambda completed_future: store_source_render(
+                source_hash,
+                completed_future,
+            )
+        )
+        return future
+
+
+def store_source_render(
+    source_hash: str,
+    future: Future[DocumentRenderArtifact],
+) -> None:
+    with _source_render_cache_lock:
+        if _source_render_futures.get(source_hash) is not future:
+            return
+        _source_render_futures.pop(source_hash, None)
+        if future.cancelled() or future.exception() is not None:
+            return
+        _source_render_cache[source_hash] = future.result()
+        _source_render_cache.move_to_end(source_hash)
+        while len(_source_render_cache) > SOURCE_RENDER_CACHE_SIZE:
+            _source_render_cache.popitem(last=False)
+
+
+def clear_source_render_cache() -> None:
+    global _source_render_cache_hits, _source_render_cache_misses
+
+    with _source_render_cache_lock:
+        futures = tuple(_source_render_futures.values())
+        _source_render_futures.clear()
+        _source_render_cache.clear()
+        _source_render_cache_hits = 0
+        _source_render_cache_misses = 0
+    for future in futures:
+        future.cancel()
+
+
+def source_render_cache_info() -> SourceRenderCacheInfo:
+    with _source_render_cache_lock:
+        return SourceRenderCacheInfo(
+            hits=_source_render_cache_hits,
+            misses=_source_render_cache_misses,
+            size=len(_source_render_cache),
+            max_size=SOURCE_RENDER_CACHE_SIZE,
+            in_flight=len(_source_render_futures),
+        )
+
+
+def render_document_artifact(
+    content: bytes,
+    *,
+    executable: str,
+    label: str,
+    rasterize: bool,
+) -> DocumentRenderArtifact:
     stable_tmp = "/private/tmp" if Path("/private/tmp").is_dir() else None
     with tempfile.TemporaryDirectory(
         prefix="tasko-docx-validation-",
         dir=stable_tmp,
     ) as directory:
         workdir = Path(directory)
-        source_path = workdir / "source.docx"
-        rendered_path = workdir / "rendered.docx"
-        source_path.write_bytes(source)
-        rendered_path.write_bytes(rendered)
+        input_path = workdir / f"{label}.docx"
+        input_path.write_bytes(content)
         runtime_home = workdir / "home"
         runtime_home.mkdir()
-        runtime_tmp = Path("/private/tmp")
-        if not runtime_tmp.is_dir():
-            runtime_tmp = workdir / "tmp"
-            runtime_tmp.mkdir()
+        runtime_tmp = workdir / "tmp"
+        runtime_tmp.mkdir()
         environment = {
             **os.environ,
             "HOME": str(runtime_home),
@@ -981,67 +1116,22 @@ def render_and_inspect_documents(
         }
         Path(environment["XDG_CONFIG_HOME"]).mkdir()
         Path(environment["XDG_CACHE_HOME"]).mkdir()
-        for input_path in (source_path, rendered_path):
-            profile = workdir / f"libreoffice-profile-{input_path.stem}"
-            profile.mkdir()
-            try:
-                result = subprocess.run(
-                    [
-                        executable,
-                        "--invisible",
-                        "--headless",
-                        "--norestore",
-                        "--nofirststartwizard",
-                        f"-env:UserInstallation={profile.as_uri()}",
-                        "--convert-to",
-                        "pdf",
-                        "--outdir",
-                        str(workdir),
-                        str(input_path),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=RENDER_TIMEOUT_SECONDS,
-                    check=False,
-                    env=environment,
-                )
-            except subprocess.TimeoutExpired as exc:
-                raise DocumentValidationError(
-                    "Document validation failed: DOCX rendering timed out"
-                ) from exc
-            output_path = workdir / f"{input_path.stem}.pdf"
-            if result.returncode != 0 or not output_path.exists():
-                detail = (result.stderr or result.stdout or "unknown conversion error").strip()
-                raise DocumentValidationError(
-                    f"Document validation failed: DOCX rendering failed ({detail[:240]})"
-                )
+        profile = workdir / f"libreoffice-profile-{label}"
+        profile.mkdir()
         try:
-            source_geometry = inspect_pdf_geometry(workdir / "source.pdf", workdir, "source")
-            rendered_geometry = inspect_pdf_geometry(
-                workdir / "rendered.pdf",
-                workdir,
-                "rendered",
-            )
-        except Exception as exc:
-            if isinstance(exc, DocumentValidationError):
-                raise
-            raise DocumentValidationError(
-                "Document validation failed: rendered PDF could not be inspected"
-            ) from exc
-        rasterizer = shutil.which("pdftoppm")
-        if not rasterizer:
-            raise DocumentValidationError(
-                "Document validation failed: pdftoppm is required for visual validation"
-            )
-        try:
-            raster_result = subprocess.run(
+            result = subprocess.run(
                 [
-                    rasterizer,
-                    "-png",
-                    "-r",
-                    "96",
-                    str(workdir / "rendered.pdf"),
-                    str(workdir / "page"),
+                    executable,
+                    "--invisible",
+                    "--headless",
+                    "--norestore",
+                    "--nofirststartwizard",
+                    f"-env:UserInstallation={profile.as_uri()}",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    str(workdir),
+                    str(input_path),
                 ],
                 capture_output=True,
                 text=True,
@@ -1051,21 +1141,84 @@ def render_and_inspect_documents(
             )
         except subprocess.TimeoutExpired as exc:
             raise DocumentValidationError(
-                "Document validation failed: rendered page inspection timed out"
+                "Document validation failed: DOCX rendering timed out"
             ) from exc
-        rendered_images = sorted(workdir.glob("page-*.png"))
-        if (
-            raster_result.returncode != 0
-            or len(rendered_images) != rendered_geometry["pageCount"]
-            or any(image.stat().st_size == 0 for image in rendered_images)
-        ):
-            detail = (
-                raster_result.stderr or raster_result.stdout or "incomplete page rasterization"
-            ).strip()
+        pdf_path = workdir / f"{label}.pdf"
+        if result.returncode != 0 or not pdf_path.exists():
+            detail = (result.stderr or result.stdout or "unknown conversion error").strip()
             raise DocumentValidationError(
-                f"Document validation failed: rendered page inspection failed ({detail[:240]})"
+                f"Document validation failed: DOCX rendering failed ({detail[:240]})"
             )
-        return source_geometry, rendered_geometry
+        try:
+            geometry = inspect_pdf_geometry(pdf_path, workdir, label)
+        except Exception as exc:
+            if isinstance(exc, DocumentValidationError):
+                raise
+            raise DocumentValidationError(
+                "Document validation failed: rendered PDF could not be inspected"
+            ) from exc
+        if rasterize:
+            validate_pdf_rasterization(
+                pdf_path,
+                geometry,
+                workdir=workdir,
+                environment=environment,
+            )
+        return DocumentRenderArtifact(
+            pdf_content=pdf_path.read_bytes(),
+            geometry_json=json.dumps(
+                geometry,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+        )
+
+
+def validate_pdf_rasterization(
+    pdf_path: Path,
+    geometry: dict[str, Any],
+    *,
+    workdir: Path,
+    environment: dict[str, str],
+) -> None:
+    rasterizer = shutil.which("pdftoppm")
+    if not rasterizer:
+        raise DocumentValidationError(
+            "Document validation failed: pdftoppm is required for visual validation"
+        )
+    try:
+        raster_result = subprocess.run(
+            [
+                rasterizer,
+                "-png",
+                "-r",
+                "96",
+                str(pdf_path),
+                str(workdir / "page"),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=RENDER_TIMEOUT_SECONDS,
+            check=False,
+            env=environment,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DocumentValidationError(
+            "Document validation failed: rendered page inspection timed out"
+        ) from exc
+    rendered_images = sorted(workdir.glob("page-*.png"))
+    if (
+        raster_result.returncode != 0
+        or len(rendered_images) != geometry["pageCount"]
+        or any(image.stat().st_size == 0 for image in rendered_images)
+    ):
+        detail = (
+            raster_result.stderr or raster_result.stdout or "incomplete page rasterization"
+        ).strip()
+        raise DocumentValidationError(
+            f"Document validation failed: rendered page inspection failed ({detail[:240]})"
+        )
 
 
 def inspect_pdf_geometry(
