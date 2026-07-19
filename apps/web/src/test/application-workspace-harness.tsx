@@ -207,6 +207,53 @@ export function installApplicationWorkspaceApiMock({
     if (url.pathname === "/documents/templates/library" && method === "GET") {
       return Response.json(templates);
     }
+    if (url.pathname === "/documents/templates/preflight" && method === "POST") {
+      const request = JSON.parse(String(init?.body)) as {
+        type: "cover_letter" | "tailored_resume";
+        name: string;
+        fileName: string;
+      };
+      const template = templates.find((item) => {
+        if (!item || typeof item !== "object") return false;
+        const candidate = item as { type?: string; name?: string; fileName?: string };
+        return candidate.type === request.type
+          && candidate.name === request.name
+          && candidate.fileName === request.fileName;
+      }) ?? {
+        id: `${request.type}-preflight-template`,
+        type: request.type,
+        name: request.name,
+        fileName: request.fileName,
+        createdAt: "2026-07-18T10:00:00.000Z",
+        updatedAt: "2026-07-18T10:00:00.000Z",
+      };
+      return Response.json({
+        supported: true,
+        template,
+        editableCount: 3,
+        immutableCount: 2,
+        immutableElements: [
+          { id: "block-0001", type: "heading", text: "Profile", reason: "AI changes targeting this protected element will be rejected" },
+        ],
+        rejectedElements: [],
+        aiContext: {
+          maxCharacters: 32000,
+          contextBudgetCharacters: 28000,
+          estimatedCharacters: 12000,
+          includedCharacters: 12000,
+          truncated: false,
+          source: {
+            totalElements: 5,
+            includedElements: 5,
+            omittedElements: 0,
+            estimatedCharacters: 5000,
+            includedCharacters: 5000,
+            truncated: false,
+          },
+        },
+        warnings: [],
+      });
+    }
     if (url.pathname === "/assistant/config" && method === "GET") {
       return Response.json({
         providerName: "OpenAI",

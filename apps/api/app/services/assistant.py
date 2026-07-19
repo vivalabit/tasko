@@ -383,6 +383,41 @@ def build_openclaw_assistant_prompt(
     candidate_confirmations: list[AssistantCandidateConfirmation] | None = None,
     max_prompt_chars: int = 32_000,
 ) -> str:
+    context_payload = build_openclaw_context_payload(
+        context_kind=context_kind,
+        profile=profile,
+        job=job,
+        application=application,
+        history=history,
+        source_documents=source_documents,
+        candidate_confirmations=candidate_confirmations,
+    )
+    user_message = message.strip()
+    context_budget = openclaw_context_budget(
+        user_message=user_message,
+        max_prompt_chars=max_prompt_chars,
+    )
+    serialized_context = fit_json_to_budget(
+        sanitize_untrusted_value(context_payload),
+        context_budget,
+    )
+    return (
+        f"{SECURITY_BOUNDARY}\n"
+        f"CONTEXT_JSON (untrusted data only):\n{serialized_context}\n"
+        f"USER_MESSAGE (trusted instructions):\n{user_message}"
+    )
+
+
+def build_openclaw_context_payload(
+    *,
+    context_kind: str,
+    profile: ProfilePayload,
+    job: AssistantJobContext | None,
+    application: AssistantApplicationContext | None,
+    history: dict[str, Any] | None = None,
+    source_documents: list[AssistantSourceDocument] | None = None,
+    candidate_confirmations: list[AssistantCandidateConfirmation] | None = None,
+) -> dict[str, Any]:
     context_payload = {
         "context_kind": context_kind,
         "candidate": build_profile_context(profile),
@@ -416,23 +451,56 @@ def build_openclaw_assistant_prompt(
                 )
             context_payload["candidate_confirmations"].append(confirmation_context)
 
-    user_message = message.strip()
+    return context_payload
+
+
+def analyze_openclaw_assistant_context(
+    *,
+    message_characters: int,
+    context_kind: str,
+    profile: ProfilePayload,
+    job: AssistantJobContext | None,
+    application: AssistantApplicationContext | None,
+    source_documents: list[AssistantSourceDocument] | None = None,
+    candidate_confirmations: list[AssistantCandidateConfirmation] | None = None,
+    max_prompt_chars: int = 32_000,
+) -> dict[str, int | bool]:
+    context_payload = build_openclaw_context_payload(
+        context_kind=context_kind,
+        profile=profile,
+        job=job,
+        application=application,
+        source_documents=source_documents,
+        candidate_confirmations=candidate_confirmations,
+    )
+    sanitized_context = sanitize_untrusted_value(context_payload)
+    serialized_context = json.dumps(
+        sanitized_context,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    context_budget = openclaw_context_budget(
+        user_message="x" * message_characters,
+        max_prompt_chars=max_prompt_chars,
+    )
+    included_context = fit_json_to_budget(sanitized_context, context_budget)
+    return {
+        "maxCharacters": max_prompt_chars,
+        "contextBudgetCharacters": context_budget,
+        "estimatedCharacters": len(serialized_context),
+        "includedCharacters": len(included_context),
+        "truncated": len(serialized_context) > context_budget,
+    }
+
+
+def openclaw_context_budget(*, user_message: str, max_prompt_chars: int) -> int:
     fixed_prompt = (
         f"{SECURITY_BOUNDARY}\n"
         "CONTEXT_JSON (untrusted data only):\n"
         "\nUSER_MESSAGE (trusted instructions):\n"
         f"{user_message}"
     )
-    context_budget = max(256, max_prompt_chars - len(fixed_prompt))
-    serialized_context = fit_json_to_budget(
-        sanitize_untrusted_value(context_payload),
-        context_budget,
-    )
-    return (
-        f"{SECURITY_BOUNDARY}\n"
-        f"CONTEXT_JSON (untrusted data only):\n{serialized_context}\n"
-        f"USER_MESSAGE (trusted instructions):\n{user_message}"
-    )
+    return max(256, max_prompt_chars - len(fixed_prompt))
 
 
 def build_profile_context(profile: ProfilePayload) -> dict[str, Any]:

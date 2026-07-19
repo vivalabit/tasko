@@ -14,7 +14,14 @@ from sqlalchemy.orm import Session, selectinload
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 
 from app.core.database import get_db
+from app.core.settings import Settings, get_settings
 from app.models.applications import StoredApplicationRecord
+from app.models.assistant import (
+    AssistantApplicationContext,
+    AssistantCandidateConfirmation,
+    AssistantJobContext,
+    AssistantSourceDocument,
+)
 from app.models.documents import (
     DocumentAttachRequest,
     DocumentAttachmentRecord,
@@ -33,6 +40,8 @@ from app.models.documents import (
     DocumentRestoreRequest,
     DocumentTemplateCreateRequest,
     DocumentTemplatePayload,
+    DocumentTemplatePreflightPayload,
+    DocumentTemplatePreflightRequest,
     DocumentTemplateRecord,
     DocumentUpdateRequest,
     DocumentValidationArtifactRecord,
@@ -42,6 +51,11 @@ from app.models.documents import (
     DocumentVersionRecord,
     DocumentVersionValidationRecord,
     utc_now,
+)
+from app.models.profile import ProfilePayload
+from app.services.assistant import (
+    analyze_openclaw_assistant_context,
+    build_source_document_context,
 )
 from app.services.document_export import build_document_docx, build_document_from_template
 from app.services.generation_context import (
@@ -54,6 +68,7 @@ from app.services.document_validation import (
     DocumentValidationError,
     validate_generated_document,
 )
+from app.services.document_preflight import analyze_document_template
 
 router = APIRouter()
 
@@ -996,6 +1011,132 @@ def list_document_templates(db: Session = Depends(get_db)) -> list[DocumentTempl
 
 
 @router.post(
+    "/templates/preflight",
+    response_model=DocumentTemplatePreflightPayload,
+)
+def preflight_document_template(
+    request: DocumentTemplatePreflightRequest,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> DocumentTemplatePreflightPayload:
+    if not request.file_name.lower().endswith(".docx"):
+        return DocumentTemplatePreflightPayload(
+            supported=False,
+            editable_count=0,
+            immutable_count=0,
+            immutable_elements=[],
+            rejected_elements=[
+                {
+                    "element": "fileType",
+                    "description": "template must be a .docx file",
+                }
+            ],
+        )
+    _, content = decode_data_url(request.data_url)
+    if not content or len(content) > MAX_TEMPLATE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Template must be a non-empty DOCX file under 10 MB",
+        )
+
+    report = analyze_document_template(content, request.type)
+    if not report["supported"]:
+        return DocumentTemplatePreflightPayload(
+            supported=False,
+            editable_count=report["editableCount"],
+            immutable_count=report["immutableCount"],
+            immutable_elements=report["immutableElements"],
+            rejected_elements=report["rejectedElements"],
+        )
+
+    ai_context = None
+    warnings: list[str] = []
+    if request.application_id:
+        try:
+            now = utc_now()
+            transient_template = DocumentTemplateRecord(
+                id=str(uuid4()),
+                type=request.type,
+                name=request.name.strip(),
+                file_name=safe_upload_filename(request.file_name),
+                content_type=DOCX_CONTENT_TYPE,
+                content_sha256=hashlib.sha256(content).hexdigest(),
+                content=content,
+                extracted_text="",
+                created_at=now,
+                updated_at=now,
+            )
+            generation_context = load_authoritative_generation_context(
+                db,
+                application_id=request.application_id,
+                template_id=transient_template.id,
+                document_type=request.type,
+                template_override=transient_template,
+            )
+            profile, job, application, source, confirmations = (
+                assistant_preflight_inputs(generation_context)
+            )
+            ai_context = analyze_openclaw_assistant_context(
+                message_characters=request.prompt_characters,
+                context_kind="application",
+                profile=profile,
+                job=job,
+                application=application,
+                source_documents=[source],
+                candidate_confirmations=confirmations,
+                max_prompt_chars=settings.openclaw_assistant_max_prompt_chars,
+            )
+            source_context = dict(report["sourceContext"])
+            actual_source_context = build_source_document_context([source])[0]
+            source_elements = actual_source_context.get(
+                "blocks" if request.type == "tailored_resume" else "paragraphs",
+                [],
+            )
+            actual_source_characters = len(
+                json.dumps(
+                    actual_source_context,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+            metadata_characters = max(
+                0,
+                actual_source_characters - source_context["includedCharacters"],
+            )
+            source_context["includedElements"] = len(source_elements)
+            source_context["omittedElements"] = max(
+                0,
+                source_context["totalElements"] - len(source_elements),
+            )
+            source_context["includedCharacters"] = actual_source_characters
+            source_context["estimatedCharacters"] += metadata_characters
+            source_context["truncated"] = source_context["omittedElements"] > 0
+            omitted_source_characters = max(
+                0,
+                source_context["estimatedCharacters"]
+                - source_context["includedCharacters"],
+            )
+            ai_context["estimatedCharacters"] += omitted_source_characters
+            ai_context["source"] = source_context
+            ai_context["truncated"] = bool(
+                ai_context["truncated"] or source_context["truncated"]
+            )
+        except GenerationContextError as exc:
+            warnings.append(f"AI context could not be estimated: {exc}")
+
+    return DocumentTemplatePreflightPayload(
+        supported=True,
+        template=None,
+        editable_count=report["editableCount"],
+        immutable_count=report["immutableCount"],
+        immutable_elements=report["immutableElements"],
+        rejected_elements=report["rejectedElements"],
+        ai_context=ai_context,
+        warnings=warnings,
+    )
+
+
+@router.post(
     "/templates",
     response_model=DocumentTemplatePayload,
     status_code=status.HTTP_201_CREATED,
@@ -1725,6 +1866,55 @@ def document_template_payload(record: DocumentTemplateRecord) -> DocumentTemplat
         created_at=record.created_at,
         updated_at=record.updated_at,
     )
+
+
+def assistant_preflight_inputs(
+    context: AuthoritativeGenerationContext,
+) -> tuple[
+    ProfilePayload,
+    AssistantJobContext,
+    AssistantApplicationContext,
+    AssistantSourceDocument,
+    list[AssistantCandidateConfirmation],
+]:
+    profile = ProfilePayload.model_validate(context.profile)
+    job_data = dict(context.vacancy)
+    job_data["aiMatch"] = {"applicationGuide": context.application_guide}
+    job = AssistantJobContext.model_validate(job_data)
+    application_data = dict(context.application)
+    application_data["job"] = job.model_dump(by_alias=True)
+    application = AssistantApplicationContext.model_validate(application_data)
+    confirmations = [
+        AssistantCandidateConfirmation(
+            questionId=confirmation.question_id,
+            requirement=confirmation.requirement,
+            question=confirmation.question,
+            answer=(
+                confirmation.response.upper()
+                + (
+                    f": {confirmation.example_text}"
+                    if confirmation.example_text
+                    else ""
+                )
+            ),
+        )
+        for confirmation in context.confirmations
+    ]
+    encoded_template = base64.b64encode(context.template.content).decode("ascii")
+    source = AssistantSourceDocument(
+        id=context.template.id,
+        title=context.template.name,
+        category=(
+            "Cover Letter"
+            if context.template.type == "cover_letter"
+            else "CV / Resume"
+        ),
+        fileName=context.template.file_name,
+        dataUrl=(
+            f"data:{context.template.content_type};base64,{encoded_template}"
+        ),
+    )
+    return profile, job, application, source, confirmations
 
 
 def database_unavailable(exc: Exception) -> HTTPException:

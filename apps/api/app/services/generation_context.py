@@ -193,6 +193,7 @@ def load_authoritative_generation_context(
     template_id: str,
     document_type: str,
     expected_job_id: str | None = None,
+    template_override: DocumentTemplateRecord | None = None,
 ) -> AuthoritativeGenerationContext:
     application_record = db.get(StoredApplicationRecord, application_id)
     if not application_record:
@@ -277,7 +278,7 @@ def load_authoritative_generation_context(
     if language not in {"English", "German"}:
         language = detect_job_language(vacancy)
 
-    template = db.get(DocumentTemplateRecord, template_id)
+    template = template_override or db.get(DocumentTemplateRecord, template_id)
     if not template:
         raise GenerationContextError("Document template not found", status_code=404)
     if template.type != document_type:

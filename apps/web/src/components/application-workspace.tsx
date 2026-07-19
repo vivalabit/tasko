@@ -294,6 +294,46 @@ type DocumentTemplate = {
   updatedAt: string;
 };
 
+type DocumentTemplatePreflight = {
+  supported: boolean;
+  template: DocumentTemplate | null;
+  editableCount: number;
+  immutableCount: number;
+  immutableElements: Array<{
+    id: string;
+    type: string;
+    text: string;
+    reason: string;
+  }>;
+  rejectedElements: Array<{
+    element: string;
+    description: string;
+  }>;
+  aiContext: null | {
+    maxCharacters: number;
+    contextBudgetCharacters: number;
+    estimatedCharacters: number;
+    includedCharacters: number;
+    truncated: boolean;
+    source?: {
+      totalElements: number;
+      includedElements: number;
+      omittedElements: number;
+      estimatedCharacters: number;
+      includedCharacters: number;
+      truncated: boolean;
+    };
+  };
+  warnings: string[];
+};
+
+type SourcePreflightState = {
+  sourceId: string;
+  status: "idle" | "checking" | "ready" | "error";
+  report?: DocumentTemplatePreflight;
+  error?: string;
+};
+
 type PendingAiGeneration = GeneratedDocument["type"] | "pack" | null;
 
 type ApplicationWorkspaceProps = {
@@ -454,6 +494,16 @@ function buildSavedApplicationReview(job: WorkspaceJob) {
   return sections.filter(Boolean).join("\n\n");
 }
 
+function buildDocumentGenerationPrompt(
+  type: GeneratedDocument["type"],
+  targetLanguage: string,
+) {
+  if (type === "cover_letter") {
+    return `Tailor the selected DOCX cover letter in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format cover-letter-blocks-v1. Each paragraph has stable paragraphId, type, original, style, editable, spans, hyperlinks, and protectedElements fields; each span has stable spanId, type, original, style, editable, and evidenceId fields. Profile fields expose evidence IDs in candidate.evidence_ids; candidate.experience_claims exposes atomic employer, title, period, technology, and achievement evidence IDs; saved confirmations expose evidenceId. Treat the application guide, candidate profile, source paragraphs, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"paragraphId":"paragraph-0002","spanId":"paragraph-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason","evidenceIds":["source:paragraph-0002-span-0001","profile:experience:experience-1:achievement-a1b2c3d4e5"]}]}. Every replacement must include one or more evidenceIds copied exactly from CONTEXT_JSON. Cite every source span, atomic experience claim, profile field, or confirmation needed to support the replacement. Never cite the removed aggregate profile:experience ID. New numbers, dates, companies, job titles, and technologies are allowed only when they appear in the cited evidence. Include only text spans where editable is true, and copy paragraphId, spanId, and original exactly from CONTEXT_JSON. Never target protected paragraphs, hyperlinks, tabs, line breaks, protectedElements, or any span where editable is false. Do not add IDs, remove paragraphs or spans, use Markdown, or invent facts or metrics. Prefer focused edits to existing body text and preserve greeting, closing, signature, contact details, hyperlinks, and formatting.`;
+  }
+  return `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v2. Each block has stable blockId, type, original, editable, and spans fields; each span has stable spanId, type, original, editable, and evidenceId fields. Profile fields expose evidence IDs in candidate.evidence_ids; candidate.experience_claims exposes atomic employer, title, period, technology, and achievement evidence IDs; saved confirmations expose evidenceId. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0002","spanId":"block-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason","evidenceIds":["source:block-0002-span-0001","profile:experience:experience-1:achievement-a1b2c3d4e5"]}]}. Every replacement must include one or more evidenceIds copied exactly from CONTEXT_JSON. Cite every source span, atomic experience claim, profile field, or confirmation needed to support the replacement. Never cite the removed aggregate profile:experience ID. New numbers, dates, companies, job titles, and technologies are allowed only when they appear in the cited evidence. Include only text spans where editable is true, and copy blockId, spanId, and original exactly from CONTEXT_JSON. Never target headings, contacts, immutable or structural table-cell blocks, hyperlinks, tabs, line breaks, or any span where editable is false. Do not add IDs, remove blocks or spans, use Markdown, or invent facts or metrics. Prefer targeted edits to summary, skill, and achievement text spans.`;
+}
+
 async function readApiError(response: Response, fallback: string) {
   const payload = await response.json().catch(() => null) as { detail?: unknown } | null;
   if (typeof payload?.detail === "string" && payload.detail.trim()) return payload.detail;
@@ -530,6 +580,14 @@ export function ApplicationWorkspace({
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [selectedResumeSourceId, setSelectedResumeSourceId] = useState("");
   const [selectedCoverSourceId, setSelectedCoverSourceId] = useState("");
+  const [resumePreflight, setResumePreflight] = useState<SourcePreflightState>({
+    sourceId: "",
+    status: "idle",
+  });
+  const [coverPreflight, setCoverPreflight] = useState<SourcePreflightState>({
+    sourceId: "",
+    status: "idle",
+  });
   const [languageMode, setLanguageMode] = useState<"auto" | "English" | "German">("auto");
   const [isResumeSourceManual, setIsResumeSourceManual] = useState(false);
   const [isCoverSourceManual, setIsCoverSourceManual] = useState(false);
@@ -547,6 +605,7 @@ export function ApplicationWorkspace({
   const [confirmationsDirty, setConfirmationsDirty] = useState(false);
   const [confirmationSyncStatus, setConfirmationSyncStatus] = useState<"loading" | "saving" | "saved" | "unsaved" | "error">("loading");
   const [confirmationSyncMessage, setConfirmationSyncMessage] = useState("");
+  const [preflightContextRevision, setPreflightContextRevision] = useState(0);
   const [advice, setAdvice] = useState("");
   const [advicePrompt, setAdvicePrompt] = useState("");
   const [isLoadingAdvice, setIsLoadingAdvice] = useState(false);
@@ -674,6 +733,7 @@ export function ApplicationWorkspace({
     const legacyStorageKey = `tasko.application-confirmations.${applicationId}`;
     setCandidateConfirmations({});
     setConfirmationsDirty(false);
+    setPreflightContextRevision(0);
     setConfirmationSyncStatus("loading");
     setConfirmationSyncMessage("");
 
@@ -774,6 +834,7 @@ export function ApplicationWorkspace({
         setConfirmationsDirty(false);
         setConfirmationSyncStatus("saved");
         setConfirmationSyncMessage("");
+        setPreflightContextRevision((current) => current + 1);
         window.localStorage.removeItem(`tasko.application-confirmations.${application.id}`);
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -801,6 +862,88 @@ export function ApplicationWorkspace({
     }
   }, [coverSources, effectiveLanguage, isCoverSourceManual, isResumeSourceManual, resumeSources]);
 
+  useEffect(() => {
+    const source = profileSources.find((item) => item.id === selectedResumeSourceId);
+    if (!application || !source) {
+      setResumePreflight({ sourceId: "", status: "idle" });
+      return;
+    }
+    const controller = new AbortController();
+    setResumePreflight({ sourceId: source.id, status: "checking" });
+    const prompt = buildDocumentGenerationPrompt(
+      "tailored_resume",
+      effectiveLanguage || source.language || "English",
+    );
+    fetchWithTimeout(`${apiBaseUrl}/documents/templates/preflight`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        type: "tailored_resume",
+        name: `${source.title} · ${source.uploaded_at || source.id}`.slice(0, 240),
+        fileName: source.file_name,
+        dataUrl: source.data_url,
+        applicationId: application.id,
+        promptCharacters: prompt.length,
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await readApiError(response, "Template preflight failed"));
+        const report = await response.json() as DocumentTemplatePreflight;
+        setResumePreflight({ sourceId: source.id, status: "ready", report });
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setResumePreflight({
+          sourceId: source.id,
+          status: "error",
+          error: apiUnavailableMessage(error, "Template preflight failed"),
+        });
+      });
+    return () => controller.abort();
+  }, [application?.id, application?.job.aiMatch?.updatedAt, effectiveLanguage, preflightContextRevision, profileSources, selectedResumeSourceId]);
+
+  useEffect(() => {
+    const source = profileSources.find((item) => item.id === selectedCoverSourceId);
+    if (!application || !source) {
+      setCoverPreflight({ sourceId: "", status: "idle" });
+      return;
+    }
+    const controller = new AbortController();
+    setCoverPreflight({ sourceId: source.id, status: "checking" });
+    const prompt = buildDocumentGenerationPrompt(
+      "cover_letter",
+      effectiveLanguage || source.language || "English",
+    );
+    fetchWithTimeout(`${apiBaseUrl}/documents/templates/preflight`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        type: "cover_letter",
+        name: `${source.title} · ${source.uploaded_at || source.id}`.slice(0, 240),
+        fileName: source.file_name,
+        dataUrl: source.data_url,
+        applicationId: application.id,
+        promptCharacters: prompt.length,
+      }),
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await readApiError(response, "Template preflight failed"));
+        const report = await response.json() as DocumentTemplatePreflight;
+        setCoverPreflight({ sourceId: source.id, status: "ready", report });
+      })
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setCoverPreflight({
+          sourceId: source.id,
+          status: "error",
+          error: apiUnavailableMessage(error, "Template preflight failed"),
+        });
+      });
+    return () => controller.abort();
+  }, [application?.id, application?.job.aiMatch?.updatedAt, effectiveLanguage, preflightContextRevision, profileSources, selectedCoverSourceId]);
+
   if (!application) {
     return (
       <section className="grid min-w-0 flex-1 place-items-center p-6">
@@ -814,6 +957,12 @@ export function ApplicationWorkspace({
   }
 
   const activeApplication = application;
+  const resumePreflightReady = resumePreflight.sourceId === selectedResumeSourceId
+    && resumePreflight.status === "ready"
+    && resumePreflight.report?.supported === true;
+  const coverPreflightReady = coverPreflight.sourceId === selectedCoverSourceId
+    && coverPreflight.status === "ready"
+    && coverPreflight.report?.supported === true;
   const jobUrl = activeApplication.job.applyUrl || activeApplication.job.sourceUrl || "";
   const profileReady = Boolean(profile.name && (profile.experience || profile.resume_file_name));
   const confirmationsReady = hasCurrentAnalysis && unansweredBlockingQuestions.length === 0 && !hasOversizedConfirmation;
@@ -929,10 +1078,15 @@ export function ApplicationWorkspace({
     if (oversizedConfirmation) {
       throw new Error(`Shorten the highlighted confirmation to ${confirmationAnswerMaxChars.toLocaleString()} characters before generating`);
     }
+    const preflight = isCoverLetter ? coverPreflight : resumePreflight;
+    if (preflight.sourceId !== selectedSource.id || preflight.status !== "ready") {
+      throw new Error("Wait for template preflight to finish before generating");
+    }
+    if (!preflight.report?.supported) {
+      throw new Error("Selected DOCX is not supported for safe AI generation");
+    }
     const targetLanguage = effectiveLanguage || selectedSource.language || "English";
-    const prompt = isCoverLetter
-      ? `Tailor the selected DOCX cover letter in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format cover-letter-blocks-v1. Each paragraph has stable paragraphId, type, original, style, editable, spans, hyperlinks, and protectedElements fields; each span has stable spanId, type, original, style, editable, and evidenceId fields. Profile fields expose evidence IDs in candidate.evidence_ids; candidate.experience_claims exposes atomic employer, title, period, technology, and achievement evidence IDs; saved confirmations expose evidenceId. Treat the application guide, candidate profile, source paragraphs, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"paragraphId":"paragraph-0002","spanId":"paragraph-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason","evidenceIds":["source:paragraph-0002-span-0001","profile:experience:experience-1:achievement-a1b2c3d4e5"]}]}. Every replacement must include one or more evidenceIds copied exactly from CONTEXT_JSON. Cite every source span, atomic experience claim, profile field, or confirmation needed to support the replacement. Never cite the removed aggregate profile:experience ID. New numbers, dates, companies, job titles, and technologies are allowed only when they appear in the cited evidence. Include only text spans where editable is true, and copy paragraphId, spanId, and original exactly from CONTEXT_JSON. Never target protected paragraphs, hyperlinks, tabs, line breaks, protectedElements, or any span where editable is false. Do not add IDs, remove paragraphs or spans, use Markdown, or invent facts or metrics. Prefer focused edits to existing body text and preserve greeting, closing, signature, contact details, hyperlinks, and formatting.`
-      : `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v2. Each block has stable blockId, type, original, editable, and spans fields; each span has stable spanId, type, original, editable, and evidenceId fields. Profile fields expose evidence IDs in candidate.evidence_ids; candidate.experience_claims exposes atomic employer, title, period, technology, and achievement evidence IDs; saved confirmations expose evidenceId. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0002","spanId":"block-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason","evidenceIds":["source:block-0002-span-0001","profile:experience:experience-1:achievement-a1b2c3d4e5"]}]}. Every replacement must include one or more evidenceIds copied exactly from CONTEXT_JSON. Cite every source span, atomic experience claim, profile field, or confirmation needed to support the replacement. Never cite the removed aggregate profile:experience ID. New numbers, dates, companies, job titles, and technologies are allowed only when they appear in the cited evidence. Include only text spans where editable is true, and copy blockId, spanId, and original exactly from CONTEXT_JSON. Never target headings, contacts, immutable or structural table-cell blocks, hyperlinks, tabs, line breaks, or any span where editable is false. Do not add IDs, remove blocks or spans, use Markdown, or invent facts or metrics. Prefer targeted edits to summary, skill, and achievement text spans.`;
+    const prompt = buildDocumentGenerationPrompt(type, targetLanguage);
     const templateId = await ensureSourceTemplate(selectedSource, type);
     const generate = () => askAssistant(prompt, {
       applicationId: activeApplication.id,
@@ -1301,7 +1455,7 @@ export function ApplicationWorkspace({
         dataUrl: source.data_url,
       }),
     });
-    if (!response.ok) throw new Error(await readApiError(response, "Selected DOCX could not be used as a Word template"));
+    if (!response.ok) throw new Error(await readApiError(response, "Selected DOCX could not be stored as a Word template"));
     const uploaded = await response.json() as DocumentTemplate;
     setTemplates((current) => [uploaded, ...current]);
     return uploaded.id;
@@ -1519,7 +1673,7 @@ export function ApplicationWorkspace({
                 <div className="flex flex-col gap-2 sm:items-end">
                   <div className="flex items-center gap-2 text-[9px] text-muted"><span>AI provider: <strong className="text-white">{aiConfiguration.providerName}</strong></span>{aiDisclosureAccepted ? <button type="button" onClick={revokeAiConsent} className="font-bold text-amber-200 hover:text-white">Revoke consent</button> : <span className="font-bold text-amber-200">Consent required</span>}</div>
                   <label className="flex items-center gap-2 text-[9px] font-bold text-muted"><span>On cover failure</span><select value={packPersistenceMode} disabled={isGeneratingPack} onChange={(event) => setPackPersistenceMode(event.target.value as PackPersistenceMode)} className="h-8 rounded-lg border border-white/[0.08] bg-[#151c24] px-2 text-[10px] font-bold text-white outline-none focus:border-accent/60 disabled:opacity-50"><option value="atomic">Roll back pack</option><option value="partial">Keep validated CV</option></select></label>
-                  <Button onClick={() => requestAiGeneration("pack")} disabled={isGeneratingPack || Boolean(generationType) || !documentsLoaded || !selectedResumeSourceId || !selectedCoverSourceId || !applicationReview || unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? packStageDefinitions.find((stage) => stage.id === packProgress?.stage)?.label ?? "Generating pack…" : "Generate both documents"}</Button>
+                  <Button onClick={() => requestAiGeneration("pack")} disabled={isGeneratingPack || Boolean(generationType) || !documentsLoaded || !selectedResumeSourceId || !selectedCoverSourceId || !resumePreflightReady || !coverPreflightReady || !applicationReview || unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? packStageDefinitions.find((stage) => stage.id === packProgress?.stage)?.label ?? "Generating pack…" : "Generate both documents"}</Button>
                 </div>
               </div>
               <div className="p-5 sm:p-6">
@@ -1528,8 +1682,8 @@ export function ApplicationWorkspace({
                 {effectiveLanguage && !resumeSources.some((source) => source.language === effectiveLanguage) ? <div className="mb-4 rounded-xl border border-amber-400/25 bg-amber-400/[0.07] px-3 py-2.5 text-xs leading-5 text-amber-200">No {effectiveLanguage} CV DOCX is saved in Profile. Add one or choose another language.</div> : null}
                 {templates.length ? <details className="mb-4 rounded-xl border border-white/[0.07] bg-black/15"><summary className="cursor-pointer px-3 py-2.5 text-[10px] font-bold text-[#cbd3df] marker:text-muted">Stored templates · {templates.length}</summary><div className="divide-y divide-white/[0.06] border-t border-white/[0.07] px-3">{templates.map((template) => <div key={template.id} className="flex items-center gap-3 py-2"><div className="min-w-0 flex-1"><p className="truncate text-[10px] font-bold text-white">{template.name}</p><p className="truncate text-[9px] text-muted">{template.type === "tailored_resume" ? "CV" : "Cover letter"} · {template.fileName}</p></div><Button type="button" variant="ghost" aria-label={`Delete template ${template.name}`} disabled={deletingTemplateId === template.id} onClick={() => void deleteStoredTemplate(template)} className="h-8 rounded-lg border border-red-400/20 px-2 text-red-200 hover:bg-red-500/10">{deletingTemplateId === template.id ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}</Button></div>)}</div></details> : null}
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <DocumentCard documentType="tailored_resume" icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} onLoadMoreVersions={() => latestResume && void loadMoreDocumentVersions(latestResume)} onDelete={() => latestResume && void deleteGeneratedDocument(latestResume)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedResumeSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedResumeSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
-                  <DocumentCard documentType="cover_letter" icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} onLoadMoreVersions={() => latestCoverLetter && void loadMoreDocumentVersions(latestCoverLetter)} onDelete={() => latestCoverLetter && void deleteGeneratedDocument(latestCoverLetter)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedCoverSourceId ? "Select source first" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
+                  <DocumentCard documentType="tailored_resume" icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} onLoadMoreVersions={() => latestResume && void loadMoreDocumentVersions(latestResume)} onDelete={() => latestResume && void deleteGeneratedDocument(latestResume)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedResumeSourceId && resumePreflightReady && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedResumeSourceId ? "Select source first" : resumePreflight.status === "checking" ? "Checking template…" : resumePreflight.status === "error" ? "Preflight failed" : !resumePreflight.report?.supported ? "Template unsupported" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} preflight={resumePreflight} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
+                  <DocumentCard documentType="cover_letter" icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} onLoadMoreVersions={() => latestCoverLetter && void loadMoreDocumentVersions(latestCoverLetter)} onDelete={() => latestCoverLetter && void deleteGeneratedDocument(latestCoverLetter)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && coverPreflightReady && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedCoverSourceId ? "Select source first" : coverPreflight.status === "checking" ? "Checking template…" : coverPreflight.status === "error" ? "Preflight failed" : !coverPreflight.report?.supported ? "Template unsupported" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} preflight={coverPreflight} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
                 </div>
               </div>
             </section>
@@ -1715,15 +1869,22 @@ function SourcePicker({
   label,
   sources,
   selectedId,
+  preflight,
   onChange,
   onAttach,
 }: {
   label: string;
   sources: ProfileSourceDocument[];
   selectedId: string;
+  preflight: SourcePreflightState;
   onChange: (sourceId: string) => void;
   onAttach: (file: File | undefined) => void;
 }) {
+  const activePreflight = preflight.sourceId === selectedId ? preflight : undefined;
+  const report = activePreflight?.report;
+  const immutableTypes = report
+    ? [...new Set(report.immutableElements.map((item) => item.type))]
+    : [];
   return (
     <div className="mt-4 rounded-xl border border-white/[0.07] bg-white/[0.02] p-3">
       <div className="flex items-center justify-between gap-2">
@@ -1746,6 +1907,40 @@ function SourcePicker({
         {sources.map((source) => <option key={source.id} value={source.id}>{source.language ? `${source.language} · ` : ""}{source.title} · {source.file_name}</option>)}
       </select>
       <p className="mt-2 text-[9px] leading-4 text-muted">{sources.length ? "Layout, styles, images, header and footer stay intact." : "No DOCX found. Upload one here or add it to Profile."}</p>
+      {activePreflight?.status === "checking" ? (
+        <p className="mt-2 flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] px-2.5 py-2 text-[9px] font-bold text-[#cbd3df]" role="status">
+          <LoaderCircle className="h-3 w-3 animate-spin text-accent" /> Checking template capabilities…
+        </p>
+      ) : null}
+      {activePreflight?.status === "error" ? (
+        <p className="mt-2 rounded-lg border border-red-400/25 bg-red-500/[0.06] px-2.5 py-2 text-[9px] leading-4 text-red-200" role="alert">{activePreflight.error}</p>
+      ) : null}
+      {report ? (
+        <details open className={cn("mt-2 rounded-lg border", report.supported ? "border-success/20 bg-success/[0.035]" : "border-red-400/25 bg-red-500/[0.045]")}>
+          <summary className={cn("cursor-pointer px-2.5 py-2 text-[9px] font-black uppercase tracking-wide", report.supported ? "text-success" : "text-red-200")}>
+            {report.supported ? `Supported · ${report.editableCount} editable` : "Template unsupported"}
+          </summary>
+          <div className="space-y-2 border-t border-white/[0.07] px-2.5 py-2 text-[9px] leading-4 text-[#b7c0cc]">
+            <p><strong className="text-white">Immutable:</strong> {report.immutableCount ? `${report.immutableCount} element${report.immutableCount === 1 ? "" : "s"}${immutableTypes.length ? ` (${immutableTypes.join(", ")})` : ""}. AI edits targeting them are rejected.` : "none detected"}</p>
+            {report.immutableElements.length ? (
+              <ul className="list-disc space-y-0.5 pl-4 text-muted">
+                {report.immutableElements.slice(0, 4).map((item) => <li key={item.id}><span className="font-bold text-[#dce2ea]">{item.id} · {item.type}</span>{item.text ? ` — ${item.text}` : ""}</li>)}
+              </ul>
+            ) : null}
+            {report.rejectedElements.length ? (
+              <div><p className="font-bold text-red-200">Rejected constructions:</p><ul className="mt-0.5 list-disc space-y-0.5 pl-4 text-red-200/85">{report.rejectedElements.map((item) => <li key={`${item.element}-${item.description}`}>{item.description} ({item.element})</li>)}</ul></div>
+            ) : <p><strong className="text-white">Rejected constructions:</strong> none detected</p>}
+            {report.aiContext ? (
+              <p className={cn("rounded-md border px-2 py-1.5", report.aiContext.truncated ? "border-amber-400/25 bg-amber-400/[0.06] text-amber-100" : "border-white/[0.07] bg-black/15 text-muted")}>
+                <strong className="text-white">AI context:</strong> {report.aiContext.includedCharacters.toLocaleString()} of {report.aiContext.estimatedCharacters.toLocaleString()} characters included
+                {report.aiContext.source ? ` · ${report.aiContext.source.includedElements} of ${report.aiContext.source.totalElements} template elements` : ""}
+                {report.aiContext.truncated ? " · context will be truncated" : " · no truncation"}
+              </p>
+            ) : null}
+            {report.warnings.map((warning) => <p key={warning} className="text-amber-200">{warning}</p>)}
+          </div>
+        </details>
+      ) : null}
     </div>
   );
 }

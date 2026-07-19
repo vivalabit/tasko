@@ -559,6 +559,67 @@ describe("ApplicationWorkspace", () => {
     window.localStorage.removeItem("tasko.ai-consent");
   });
 
+  it("reports template capabilities and AI context truncation before generation", async () => {
+    const source = {
+      id: "large-resume-source",
+      title: "Large CV",
+      category: "CV / Resume",
+      language: "English",
+      file_name: "large-resume.docx",
+      file_size: "80 KB",
+      file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      uploaded_at: "2026-07-18T10:00:00.000Z",
+      data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cv",
+    };
+    installApplicationWorkspaceApiMock({
+      requestHandler: (url, method) => {
+        if (url.pathname !== "/documents/templates/preflight" || method !== "POST") return undefined;
+        return Response.json({
+          supported: true,
+          template: {
+            id: "large-template",
+            type: "tailored_resume",
+            name: "Large CV",
+            fileName: "large-resume.docx",
+            createdAt: "2026-07-18T10:00:00.000Z",
+            updatedAt: "2026-07-18T10:00:00.000Z",
+          },
+          editableCount: 12,
+          immutableCount: 3,
+          immutableElements: [
+            { id: "block-0001", type: "heading", text: "Experience", reason: "AI changes targeting this protected element will be rejected" },
+          ],
+          rejectedElements: [],
+          aiContext: {
+            maxCharacters: 32000,
+            contextBudgetCharacters: 28000,
+            estimatedCharacters: 36000,
+            includedCharacters: 28000,
+            truncated: true,
+            source: {
+              totalElements: 40,
+              includedElements: 28,
+              omittedElements: 12,
+              estimatedCharacters: 18000,
+              includedCharacters: 10000,
+              truncated: true,
+            },
+          },
+          warnings: [],
+        });
+      },
+    });
+
+    renderApplicationWorkspace(createV3WorkspaceApplication(), {
+      profile: createWorkspaceProfile({ documents: JSON.stringify([source]) }),
+    });
+
+    expect(await screen.findByText("Supported · 12 editable")).toBeInTheDocument();
+    expect(screen.getByText(/3 elements \(heading\)/)).toBeInTheDocument();
+    expect(screen.getByText(/28 of 40 template elements/)).toBeInTheDocument();
+    expect(screen.getByText(/context will be truncated/)).toBeInTheDocument();
+  });
+
   it("does not loop fingerprint updates when the application guide is missing", async () => {
     const fetchMock = installApplicationWorkspaceApiMock();
 

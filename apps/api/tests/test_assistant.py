@@ -34,6 +34,7 @@ from app.services.assistant import (
     OpenClawAssistantError,
     OpenClawAssistantTimeoutError,
     SourceDocumentPreflightError,
+    analyze_openclaw_assistant_context,
     build_openclaw_assistant_prompt,
     compact_conversation_history,
     extract_openclaw_assistant_text,
@@ -98,6 +99,21 @@ def test_build_openclaw_assistant_prompt_only_includes_dynamic_context() -> None
     assert '"title":"Senior Product Designer"' in prompt
     assert "Tailor my resume" in prompt
     assert "You are Tasko" not in prompt
+
+
+def test_assistant_context_analysis_reports_budget_truncation() -> None:
+    report = analyze_openclaw_assistant_context(
+        message_characters=1_000,
+        context_kind="profile",
+        profile=ProfilePayload(name="Eduard", job_preferences="x" * 10_000),
+        job=None,
+        application=None,
+        max_prompt_chars=4_000,
+    )
+
+    assert report["truncated"] is True
+    assert report["estimatedCharacters"] > report["contextBudgetCharacters"]
+    assert report["includedCharacters"] <= report["contextBudgetCharacters"]
 
 
 def test_build_openclaw_assistant_prompt_omits_empty_fields_and_duplicate_resume(

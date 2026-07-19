@@ -6,6 +6,7 @@ import json
 import zipfile
 
 from docx import Document
+from docx.oxml import OxmlElement
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -18,6 +19,7 @@ from app.models.documents import (
     DocumentAttachmentRecord,
     DocumentGenerationProvenanceRecord,
     DocumentRecord,
+    DocumentTemplateRecord,
     DocumentVersionGenerationProvenanceRecord,
     DocumentVersionRecord,
     DocumentVersionValidationRecord,
@@ -26,6 +28,86 @@ from app.models.jobs import JobMatchRecord, StoredJobRecord
 from app.models.profile import ProfileRecord
 from app.services.ai_match import MATCHER_VERSION
 from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
+
+
+def test_template_preflight_reports_capabilities_and_rejections() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        with testing_session_local() as db:
+            yield db
+
+    supported_document = Document()
+    supported_document.add_paragraph("PROFILE", style="Heading 1")
+    supported_document.add_paragraph(
+        "Product designer building reliable B2B workflows with research evidence."
+    )
+    supported_output = BytesIO()
+    supported_document.save(supported_output)
+    supported_data_url = (
+        "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;"
+        "base64," + base64.b64encode(supported_output.getvalue()).decode()
+    )
+
+    unsupported_document = Document()
+    unsupported_paragraph = unsupported_document.add_paragraph("Unsupported source")
+    unsupported_paragraph.add_run()._r.append(OxmlElement("w:drawing"))
+    unsupported_output = BytesIO()
+    unsupported_document.save(unsupported_output)
+    unsupported_data_url = (
+        "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;"
+        "base64," + base64.b64encode(unsupported_output.getvalue()).decode()
+    )
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        supported = client.post(
+            "/documents/templates/preflight",
+            json={
+                "type": "tailored_resume",
+                "name": "Supported CV",
+                "fileName": "resume.docx",
+                "dataUrl": supported_data_url,
+                "promptCharacters": 2200,
+            },
+        )
+        rejected = client.post(
+            "/documents/templates/preflight",
+            json={
+                "type": "tailored_resume",
+                "name": "Unsupported CV",
+                "fileName": "unsupported.docx",
+                "dataUrl": unsupported_data_url,
+            },
+        )
+        with testing_session_local() as db:
+            template_count = db.scalar(
+                select(func.count()).select_from(DocumentTemplateRecord)
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert supported.status_code == 200
+    assert supported.json()["supported"] is True
+    assert supported.json()["template"] is None
+    assert supported.json()["editableCount"] == 1
+    assert supported.json()["immutableCount"] == 1
+    assert supported.json()["immutableElements"][0]["type"] == "heading"
+    assert supported.json()["aiContext"] is None
+    assert rejected.status_code == 200
+    assert rejected.json()["supported"] is False
+    assert rejected.json()["template"] is None
+    assert rejected.json()["rejectedElements"] == [
+        {"element": "drawing", "description": "drawings or text boxes"}
+    ]
+    assert template_count == 0
 
 
 def test_document_versions_download_and_application_attachments() -> None:

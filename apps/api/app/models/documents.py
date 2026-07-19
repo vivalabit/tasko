@@ -420,6 +420,20 @@ class DocumentTemplateCreateRequest(BaseModel):
     model_config = {"populate_by_name": True}
 
 
+class DocumentTemplatePreflightRequest(DocumentTemplateCreateRequest):
+    application_id: str | None = Field(
+        default=None,
+        max_length=160,
+        alias="applicationId",
+    )
+    prompt_characters: int = Field(
+        default=0,
+        ge=0,
+        le=12_000,
+        alias="promptCharacters",
+    )
+
+
 class DocumentTemplatePayload(BaseModel):
     id: str
     type: DocumentType
@@ -427,5 +441,18 @@ class DocumentTemplatePayload(BaseModel):
     file_name: str = Field(alias="fileName")
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
+
+    model_config = {"populate_by_name": True}
+
+
+class DocumentTemplatePreflightPayload(BaseModel):
+    supported: bool
+    template: DocumentTemplatePayload | None = None
+    editable_count: int = Field(alias="editableCount")
+    immutable_count: int = Field(alias="immutableCount")
+    immutable_elements: list[dict[str, str]] = Field(alias="immutableElements")
+    rejected_elements: list[dict[str, str]] = Field(alias="rejectedElements")
+    ai_context: dict[str, Any] | None = Field(default=None, alias="aiContext")
+    warnings: list[str] = Field(default_factory=list)
 
     model_config = {"populate_by_name": True}
