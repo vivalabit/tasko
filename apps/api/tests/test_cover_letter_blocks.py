@@ -4,6 +4,7 @@ from io import BytesIO
 
 import pytest
 from docx import Document
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.opc.constants import RELATIONSHIP_TYPE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
@@ -57,6 +58,138 @@ def cover_letter_template() -> tuple[bytes, str]:
     output = BytesIO()
     document.save(output)
     return output.getvalue(), relationship_id
+
+
+def document_bytes(document: Document) -> bytes:
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("greeting", "closing"),
+    [
+        ("Sehr geehrte Damen und Herren,", "Mit freundlichen Grüßen,"),
+        ("Bonjour Madame, Monsieur,", "Cordialement,"),
+        ("Gentile Responsabile delle assunzioni,", "Cordiali saluti,"),
+        ("Estimada responsable de selección,", "Saludos cordiales,"),
+        ("Geachte heer/mevrouw,", "Met vriendelijke groet,"),
+        ("Szanowni Państwo,", "Z poważaniem,"),
+        ("Bästa rekryteringsteam,", "Med vänliga hälsningar,"),
+    ],
+)
+def test_multilingual_greetings_and_closings_protect_surrounding_paragraphs(
+    greeting: str,
+    closing: str,
+) -> None:
+    document = Document()
+    document.add_paragraph(greeting)
+    document.add_paragraph("Reusable body paragraph.")
+    document.add_paragraph(closing)
+    document.add_paragraph("Eduard")
+
+    paragraphs = extract_cover_letter_blocks_from_docx(document_bytes(document))
+
+    assert [(paragraph["type"], paragraph["editable"]) for paragraph in paragraphs] == [
+        ("greeting", False),
+        ("body", True),
+        ("closing", False),
+        ("signature", False),
+    ]
+
+
+def test_cover_letter_renderer_preserves_distinct_paragraph_and_run_styles() -> None:
+    document = Document()
+    greeting = document.add_paragraph("Sehr geehrte Damen und Herren,")
+    greeting.style = document.styles["Subtitle"]
+    greeting.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    greeting.runs[0].italic = True
+    first_body = document.add_paragraph(style="Quote")
+    first_body.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    first_body.add_run("First reusable paragraph.").bold = True
+    second_body = document.add_paragraph(style="Intense Quote")
+    second_body.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    second_body.add_run("Second reusable paragraph.").italic = True
+    closing = document.add_paragraph("Mit freundlichen Grüßen,", style="Caption")
+    closing.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    signature = document.add_paragraph("Eduard", style="Title")
+    signature.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    template = document_bytes(document)
+    content = json.dumps(
+        {
+            "replacements": [
+                {
+                    "paragraphId": "paragraph-0002",
+                    "spanId": "paragraph-0002-span-0001",
+                    "original": "First reusable paragraph.",
+                    "replacement": "First targeted paragraph.",
+                    "reason": "Tailors the first body paragraph",
+                    "evidenceIds": ["profile:experience"],
+                },
+                {
+                    "paragraphId": "paragraph-0003",
+                    "spanId": "paragraph-0003-span-0001",
+                    "original": "Second reusable paragraph.",
+                    "replacement": "Second targeted paragraph.",
+                    "reason": "Tailors the second body paragraph",
+                    "evidenceIds": ["profile:skills"],
+                },
+            ]
+        }
+    )
+
+    source_blocks = extract_cover_letter_blocks_from_docx(template)
+    rendered = build_document_from_template(
+        template_content=template,
+        content=content,
+        document_type="cover_letter",
+    )
+    rendered_document = Document(BytesIO(rendered))
+
+    assert [paragraph["style"] for paragraph in source_blocks] == [
+        {"paragraphStyle": "Subtitle", "alignment": "center"},
+        {"paragraphStyle": "Quote", "alignment": "both"},
+        {"paragraphStyle": "IntenseQuote", "alignment": "left"},
+        {"paragraphStyle": "Caption", "alignment": "right"},
+        {"paragraphStyle": "Title", "alignment": "right"},
+    ]
+    assert [paragraph.style.style_id for paragraph in rendered_document.paragraphs] == [
+        "Subtitle",
+        "Quote",
+        "IntenseQuote",
+        "Caption",
+        "Title",
+    ]
+    assert [paragraph.alignment for paragraph in rendered_document.paragraphs] == [
+        WD_ALIGN_PARAGRAPH.CENTER,
+        WD_ALIGN_PARAGRAPH.JUSTIFY,
+        WD_ALIGN_PARAGRAPH.LEFT,
+        WD_ALIGN_PARAGRAPH.RIGHT,
+        WD_ALIGN_PARAGRAPH.RIGHT,
+    ]
+    assert [paragraph.text for paragraph in rendered_document.paragraphs] == [
+        "Sehr geehrte Damen und Herren,",
+        "First targeted paragraph.",
+        "Second targeted paragraph.",
+        "Mit freundlichen Grüßen,",
+        "Eduard",
+    ]
+    assert rendered_document.paragraphs[0].runs[0].italic is True
+    assert rendered_document.paragraphs[1].runs[0].bold is True
+    assert rendered_document.paragraphs[2].runs[0].italic is True
+
+    with zipfile.ZipFile(BytesIO(template)) as source, zipfile.ZipFile(BytesIO(rendered)) as result:
+        source_root = etree.fromstring(source.read("word/document.xml"))
+        rendered_root = etree.fromstring(result.read("word/document.xml"))
+    source_properties = [
+        etree.tostring(paragraph.find(qn("w:pPr")))
+        for paragraph in source_root.findall(".//" + qn("w:body") + "/" + qn("w:p"))
+    ]
+    rendered_properties = [
+        etree.tostring(paragraph.find(qn("w:pPr")))
+        for paragraph in rendered_root.findall(".//" + qn("w:body") + "/" + qn("w:p"))
+    ]
+    assert rendered_properties == source_properties
 
 
 def test_cover_letter_blocks_model_protected_paragraphs_and_editable_spans() -> None:
