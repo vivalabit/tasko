@@ -89,8 +89,10 @@ overwriting conversations that already exist on the server.
 Assistant responses can be saved as editable cover letters or tailored
 resumes. Documents, vacancy-specific variants, immutable content versions, and
 application attachments are stored in PostgreSQL through `/documents`.
-`GET /documents/{id}/download` produces a styled `.docx` for the current or a
-selected historical version.
+`GET /documents/{id}/download` returns the stored rendered `.docx` for the
+current or a selected historical version. If that rendered artifact is no
+longer available, the API returns `410 Gone`; it never reconstructs a DOCX from
+the stored generation payload.
 
 ### Document storage and AI disclosure
 

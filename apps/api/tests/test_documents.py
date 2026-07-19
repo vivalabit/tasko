@@ -17,6 +17,7 @@ from app.main import app
 from app.models.applications import CandidateConfirmationRecord, StoredApplicationRecord
 from app.models.documents import (
     DocumentAttachmentRecord,
+    DocumentFileRecord,
     DocumentGenerationProvenanceRecord,
     DocumentRecord,
     DocumentTemplateRecord,
@@ -162,7 +163,7 @@ def test_workspace_source_documents_persist_by_application_and_can_be_deleted() 
                 "category": "CV / Resume",
                 "title": "Target CV",
                 "language": "English",
-                "fileName": "target-cv.docx",
+                "fileName": "Résumé-Едуард.docx",
                 "dataUrl": data_url,
             },
         )
@@ -191,7 +192,7 @@ def test_workspace_source_documents_persist_by_application_and_can_be_deleted() 
         app.dependency_overrides.clear()
 
     assert created.status_code == 201
-    assert created.json()["fileName"] == "target-cv.docx"
+    assert created.json()["fileName"] == "Résumé-Едуард.docx"
     assert created.json()["category"] == "CV / Resume"
     assert listed.status_code == 200
     assert [source["id"] for source in listed.json()] == [source_id]
@@ -243,7 +244,7 @@ def test_document_versions_download_and_application_attachments() -> None:
         updated = client.patch(
             f"/documents/{document_id}",
             json={
-                "content": "Dear Hiring Team,\n\nUpdated evidence-based letter.",
+                "content": json.dumps({"replacements": []}),
             },
         )
         restored = client.post(
@@ -296,20 +297,76 @@ def test_document_versions_download_and_application_attachments() -> None:
     assert listed.status_code == 200
     assert listed.json()[0]["jobId"] == "job-figma"
     assert listed.json()[0]["generationFingerprint"] is None
-    assert downloaded.status_code == 200
-    assert downloaded.headers["content-type"].startswith(
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    assert downloaded.status_code == 410
+    assert downloaded.json()["detail"] == (
+        "Rendered DOCX is no longer available for recovery"
     )
-    assert "Figma-cover-letter-v2.docx" in downloaded.headers["content-disposition"]
-    rendered_document = Document(BytesIO(downloaded.content))
-    rendered_text = "\n".join(paragraph.text for paragraph in rendered_document.paragraphs)
-    assert "Updated evidence-based letter." in rendered_text
     assert detached.status_code == 204
     assert deleted.status_code == 204
     assert version_count == 0
     assert attachment_count == 0
     assert provenance_count == 0
     assert version_provenance_count == 0
+
+
+def test_document_download_preserves_unicode_filename_for_rendered_docx() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        with testing_session_local() as db:
+            yield db
+
+    rendered_document = Document()
+    rendered_document.add_paragraph("Rendered content")
+    rendered_output = BytesIO()
+    rendered_document.save(rendered_output)
+
+    with testing_session_local() as db:
+        record = DocumentRecord(
+            id="unicode-document",
+            type="tailored_resume",
+            title="Résumé Едуард",
+            current_version=1,
+        )
+        record.versions.append(
+            DocumentVersionRecord(
+                id="unicode-version",
+                document_id=record.id,
+                version=1,
+                content=json.dumps({"replacements": []}),
+            )
+        )
+        record.files.append(
+            DocumentFileRecord(
+                id="unicode-file",
+                document_id=record.id,
+                version=1,
+                template_id=None,
+                content=rendered_output.getvalue(),
+            )
+        )
+        db.add(record)
+        db.commit()
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        downloaded = client.get("/documents/unicode-document/download")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert downloaded.status_code == 200
+    assert downloaded.content == rendered_output.getvalue()
+    assert downloaded.headers["content-disposition"] == (
+        'attachment; filename="R-sum-v1.docx"; '
+        "filename*=UTF-8''R%C3%A9sum%C3%A9-%D0%95%D0%B4%D1%83%D0%B0%D1%80%D0%B4-v1.docx"
+    )
 
 
 def test_document_version_history_is_paginated_from_newest_to_oldest() -> None:

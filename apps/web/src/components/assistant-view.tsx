@@ -445,7 +445,8 @@ function currentDocumentContent(document: AssistantDocument) {
 function documentFileName(document: Pick<AssistantDocument, "title" | "currentVersion">) {
   const base = document.title
     .trim()
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .normalize("NFC")
+    .replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-")
     .replace(/^[._-]+|[._-]+$/g, "") || "tasko-document";
   return `${base}-v${document.currentVersion}.docx`;
 }

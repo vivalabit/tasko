@@ -441,7 +441,7 @@ function hasStructuredReplacements(document: GeneratedDocument | undefined) {
 }
 
 function documentFileName(document: GeneratedDocument, version = document.currentVersion) {
-  const base = document.title.trim().replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^[._-]+|[._-]+$/g, "") || "tasko-document";
+  const base = document.title.trim().normalize("NFC").replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-").replace(/^[._-]+|[._-]+$/g, "") || "tasko-document";
   return `${base}-v${version}.docx`;
 }
 

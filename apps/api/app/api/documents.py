@@ -2,10 +2,12 @@ import base64
 import hashlib
 import json
 import re
+import unicodedata
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Mapping
+from urllib.parse import quote
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select
@@ -62,7 +64,7 @@ from app.services.assistant import (
     build_source_document_context,
 )
 from app.services.document_analysis import analyze_docx_source
-from app.services.document_export import build_document_docx, build_document_from_template
+from app.services.document_export import build_document_from_template
 from app.services.generation_context import (
     AuthoritativeApplicationGenerationContext,
     AuthoritativeGenerationContext,
@@ -971,21 +973,18 @@ def download_document(
                 detail="Document version not found",
             )
         rendered_file = document_file_record(db, record.id, selected_version.version)
-        content = rendered_file.content if rendered_file else build_document_docx(
-            title=record.title,
-            content=selected_version.content,
-            document_type=record.type,
-            version=selected_version.version,
-        )
-        filename = safe_filename(record.title)
+        if not rendered_file:
+            raise HTTPException(
+                status_code=status.HTTP_410_GONE,
+                detail="Rendered DOCX is no longer available for recovery",
+            )
+        filename = f"{safe_filename(record.title)}-v{selected_version.version}.docx"
         return Response(
-            content=content,
+            content=rendered_file.content,
             media_type=(
                 DOCX_CONTENT_TYPE
             ),
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}-v{selected_version.version}.docx"'
-            },
+            headers={"Content-Disposition": content_disposition(filename)},
         )
     except HTTPException:
         raise
@@ -2199,12 +2198,25 @@ def document_version_payloads(
 
 
 def safe_filename(value: str) -> str:
-    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-._")
+    normalized = unicodedata.normalize("NFC", value.strip())
+    normalized = re.sub(r"[^\w.\-]+", "-", normalized, flags=re.UNICODE).strip("-._")
     return normalized[:120] or "tasko-document"
 
 
 def safe_upload_filename(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._ -]+", "-", value.strip())[:240] or "template.docx"
+    normalized = unicodedata.normalize("NFC", value.strip())
+    normalized = re.sub(r"[^\w.\- ]+", "-", normalized, flags=re.UNICODE)
+    return normalized[:240].rstrip(" .") or "template.docx"
+
+
+def content_disposition(filename: str) -> str:
+    ascii_filename = re.sub(r"[^A-Za-z0-9._-]+", "-", filename).strip("-._")
+    ascii_filename = re.sub(r"-+", "-", ascii_filename)
+    ascii_filename = ascii_filename or "tasko-document.docx"
+    return (
+        f'attachment; filename="{ascii_filename}"; '
+        f"filename*=UTF-8''{quote(filename, safe='')}"
+    )
 
 
 def decode_data_url(value: str) -> tuple[str, bytes]:
