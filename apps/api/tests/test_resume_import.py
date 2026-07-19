@@ -106,6 +106,54 @@ def test_parse_skills_from_resume_text_deduplicates_case_insensitive() -> None:
     ]
 
 
+def test_parse_experience_from_french_section_heading() -> None:
+    entries = parse_experience_from_text(
+        """
+        Expérience professionnelle
+        Software Engineer | Alpine Systems | 2022 - Present | Genève
+        Built and operated reliable API integrations.
+
+        Compétences techniques
+        Python, FastAPI
+        """
+    )
+
+    assert len(entries) == 1
+    assert entries[0].title == "Software Engineer"
+    assert entries[0].company == "Alpine Systems"
+
+
+def test_parse_education_from_french_section_heading() -> None:
+    entries = parse_education_from_text(
+        """
+        Formation académique
+        Université de Genève | Master of Science | Informatique | 2020 - 2022
+
+        IT‑Kenntnisse
+        Python, FastAPI
+        """
+    )
+
+    assert len(entries) == 1
+    assert entries[0].institution == "Université de Genève"
+    assert entries[0].credential == "Master of Science"
+
+
+def test_parse_skills_from_unicode_hyphenated_german_section_heading() -> None:
+    skills = parse_skills_from_text(
+        """
+        IT—Kenntnisse
+        Sprachen: Python, JavaScript
+        Frameworks: FastAPI, React
+
+        Personalien
+        Zürich, Schweiz
+        """
+    )
+
+    assert skills == ["Python", "JavaScript", "FastAPI", "React"]
+
+
 def test_import_experience_endpoint_reads_attached_resume_data() -> None:
     resume_text = """
     Work Experience

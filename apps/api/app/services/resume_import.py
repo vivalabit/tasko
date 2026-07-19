@@ -12,88 +12,24 @@ from uuid import uuid4
 from xml.etree import ElementTree
 
 from app.models.profile import ImportedEducationEntry, ImportedExperienceEntry
+from app.services.resume_headings import (
+    ALL_RESUME_HEADINGS,
+    CERTIFICATION_HEADINGS as RESUME_CERTIFICATION_HEADINGS,
+    EDUCATION_HEADINGS as RESUME_EDUCATION_HEADINGS,
+    EXPERIENCE_HEADINGS as RESUME_EXPERIENCE_HEADINGS,
+    SKILL_HEADINGS as RESUME_SKILL_HEADINGS,
+    normalize_resume_heading,
+)
 
-EXPERIENCE_HEADINGS = {
-    "experience",
-    "work experience",
-    "professional experience",
-    "employment history",
-    "career history",
-    "relevant experience",
-}
-
-EDUCATION_HEADINGS = {
-    "education",
-    "education and certifications",
-    "education certifications",
-    "certifications",
-    "certificates",
-    "courses",
-    "training",
-}
-
-SKILLS_HEADINGS = {
-    "skills",
-    "technical skills",
-    "core skills",
-    "key skills",
-    "technologies",
-    "technical stack",
-    "tech stack",
-    "tools",
-}
-
-SECTION_STOP_HEADINGS = {
-    "education",
-    "skills",
-    "technical skills",
-    "projects",
-    "certifications",
-    "certificates",
-    "languages",
-    "summary",
-    "profile",
-    "contacts",
-    "contact",
-    "references",
-}
-
-SKILLS_STOP_HEADINGS = {
-    "experience",
-    "work experience",
-    "professional experience",
-    "employment history",
-    "career history",
-    "education",
-    "education and certifications",
-    "education certifications",
-    "certifications",
-    "certificates",
-    "projects",
-    "languages",
-    "summary",
-    "profile",
-    "contacts",
-    "contact",
-    "references",
-}
-
-EDUCATION_STOP_HEADINGS = {
-    "experience",
-    "work experience",
-    "professional experience",
-    "employment history",
-    "career history",
-    "skills",
-    "technical skills",
-    "projects",
-    "languages",
-    "summary",
-    "profile",
-    "contacts",
-    "contact",
-    "references",
-}
+EXPERIENCE_HEADINGS = RESUME_EXPERIENCE_HEADINGS
+EDUCATION_HEADINGS = frozenset().union(
+    RESUME_EDUCATION_HEADINGS,
+    RESUME_CERTIFICATION_HEADINGS,
+)
+SKILLS_HEADINGS = RESUME_SKILL_HEADINGS
+SECTION_STOP_HEADINGS = ALL_RESUME_HEADINGS - EXPERIENCE_HEADINGS
+SKILLS_STOP_HEADINGS = ALL_RESUME_HEADINGS - SKILLS_HEADINGS
+EDUCATION_STOP_HEADINGS = ALL_RESUME_HEADINGS - EDUCATION_HEADINGS
 
 TITLE_HINTS = {
     "administrator",
@@ -757,7 +693,7 @@ def normalize_lines(text: str) -> list[str]:
 
 
 def normalize_heading(line: str) -> str:
-    return re.sub(r"\s+", " ", re.sub(r"[^a-z ]+", " ", line.lower())).strip()
+    return normalize_resume_heading(line)
 
 
 def get_experience_section(lines: list[str]) -> list[str]:

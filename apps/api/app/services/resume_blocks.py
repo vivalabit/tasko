@@ -8,6 +8,16 @@ from docx.oxml.ns import qn
 from lxml import etree
 
 from app.services.document_security import validate_docx_package
+from app.services.resume_headings import (
+    ACHIEVEMENT_HEADINGS,
+    ALL_RESUME_HEADINGS,
+    EXPERIENCE_HEADINGS,
+    LANGUAGE_HEADINGS,
+    PROJECT_HEADINGS,
+    SKILL_HEADINGS,
+    SUMMARY_HEADINGS,
+    normalize_resume_heading,
+)
 
 
 ResumeBlockType = Literal[
@@ -30,53 +40,14 @@ ResumeSpanType = Literal[
 ]
 EDITABLE_BLOCK_TYPES = {"summary", "skill", "achievement"}
 
-HEADING_WORDS = {
-    "about",
-    "achievements",
-    "berufserfahrung",
-    "bildung",
-    "certifications",
-    "education",
-    "experience",
-    "kenntnisse",
-    "languages",
-    "profile",
-    "profil",
-    "projects",
-    "projekte",
-    "skills",
-    "sprachen",
-    "summary",
-    "technical skills",
-    "work experience",
-}
-SUMMARY_SECTIONS = {
-    "about",
-    "objective",
-    "profile",
-    "profil",
-    "professional profile",
-    "summary",
-}
-SKILL_SECTIONS = {
-    "competencies",
-    "kenntnisse",
-    "languages",
-    "skills",
-    "sprachen",
-    "technical skills",
-    "technologies",
-    "tools",
-}
-ACHIEVEMENT_SECTIONS = {
-    "achievements",
-    "berufserfahrung",
-    "experience",
-    "projects",
-    "projekte",
-    "professional experience",
-    "work experience",
-}
+HEADING_WORDS = ALL_RESUME_HEADINGS
+SUMMARY_SECTIONS = SUMMARY_HEADINGS
+SKILL_SECTIONS = frozenset().union(SKILL_HEADINGS, LANGUAGE_HEADINGS)
+ACHIEVEMENT_SECTIONS = frozenset().union(
+    EXPERIENCE_HEADINGS,
+    PROJECT_HEADINGS,
+    ACHIEVEMENT_HEADINGS,
+)
 CONTACT_PATTERN = re.compile(
     r"(?:[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|https?://|linkedin\.com|github\.com|"
     r"(?:\+?\d[\d\s()./-]{7,}\d))",
@@ -657,4 +628,4 @@ def is_heading(paragraph: Any, text: str) -> bool:
 
 
 def normalize_heading(text: str) -> str:
-    return re.sub(r"\s+", " ", text.strip().lower().rstrip(":"))
+    return normalize_resume_heading(text)

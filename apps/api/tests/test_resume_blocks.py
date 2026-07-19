@@ -12,7 +12,11 @@ from lxml import etree
 
 from app.services.document_export import build_document_from_template
 from app.services.document_validation import build_document_diff
-from app.services.resume_blocks import extract_resume_blocks_from_docx, paragraph_text
+from app.services.resume_blocks import (
+    extract_resume_blocks_from_docx,
+    normalize_heading,
+    paragraph_text,
+)
 
 
 def resume_template() -> bytes:
@@ -153,6 +157,77 @@ def test_german_sections_inside_tables_follow_rows_and_columns(
     assert types_by_text["Deutsch C2"] == "skill"
     assert types_by_text["Englisch C1"] == "skill"
     assert types_by_text["MSc Informatik, Universität Zürich"] == "table cell"
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "IT-Kenntnisse",
+        "IT‐Kenntnisse",
+        "IT‑Kenntnisse",
+        "IT‒Kenntnisse",
+        "IT–Kenntnisse",
+        "IT—Kenntnisse",
+        "IT−Kenntnisse",
+        "ＩＴ－Ｋｅｎｎｔｎｉｓｓｅ",
+    ],
+)
+def test_resume_heading_normalization_accepts_unicode_hyphens(heading: str) -> None:
+    assert normalize_heading(heading) == "it kenntnisse"
+
+
+@pytest.mark.parametrize(
+    ("heading", "content", "expected_type"),
+    [
+        ("Kurzprofil", "API-Spezialistin.", "summary"),
+        ("Profil professionnel", "Spécialiste des API.", "summary"),
+        ("Professional Summary", "API specialist.", "summary"),
+        ("IT‑Kenntnisse", "Python", "skill"),
+        ("Compétences informatiques", "FastAPI", "skill"),
+        ("Core Competencies", "PostgreSQL", "skill"),
+        ("Berufliche Erfahrung", "Entwickelte zuverlässige APIs für Geschäftskunden.", "achievement"),
+        ("Expérience professionnelle", "Livraison de services API fiables pour des clients.", "achievement"),
+        ("Employment History", "Built and operated reliable APIs for business customers.", "achievement"),
+        ("Personalien", "Geburtsjahr 1990", "immutable"),
+        ("Informations personnelles", "Nationalité suisse", "immutable"),
+        ("Personal Details", "Swiss citizen", "immutable"),
+        ("Formation académique", "Université de Genève", "immutable"),
+    ],
+)
+def test_multilingual_resume_sections_are_classified(
+    heading: str,
+    content: str,
+    expected_type: str,
+) -> None:
+    document = Document()
+    document.add_paragraph(heading)
+    document.add_paragraph(content)
+
+    blocks = extract_resume_blocks_from_docx(document_bytes(document))
+
+    assert blocks[0]["type"] == "heading"
+    assert blocks[1]["type"] == expected_type
+
+
+def test_multilingual_sections_inside_tables_follow_unicode_normalized_headings() -> None:
+    document = Document()
+    table = document.add_table(rows=4, cols=2)
+    table.cell(0, 0).text = "Personalien"
+    table.cell(0, 1).text = "IT—Kenntnisse"
+    table.cell(1, 0).text = "Geburtsjahr 1990"
+    table.cell(1, 1).text = "Python"
+    table.cell(2, 0).text = "Expérience professionnelle"
+    table.cell(2, 1).text = "Compétences techniques"
+    table.cell(3, 0).text = "Livraison de services API fiables pour des clients."
+    table.cell(3, 1).text = "FastAPI"
+
+    blocks = extract_resume_blocks_from_docx(document_bytes(document))
+    types_by_text = {block["original"]: block["type"] for block in blocks}
+
+    assert types_by_text["Geburtsjahr 1990"] == "table cell"
+    assert types_by_text["Python"] == "skill"
+    assert types_by_text["Livraison de services API fiables pour des clients."] == "achievement"
+    assert types_by_text["FastAPI"] == "skill"
 
 
 def test_resume_renderer_applies_editable_span_replacements() -> None:
