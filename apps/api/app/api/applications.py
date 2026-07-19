@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.database import get_db
 from app.models.applications import (
-    CandidateConfirmationInput,
     CandidateConfirmationPayload,
     CandidateConfirmationRecord,
     CandidateConfirmationsRequest,
@@ -24,7 +23,6 @@ from app.services.generation_context import (
     GenerationContextError,
     clarification_questions,
     load_stored_application_guide,
-    meaningful_confirmation,
 )
 from app.services.job_match_store import (
     authoritative_match_record,
@@ -66,13 +64,6 @@ def strip_client_application_analysis(data: dict[str, object]) -> dict[str, obje
         job.pop("aiMatch", None)
         sanitized["job"] = job
     return sanitized
-
-
-def is_meaningful_confirmation(confirmation: CandidateConfirmationInput) -> bool:
-    return meaningful_confirmation(
-        response=confirmation.response,
-        example_text=confirmation.example_text,
-    )
 
 
 def confirmation_payload(record: CandidateConfirmationRecord) -> CandidateConfirmationPayload:
@@ -235,27 +226,6 @@ def replace_candidate_confirmations(
                     f"{', '.join(sorted(unknown_question_ids))}"
                 ),
             )
-        required_question_ids = {
-            question_id for question_id, question in questions_by_id.items() if question.blocking
-        }
-        missing_required_ids = required_question_ids - set(question_ids)
-        if missing_required_ids:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=f"Required candidate confirmations are missing: {', '.join(sorted(missing_required_ids))}",
-            )
-
-        for confirmation in request.confirmations:
-            question = questions_by_id[confirmation.question_id]
-            if question.blocking and not is_meaningful_confirmation(confirmation):
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail=(
-                        f"A meaningful example is required for {question.requirement} "
-                        "when the answer is yes or partial"
-                    ),
-                )
-
         existing_records = {
             record.question_id: record
             for record in db.query(CandidateConfirmationRecord)

@@ -187,6 +187,28 @@ def test_rejects_generation_when_required_confirmation_is_missing() -> None:
             )
 
 
+def test_rejects_generation_when_saved_confirmation_is_only_a_draft() -> None:
+    with generation_context_session() as db:
+        confirmation = db.get(
+            CandidateConfirmationRecord,
+            ("application-context", "production-python"),
+        )
+        assert confirmation is not None
+        confirmation.example_text = "yes"
+        db.commit()
+
+        with pytest.raises(
+            GenerationContextError,
+            match="Required candidate confirmations are incomplete",
+        ):
+            load_authoritative_generation_context(
+                db,
+                application_id="application-context",
+                template_id="template-context",
+                document_type="cover_letter",
+            )
+
+
 def test_computes_stable_provenance_from_authoritative_context() -> None:
     with generation_context_session() as db:
         context = load_authoritative_generation_context(

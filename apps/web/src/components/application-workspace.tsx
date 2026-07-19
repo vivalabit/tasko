@@ -737,12 +737,10 @@ export function ApplicationWorkspace({
 
   useEffect(() => {
     if (!application || !confirmationsDirty) return;
-    if (hasIncompleteBlockingConfirmations || hasOversizedConfirmation) {
+    if (hasOversizedConfirmation) {
       setConfirmationSyncStatus("unsaved");
       setConfirmationSyncMessage(
-        hasOversizedConfirmation
-          ? `Shorten examples to ${confirmationAnswerMaxChars.toLocaleString()} characters`
-          : "Choose an answer and add a concrete example for each required yes or partial response",
+        `Shorten examples to ${confirmationAnswerMaxChars.toLocaleString()} characters`,
       );
       return;
     }
@@ -789,7 +787,7 @@ export function ApplicationWorkspace({
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [application, candidateConfirmations, clarificationQuestions, confirmationsDirty, hasIncompleteBlockingConfirmations, hasOversizedConfirmation]);
+  }, [application, candidateConfirmations, clarificationQuestions, confirmationsDirty, hasOversizedConfirmation]);
 
   useEffect(() => {
     if (!effectiveLanguage) return;

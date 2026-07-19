@@ -175,6 +175,51 @@ describe("ApplicationWorkspace", () => {
     });
   });
 
+  it("persists an incomplete required confirmation as a draft", async () => {
+    const application = createV3WorkspaceApplication();
+    application.job.aiMatch?.applicationGuide?.clarificationQuestions?.push({
+      id: "production-research",
+      requirement: "Production research",
+      question: "Have you run research for a production product?",
+      why: "The role requires evidence from shipped products.",
+      claimIfConfirmed: "Led production product research.",
+      blocking: true,
+    });
+    const fetchMock = installApplicationWorkspaceApiMock({
+      confirmationPutResponse: [
+        {
+          questionId: "production-research",
+          requirement: "Production research",
+          response: "yes",
+          exampleText: "",
+          blocking: true,
+          updatedAt: "2026-07-18T10:00:00.000Z",
+        },
+      ],
+    });
+
+    renderApplicationWorkspace(application);
+    fireEvent.click(await screen.findByRole("button", { name: "yes" }));
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([, init]) => {
+          if (init?.method !== "PUT") return false;
+          return JSON.stringify(JSON.parse(String(init.body))) === JSON.stringify({
+            confirmations: [
+              {
+                questionId: "production-research",
+                response: "yes",
+                exampleText: "",
+              },
+            ],
+          });
+        }),
+      ).toBe(true);
+    });
+    expect(screen.getByText(/Add a specific example/)).toBeInTheDocument();
+  });
+
   it("warns before downloading an outdated and unvalidated document", async () => {
     installApplicationWorkspaceApiMock({
       documents: [

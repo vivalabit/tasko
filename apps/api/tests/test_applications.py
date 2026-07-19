@@ -343,7 +343,7 @@ def test_candidate_confirmations_are_structured_validated_and_persisted() -> Non
             )
             db.commit()
 
-        invalid_response = client.put(
+        incomplete_draft_response = client.put(
             f"/applications/{application_id}/confirmations",
             json={
                 "confirmations": [
@@ -360,15 +360,18 @@ def test_candidate_confirmations_are_structured_validated_and_persisted() -> Non
                 ]
             },
         )
-        assert invalid_response.status_code == 422
-        assert "meaningful example" in invalid_response.json()["detail"]
+        assert incomplete_draft_response.status_code == 200
+        incomplete_by_id = {
+            item["questionId"]: item for item in incomplete_draft_response.json()
+        }
+        assert incomplete_by_id["python-example"]["exampleText"] == "yes"
 
-        missing_response = client.put(
+        empty_draft_response = client.put(
             f"/applications/{application_id}/confirmations",
             json={"confirmations": []},
         )
-        assert missing_response.status_code == 422
-        assert "are missing" in missing_response.json()["detail"]
+        assert empty_draft_response.status_code == 200
+        assert empty_draft_response.json() == []
 
         unknown_response = client.put(
             f"/applications/{application_id}/confirmations",
