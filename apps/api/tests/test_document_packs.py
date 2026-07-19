@@ -8,7 +8,7 @@ import pytest
 from docx import Document
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -17,6 +17,7 @@ from app.core.database import Base, get_db
 from app.main import app
 from app.models.applications import StoredApplicationRecord
 from app.models.documents import (
+    DocumentFileRecord,
     DocumentPackJobRecord,
     DocumentRecord,
     DocumentTemplateRecord,
@@ -256,6 +257,114 @@ def test_atomic_pack_commits_both_documents_and_retry_is_idempotent(
     assert document_count == 2
     assert version_count == 2
     assert job_count == 1
+
+
+def test_initial_document_list_paginates_relations_and_batches_freshness_context(
+    pack_client,
+    monkeypatch,
+) -> None:
+    client, testing_session_local = pack_client
+    resume_template_id, cover_template_id = upload_pack_templates(client)
+    monkeypatch.setattr(
+        "app.api.documents.validate_generated_document",
+        lambda **kwargs: validation_report(kwargs["document_type"]),
+    )
+    created = client.post(
+        "/documents/packs",
+        json=pack_request(resume_template_id, cover_template_id),
+    )
+    assert created.status_code == 201
+
+    now = datetime.now(UTC)
+    with testing_session_local() as db:
+        records = db.scalars(select(DocumentRecord)).all()
+        for record in records:
+            template_id = db.scalar(
+                select(DocumentFileRecord.template_id).where(
+                    DocumentFileRecord.document_id == record.id,
+                    DocumentFileRecord.version == 1,
+                )
+            )
+            assert template_id is not None
+            for version in range(2, 26):
+                db.add(
+                    DocumentVersionRecord(
+                        id=f"{record.id}-version-{version}",
+                        document_id=record.id,
+                        version=version,
+                        content=f"Version {version}",
+                        created_at=now,
+                    )
+                )
+                db.add(
+                    DocumentFileRecord(
+                        id=f"{record.id}-file-{version}",
+                        document_id=record.id,
+                        version=version,
+                        template_id=template_id,
+                        content=b"rendered-docx" * 10_000,
+                        created_at=now,
+                    )
+                )
+            record.current_version = 25
+            record.updated_at = now
+        db.commit()
+
+    real_context_loader = documents_api.load_authoritative_application_generation_context
+    context_calls = 0
+
+    def counted_context_loader(*args, **kwargs):
+        nonlocal context_calls
+        context_calls += 1
+        return real_context_loader(*args, **kwargs)
+
+    monkeypatch.setattr(
+        documents_api,
+        "load_authoritative_application_generation_context",
+        counted_context_loader,
+    )
+    statements: list[str] = []
+    engine = testing_session_local.kw["bind"]
+
+    def capture_statement(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", capture_statement)
+    try:
+        response = client.get(
+            "/documents",
+            params={"applicationId": "application-pack"},
+        )
+    finally:
+        event.remove(engine, "before_cursor_execute", capture_statement)
+
+    assert response.status_code == 200
+    assert len(response.json()) == 2
+    assert context_calls == 1
+    for document in response.json():
+        assert document["versionsTotal"] == 25
+        assert document["versionsHasMore"] is True
+        assert [version["version"] for version in document["versions"]] == list(
+            range(6, 26)
+        )
+        assert all(version["hasRenderedDocx"] is True for version in document["versions"])
+        assert document["generationFingerprint"] == document["currentGenerationFingerprint"]
+
+    normalized_statements = [" ".join(statement.lower().split()) for statement in statements]
+    assert any(
+        "row_number() over" in statement and "document_versions" in statement
+        for statement in normalized_statements
+    )
+    file_queries = [
+        statement
+        for statement in normalized_statements
+        if " from document_files" in statement
+    ]
+    assert file_queries
+    assert all(
+        "document_files.content" not in statement.partition(" from document_files")[0]
+        for statement in file_queries
+    )
 
 
 def test_pack_status_can_be_recovered_after_response_loss(pack_client, monkeypatch) -> None:

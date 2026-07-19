@@ -2,7 +2,10 @@ import base64
 import hashlib
 import json
 import re
+from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Mapping
 from uuid import uuid4
 
 from sqlalchemy import delete, func, select
@@ -61,8 +64,10 @@ from app.services.assistant import (
 from app.services.document_analysis import analyze_docx_source
 from app.services.document_export import build_document_docx, build_document_from_template
 from app.services.generation_context import (
+    AuthoritativeApplicationGenerationContext,
     AuthoritativeGenerationContext,
     GenerationContextError,
+    load_authoritative_application_generation_context,
     load_authoritative_generation_context,
 )
 from app.services.document_security import DocumentSecurityError
@@ -90,13 +95,6 @@ def list_documents(
     try:
         statement = (
             select(DocumentRecord)
-            .options(
-                selectinload(DocumentRecord.versions),
-                selectinload(DocumentRecord.attachments),
-                selectinload(DocumentRecord.generation_provenance),
-                selectinload(DocumentRecord.version_validations),
-                selectinload(DocumentRecord.files),
-            )
             .order_by(DocumentRecord.updated_at.desc())
         )
         if job_id is not None:
@@ -106,18 +104,11 @@ def list_documents(
                 DocumentAttachmentRecord.application_id == application_id
             )
         records = db.scalars(statement).unique().all()
-        return [
-            document_payload(
-                record,
-                version_limit=DOCUMENT_VERSION_PAGE_SIZE,
-                current_generation_fingerprint=authoritative_current_generation_fingerprint(
-                    db,
-                    record,
-                    application_id=application_id,
-                ),
-            )
-            for record in records
-        ]
+        return initial_document_payloads(
+            db,
+            records,
+            application_id=application_id,
+        )
     except SQLAlchemyError as exc:
         raise database_unavailable(exc) from exc
 
@@ -539,12 +530,13 @@ def get_document_pack_status(
 @router.get("/{document_id}", response_model=DocumentPayload)
 def get_document(document_id: str, db: Session = Depends(get_db)) -> DocumentPayload:
     try:
-        record = require_document(db, document_id)
-        return document_payload(
-            record,
-            version_limit=DOCUMENT_VERSION_PAGE_SIZE,
-            current_generation_fingerprint=authoritative_current_generation_fingerprint(db, record),
-        )
+        record = db.get(DocumentRecord, document_id)
+        if record is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Document not found",
+            )
+        return initial_document_payloads(db, [record])[0]
     except HTTPException:
         raise
     except SQLAlchemyError as exc:
@@ -1674,19 +1666,18 @@ def document_pack_request_fingerprint(
 
 
 def document_pack_payload(job: DocumentPackJobRecord, db: Session) -> DocumentPackPayload:
-    documents = []
-    for document_id in job.document_ids:
-        record = require_document(db, document_id)
-        documents.append(
-            document_payload(
-                record,
-                current_generation_fingerprint=authoritative_current_generation_fingerprint(
-                    db,
-                    record,
-                    application_id=job.application_id,
-                ),
-            )
-        )
+    records_by_id = {
+        record.id: record
+        for record in db.scalars(
+            select(DocumentRecord).where(DocumentRecord.id.in_(job.document_ids))
+        ).all()
+    }
+    records = [records_by_id[document_id] for document_id in job.document_ids]
+    documents = initial_document_payloads(
+        db,
+        records,
+        application_id=job.application_id,
+    )
     return DocumentPackPayload(
         pack_job_id=job.id,
         status=job.status,
@@ -1852,6 +1843,245 @@ def current_version_record(record: DocumentRecord) -> DocumentVersionRecord:
     return current
 
 
+@dataclass(frozen=True)
+class DocumentPayloadRelations:
+    versions: tuple[DocumentVersionRecord, ...]
+    versions_total: int
+    application_ids: tuple[str, ...]
+    provenance: DocumentGenerationProvenanceRecord | None
+    rendered_versions: frozenset[int]
+    validations_by_version: Mapping[int, DocumentVersionValidationRecord]
+    current_template_id: str | None
+
+
+def initial_document_payloads(
+    db: Session,
+    records: list[DocumentRecord],
+    *,
+    application_id: str | None = None,
+) -> list[DocumentPayload]:
+    relations_by_document = load_initial_document_relations(db, records)
+    current_fingerprints = batch_current_generation_fingerprints(
+        db,
+        records,
+        relations_by_document,
+        application_id=application_id,
+    )
+    return [
+        document_payload(
+            record,
+            relations=relations_by_document[record.id],
+            current_generation_fingerprint=current_fingerprints.get(record.id),
+        )
+        for record in records
+    ]
+
+
+def load_initial_document_relations(
+    db: Session,
+    records: list[DocumentRecord],
+) -> dict[str, DocumentPayloadRelations]:
+    document_ids = [record.id for record in records]
+    if not document_ids:
+        return {}
+
+    version_counts = dict(
+        db.execute(
+            select(
+                DocumentVersionRecord.document_id,
+                func.count(DocumentVersionRecord.id),
+            )
+            .where(DocumentVersionRecord.document_id.in_(document_ids))
+            .group_by(DocumentVersionRecord.document_id)
+        ).all()
+    )
+    ranked_version_ids = (
+        select(
+            DocumentVersionRecord.id.label("version_id"),
+            DocumentVersionRecord.document_id.label("document_id"),
+            DocumentVersionRecord.version.label("version"),
+            func.row_number()
+            .over(
+                partition_by=DocumentVersionRecord.document_id,
+                order_by=DocumentVersionRecord.version.desc(),
+            )
+            .label("page_row"),
+        )
+        .where(DocumentVersionRecord.document_id.in_(document_ids))
+        .subquery()
+    )
+    versions = db.scalars(
+        select(DocumentVersionRecord)
+        .join(
+            ranked_version_ids,
+            ranked_version_ids.c.version_id == DocumentVersionRecord.id,
+        )
+        .where(ranked_version_ids.c.page_row <= DOCUMENT_VERSION_PAGE_SIZE)
+        .order_by(DocumentVersionRecord.document_id, DocumentVersionRecord.version)
+    ).all()
+    versions_by_document: dict[str, list[DocumentVersionRecord]] = defaultdict(list)
+    for version in versions:
+        versions_by_document[version.document_id].append(version)
+
+    rendered_versions_by_document: dict[str, set[int]] = defaultdict(set)
+    current_template_by_document: dict[str, str] = {}
+    if versions:
+        file_rows = db.execute(
+            select(
+                DocumentFileRecord.document_id,
+                DocumentFileRecord.version,
+                DocumentFileRecord.template_id,
+            )
+            .join(
+                ranked_version_ids,
+                (
+                    ranked_version_ids.c.document_id
+                    == DocumentFileRecord.document_id
+                )
+                & (ranked_version_ids.c.version == DocumentFileRecord.version),
+            )
+            .where(ranked_version_ids.c.page_row <= DOCUMENT_VERSION_PAGE_SIZE)
+        ).all()
+        current_versions = {record.id: record.current_version for record in records}
+        for document_id, version, template_id in file_rows:
+            rendered_versions_by_document[document_id].add(version)
+            if version == current_versions[document_id] and template_id:
+                current_template_by_document[document_id] = template_id
+
+    validations_by_document: dict[
+        str,
+        dict[int, DocumentVersionValidationRecord],
+    ] = defaultdict(dict)
+    if versions:
+        validations = db.scalars(
+            select(DocumentVersionValidationRecord)
+            .join(
+                ranked_version_ids,
+                (
+                    ranked_version_ids.c.document_id
+                    == DocumentVersionValidationRecord.document_id
+                )
+                & (
+                    ranked_version_ids.c.version
+                    == DocumentVersionValidationRecord.version
+                ),
+            )
+            .where(ranked_version_ids.c.page_row <= DOCUMENT_VERSION_PAGE_SIZE)
+        ).all()
+        for validation in validations:
+            validations_by_document[validation.document_id][validation.version] = validation
+
+    application_ids_by_document: dict[str, list[str]] = defaultdict(list)
+    for document_id, application_id in db.execute(
+        select(
+            DocumentAttachmentRecord.document_id,
+            DocumentAttachmentRecord.application_id,
+        ).where(DocumentAttachmentRecord.document_id.in_(document_ids))
+    ).all():
+        application_ids_by_document[document_id].append(application_id)
+
+    provenance_by_document = {
+        provenance.document_id: provenance
+        for provenance in db.scalars(
+            select(DocumentGenerationProvenanceRecord).where(
+                DocumentGenerationProvenanceRecord.document_id.in_(document_ids)
+            )
+        ).all()
+    }
+    return {
+        record.id: DocumentPayloadRelations(
+            versions=tuple(versions_by_document[record.id]),
+            versions_total=int(version_counts.get(record.id, 0)),
+            application_ids=tuple(application_ids_by_document[record.id]),
+            provenance=provenance_by_document.get(record.id),
+            rendered_versions=frozenset(rendered_versions_by_document[record.id]),
+            validations_by_version=validations_by_document[record.id],
+            current_template_id=current_template_by_document.get(record.id),
+        )
+        for record in records
+    }
+
+
+def batch_current_generation_fingerprints(
+    db: Session,
+    records: list[DocumentRecord],
+    relations_by_document: Mapping[str, DocumentPayloadRelations],
+    *,
+    application_id: str | None,
+) -> dict[str, str]:
+    candidate_application_by_document: dict[str, str] = {}
+    template_ids: set[str] = set()
+    for record in records:
+        relations = relations_by_document[record.id]
+        if relations.provenance is None or not relations.current_template_id:
+            continue
+        resolved_application_id = application_id
+        if resolved_application_id is None and len(relations.application_ids) == 1:
+            resolved_application_id = relations.application_ids[0]
+        if not resolved_application_id:
+            continue
+        candidate_application_by_document[record.id] = resolved_application_id
+        template_ids.add(relations.current_template_id)
+
+    template_metadata = {
+        row.id: {
+            "id": row.id,
+            "type": row.type,
+            "name": row.name,
+            "fileName": row.file_name,
+            "contentType": row.content_type,
+            "updatedAt": row.updated_at,
+            "contentSha256": row.content_sha256,
+        }
+        for row in db.execute(
+            select(
+                DocumentTemplateRecord.id,
+                DocumentTemplateRecord.type,
+                DocumentTemplateRecord.name,
+                DocumentTemplateRecord.file_name,
+                DocumentTemplateRecord.content_type,
+                DocumentTemplateRecord.updated_at,
+                DocumentTemplateRecord.content_sha256,
+            ).where(DocumentTemplateRecord.id.in_(template_ids))
+        ).all()
+    } if template_ids else {}
+
+    application_contexts: dict[
+        str,
+        AuthoritativeApplicationGenerationContext | None,
+    ] = {}
+    for resolved_application_id in set(candidate_application_by_document.values()):
+        try:
+            application_contexts[resolved_application_id] = (
+                load_authoritative_application_generation_context(
+                    db,
+                    application_id=resolved_application_id,
+                )
+            )
+        except GenerationContextError:
+            application_contexts[resolved_application_id] = None
+
+    fingerprints: dict[str, str] = {}
+    for record in records:
+        resolved_application_id = candidate_application_by_document.get(record.id)
+        if not resolved_application_id:
+            continue
+        context = application_contexts.get(resolved_application_id)
+        template_id = relations_by_document[record.id].current_template_id
+        source_document = template_metadata.get(template_id or "")
+        if (
+            context is None
+            or context.job_id != record.job_id
+            or source_document is None
+            or source_document["type"] != record.type
+        ):
+            continue
+        fingerprints[record.id] = context.provenance_for_source_document(
+            {key: value for key, value in source_document.items() if key != "type"}
+        ).generation_fingerprint
+    return fingerprints
+
+
 def authoritative_current_generation_fingerprint(
     db: Session,
     record: DocumentRecord,
@@ -1885,13 +2115,29 @@ def document_payload(
     current_generation_fingerprint: str | None = None,
     version_limit: int | None = None,
     version_offset: int = 0,
+    relations: DocumentPayloadRelations | None = None,
 ) -> DocumentPayload:
-    provenance = record.generation_provenance
-    rendered_versions = {file.version for file in record.files}
-    validations_by_version = {
-        validation.version: validation for validation in record.version_validations
-    }
-    ordered_versions = sorted(record.versions, key=lambda version: version.version, reverse=True)
+    if relations is None:
+        provenance = record.generation_provenance
+        rendered_versions = {file.version for file in record.files}
+        validations_by_version = {
+            validation.version: validation for validation in record.version_validations
+        }
+        source_versions = record.versions
+        versions_total = len(record.versions)
+        application_ids = [item.application_id for item in record.attachments]
+    else:
+        provenance = relations.provenance
+        rendered_versions = set(relations.rendered_versions)
+        validations_by_version = dict(relations.validations_by_version)
+        source_versions = relations.versions
+        versions_total = relations.versions_total
+        application_ids = list(relations.application_ids)
+    ordered_versions = sorted(
+        source_versions,
+        key=lambda version: version.version,
+        reverse=True,
+    )
     paged_versions = ordered_versions[version_offset:]
     if version_limit is not None:
         paged_versions = paged_versions[:version_limit]
@@ -1901,7 +2147,7 @@ def document_payload(
         type=record.type,
         title=record.title,
         job_id=record.job_id,
-        application_ids=[item.application_id for item in record.attachments],
+        application_ids=application_ids,
         current_version=record.current_version,
         created_at=record.created_at,
         updated_at=record.updated_at,
@@ -1914,8 +2160,8 @@ def document_payload(
             rendered_versions=rendered_versions,
             validations_by_version=validations_by_version,
         ),
-        versions_total=len(record.versions),
-        versions_has_more=version_offset + len(paged_versions) < len(record.versions),
+        versions_total=versions_total,
+        versions_has_more=version_offset + len(paged_versions) < versions_total,
     )
 
 

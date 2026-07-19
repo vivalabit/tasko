@@ -67,7 +67,7 @@ class AuthoritativeGenerationProvenance:
 
 
 @dataclass(frozen=True)
-class AuthoritativeGenerationContext:
+class AuthoritativeApplicationGenerationContext:
     application_id: str
     job_id: str
     application: dict[str, Any]
@@ -78,18 +78,30 @@ class AuthoritativeGenerationContext:
     analysis_fingerprint: str
     confirmations: tuple[AuthoritativeConfirmation, ...]
     language: str
-    template: DocumentTemplateRecord
 
-    def provenance(self) -> AuthoritativeGenerationProvenance:
+    def with_template(
+        self,
+        template: DocumentTemplateRecord,
+    ) -> "AuthoritativeGenerationContext":
+        return AuthoritativeGenerationContext(
+            application_id=self.application_id,
+            job_id=self.job_id,
+            application=self.application,
+            vacancy=self.vacancy,
+            profile=self.profile,
+            application_guide=self.application_guide,
+            analysis_revision=self.analysis_revision,
+            analysis_fingerprint=self.analysis_fingerprint,
+            confirmations=self.confirmations,
+            language=self.language,
+            template=template,
+        )
+
+    def provenance_for_source_document(
+        self,
+        source_document: dict[str, Any],
+    ) -> AuthoritativeGenerationProvenance:
         confirmations = [asdict(confirmation) for confirmation in self.confirmations]
-        source_document = {
-            "id": self.template.id,
-            "name": self.template.name,
-            "fileName": self.template.file_name,
-            "contentType": self.template.content_type,
-            "updatedAt": self.template.updated_at,
-            "contentSha256": hashlib.sha256(self.template.content).hexdigest(),
-        }
         fingerprint_inputs = {
             "fingerprintVersion": GENERATION_FINGERPRINT_VERSION,
             "vacancy": self.vacancy,
@@ -119,6 +131,22 @@ class AuthoritativeGenerationContext:
             generation_fingerprint=canonical_hash(fingerprint_inputs),
             input_versions=input_versions,
         )
+
+
+@dataclass(frozen=True)
+class AuthoritativeGenerationContext(AuthoritativeApplicationGenerationContext):
+    template: DocumentTemplateRecord
+
+    def provenance(self) -> AuthoritativeGenerationProvenance:
+        source_document = {
+            "id": self.template.id,
+            "name": self.template.name,
+            "fileName": self.template.file_name,
+            "contentType": self.template.content_type,
+            "updatedAt": self.template.updated_at,
+            "contentSha256": self.template.content_sha256,
+        }
+        return self.provenance_for_source_document(source_document)
 
     def validation_evidence(self) -> dict[str, Any]:
         evidence_matrix = self.application_guide.get("evidenceMatrix")
@@ -186,15 +214,11 @@ class AuthoritativeGenerationContext:
         }
 
 
-def load_authoritative_generation_context(
+def load_authoritative_application_generation_context(
     db: Session,
     *,
     application_id: str,
-    template_id: str,
-    document_type: str,
-    expected_job_id: str | None = None,
-    template_override: DocumentTemplateRecord | None = None,
-) -> AuthoritativeGenerationContext:
+) -> AuthoritativeApplicationGenerationContext:
     application_record = db.get(StoredApplicationRecord, application_id)
     if not application_record:
         raise GenerationContextError("Application not found", status_code=404)
@@ -206,12 +230,6 @@ def load_authoritative_generation_context(
     )
     if not job_id:
         raise GenerationContextError("Application does not reference a vacancy")
-    if expected_job_id and expected_job_id != job_id:
-        raise GenerationContextError(
-            "Generation job does not match the application vacancy",
-            status_code=422,
-        )
-
     job_record = db.get(StoredJobRecord, job_id)
     if not job_record or not isinstance(job_record.data, dict):
         raise GenerationContextError("Stored application vacancy is unavailable")
@@ -278,16 +296,7 @@ def load_authoritative_generation_context(
     if language not in {"English", "German"}:
         language = detect_job_language(vacancy)
 
-    template = template_override or db.get(DocumentTemplateRecord, template_id)
-    if not template:
-        raise GenerationContextError("Document template not found", status_code=404)
-    if template.type != document_type:
-        raise GenerationContextError(
-            "Document template type does not match document type",
-            status_code=422,
-        )
-
-    return AuthoritativeGenerationContext(
+    return AuthoritativeApplicationGenerationContext(
         application_id=application_id,
         job_id=job_id,
         application=dict(application),
@@ -298,8 +307,36 @@ def load_authoritative_generation_context(
         analysis_fingerprint=str(authoritative_analysis["fingerprint"]),
         confirmations=tuple(confirmations),
         language=language,
-        template=template,
     )
+
+
+def load_authoritative_generation_context(
+    db: Session,
+    *,
+    application_id: str,
+    template_id: str,
+    document_type: str,
+    expected_job_id: str | None = None,
+    template_override: DocumentTemplateRecord | None = None,
+) -> AuthoritativeGenerationContext:
+    application_context = load_authoritative_application_generation_context(
+        db,
+        application_id=application_id,
+    )
+    if expected_job_id and expected_job_id != application_context.job_id:
+        raise GenerationContextError(
+            "Generation job does not match the application vacancy",
+            status_code=422,
+        )
+    template = template_override or db.get(DocumentTemplateRecord, template_id)
+    if not template:
+        raise GenerationContextError("Document template not found", status_code=404)
+    if template.type != document_type:
+        raise GenerationContextError(
+            "Document template type does not match document type",
+            status_code=422,
+        )
+    return application_context.with_template(template)
 
 
 def load_stored_application_guide(db: Session, *, job_id: str) -> dict[str, Any]:
