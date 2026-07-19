@@ -17,7 +17,12 @@ from docx.oxml.ns import qn
 from lxml import etree
 from pypdf import PdfReader
 
-from app.services.document_export import parse_resume_replacements
+from app.services.cover_letter_blocks import extract_cover_letter_blocks_from_docx
+from app.services.document_export import (
+    is_structured_cover_letter_content,
+    parse_cover_letter_replacements,
+    parse_resume_replacements,
+)
 from app.services.resume_blocks import extract_resume_blocks_from_docx
 
 
@@ -166,11 +171,19 @@ def validate_generated_document(
         document_type,
         rendered_content=rendered_content,
     )
-    if document_type == "tailored_resume":
-        replacements = parse_resume_replacements(generated_content)
+    structured_document = document_type == "tailored_resume" or (
+        document_type == "cover_letter" and is_structured_cover_letter_content(generated_content)
+    )
+    if structured_document:
+        replacements = (
+            parse_resume_replacements(generated_content)
+            if document_type == "tailored_resume"
+            else parse_cover_letter_replacements(generated_content)
+        )
         evidence_catalog = build_authoritative_evidence_catalog(
             template_content,
             evidence,
+            document_type=document_type,
         )
         factual_issues = [
             *validate_evidence_id_references(replacements, evidence_catalog),
@@ -236,6 +249,25 @@ def build_document_diff(
             for replacement in parse_resume_replacements(generated_content)
             if replacement["replacement"] != replacement["original"]
         ]
+    if document_type == "cover_letter" and is_structured_cover_letter_content(generated_content):
+        paragraphs = {
+            paragraph["paragraphId"]: paragraph
+            for paragraph in extract_cover_letter_blocks_from_docx(template_content)
+        }
+        return [
+            {
+                "blockId": replacement["paragraphId"],
+                "paragraphId": replacement["paragraphId"],
+                "spanId": replacement["spanId"],
+                "type": paragraphs.get(replacement["paragraphId"], {}).get("type", "paragraph"),
+                "original": replacement["original"],
+                "replacement": replacement["replacement"],
+                "reason": replacement["reason"],
+                "evidenceIds": replacement["evidenceIds"],
+            }
+            for replacement in parse_cover_letter_replacements(generated_content)
+            if replacement["replacement"] != replacement["original"]
+        ]
 
     original_paragraphs = extract_docx_paragraphs(template_content)
     if rendered_content is not None:
@@ -276,10 +308,17 @@ def validate_factual_changes(diff: list[dict[str, Any]], allowed_text: str) -> l
 def build_authoritative_evidence_catalog(
     template_content: bytes,
     evidence: dict[str, Any],
+    *,
+    document_type: str = "tailored_resume",
 ) -> dict[str, dict[str, str]]:
     catalog: dict[str, dict[str, str]] = {}
-    for block in extract_resume_blocks_from_docx(template_content):
-        for span in block["spans"]:
+    containers = (
+        extract_resume_blocks_from_docx(template_content)
+        if document_type == "tailored_resume"
+        else extract_cover_letter_blocks_from_docx(template_content)
+    )
+    for container in containers:
+        for span in container["spans"]:
             evidence_id = span.get("evidenceId")
             original = span.get("original")
             if isinstance(evidence_id, str) and isinstance(original, str) and original:

@@ -30,6 +30,11 @@ from app.models.assistant import (
     UpdateProfileFieldProposal,
 )
 from app.models.profile import ProfilePayload
+from app.services.cover_letter_blocks import (
+    UnsupportedCoverLetterStructureError,
+    extract_cover_letter_blocks_from_docx,
+    parse_cover_letter_blocks,
+)
 from app.services.document_security import DocumentSecurityError, validate_docx_package
 from app.services.generation_context import PROFILE_EVIDENCE_FIELDS
 from app.services.resume_import import (
@@ -492,6 +497,36 @@ def build_source_document_context(
                 remaining_chars -= used_chars
                 context.append(source_context)
                 continue
+            if is_cover_letter_source_document(source):
+                _, binary_content = decode_resume_data_url(source.data_url)
+                paragraphs = extract_cover_letter_blocks_from_docx(binary_content)
+                source_context = {
+                    "id": source.id,
+                    "title": source.title,
+                    "category": source.category,
+                    "file_name": source.file_name,
+                    "format": "cover-letter-blocks-v1",
+                    "paragraphs": [],
+                }
+                for paragraph in paragraphs:
+                    candidate = {
+                        **source_context,
+                        "paragraphs": [*source_context["paragraphs"], paragraph],
+                    }
+                    serialized_length = len(
+                        json.dumps(candidate, ensure_ascii=False, separators=(",", ":"))
+                    )
+                    if serialized_length > min(10_000, remaining_chars):
+                        break
+                    source_context = candidate
+                if not source_context["paragraphs"]:
+                    continue
+                used_chars = len(
+                    json.dumps(source_context, ensure_ascii=False, separators=(",", ":"))
+                )
+                remaining_chars -= used_chars
+                context.append(source_context)
+                continue
             if source.file_name.lower().endswith(".docx"):
                 _, binary_content = decode_resume_data_url(source.data_url)
                 extracted_text = extract_docx_body_text(binary_content).strip()
@@ -500,7 +535,7 @@ def build_source_document_context(
                     source.file_name,
                     source.data_url,
                 ).strip()
-        except UnsupportedResumeStructureError as exc:
+        except (UnsupportedResumeStructureError, UnsupportedCoverLetterStructureError) as exc:
             raise OpenClawAssistantError(
                 f"Selected DOCX cannot be tailored safely. {exc}",
                 code="unsupported_document",
@@ -577,6 +612,19 @@ def preflight_source_documents(
                         "description": description,
                     }
                 )
+        if not document_issues and is_cover_letter_source_document(source):
+            try:
+                parse_cover_letter_blocks(body)
+            except UnsupportedCoverLetterStructureError as exc:
+                description = str(exc).removeprefix("Unsupported DOCX construction: ")
+                unsupported_elements.append(
+                    {
+                        "documentId": source.id,
+                        "fileName": source.file_name,
+                        "element": "coverLetterStructure",
+                        "description": description,
+                    }
+                )
 
     if unsupported_elements:
         descriptions = ", ".join(
@@ -594,6 +642,13 @@ def preflight_source_documents(
 def is_resume_source_document(source: AssistantSourceDocument) -> bool:
     return source.file_name.lower().endswith(".docx") and any(
         token in source.category.lower() for token in ("cv", "resume")
+    )
+
+
+def is_cover_letter_source_document(source: AssistantSourceDocument) -> bool:
+    return (
+        source.file_name.lower().endswith(".docx")
+        and "cover letter" in source.category.lower()
     )
 
 

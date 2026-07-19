@@ -351,11 +351,11 @@ function hasCurrentAiConsent(configuration: AiConfiguration) {
 function currentContent(document: GeneratedDocument | undefined) {
   if (!document) return "";
   const content = document.versions.find((version) => version.version === document.currentVersion)?.content ?? "";
-  if (document.type !== "tailored_resume") return content;
   try {
     const payload = JSON.parse(content) as {
       replacements?: Array<{
         blockId?: string;
+        paragraphId?: string;
         spanId?: string;
         replacement?: string;
         reason?: string;
@@ -363,12 +363,24 @@ function currentContent(document: GeneratedDocument | undefined) {
       }>;
     };
     if (!Array.isArray(payload.replacements)) return content;
-    if (payload.replacements.length === 0) return "No safe block replacements were needed.";
-    return payload.replacements.map((replacement) => (
-      `${replacement.blockId ?? "Block"}${replacement.spanId ? ` · ${replacement.spanId}` : ""}: ${replacement.replacement ?? ""}${replacement.reason ? `\nWhy: ${replacement.reason}` : ""}${replacement.evidenceIds?.length ? `\nEvidence: ${replacement.evidenceIds.join(", ")}` : ""}`
-    )).join("\n\n");
+    if (payload.replacements.length === 0) return "No safe text replacements were needed.";
+    return payload.replacements.map((replacement) => {
+      const containerId = replacement.blockId ?? replacement.paragraphId ?? "Text";
+      return `${containerId}${replacement.spanId ? ` · ${replacement.spanId}` : ""}: ${replacement.replacement ?? ""}${replacement.reason ? `\nWhy: ${replacement.reason}` : ""}${replacement.evidenceIds?.length ? `\nEvidence: ${replacement.evidenceIds.join(", ")}` : ""}`;
+    }).join("\n\n");
   } catch {
     return content;
+  }
+}
+
+function hasStructuredReplacements(document: GeneratedDocument | undefined) {
+  if (!document) return false;
+  const content = document.versions.find((version) => version.version === document.currentVersion)?.content ?? "";
+  try {
+    const payload = JSON.parse(content) as { replacements?: unknown };
+    return Array.isArray(payload.replacements);
+  } catch {
+    return false;
   }
 }
 
@@ -966,7 +978,7 @@ export function ApplicationWorkspace({
     });
     const targetLanguage = effectiveLanguage || selectedSource.language || "English";
     const prompt = isCoverLetter
-      ? `Rewrite the selected DOCX cover letter in ${targetLanguage} for this vacancy. Treat the saved application guide, candidate profile, selected source document, and candidate confirmations in CONTEXT_JSON as factual data. Follow the guide's positioning, evidence map, risks, and cover-letter plan. Candidate confirmations take precedence over inferred evidence; a negative answer means the claim must be omitted. Use only verified facts and never invent achievements or metrics. Return only the complete letter text without Markdown or commentary, with a greeting, focused body paragraphs, and a professional closing.`
+      ? `Tailor the selected DOCX cover letter in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format cover-letter-blocks-v1. Each paragraph has stable paragraphId, type, original, style, editable, spans, hyperlinks, and protectedElements fields; each span has stable spanId, type, original, style, editable, and evidenceId fields. Profile fields expose evidence IDs in candidate.evidence_ids, and saved confirmations expose evidenceId. Treat the application guide, candidate profile, source paragraphs, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"paragraphId":"paragraph-0002","spanId":"paragraph-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason","evidenceIds":["source:paragraph-0002-span-0001","profile:experience"]}]}. Every replacement must include one or more evidenceIds copied exactly from CONTEXT_JSON. Cite every source span, profile field, or confirmation needed to support the replacement. New numbers, dates, companies, job titles, and technologies are allowed only when they appear in the cited evidence. Include only text spans where editable is true, and copy paragraphId, spanId, and original exactly from CONTEXT_JSON. Never target protected paragraphs, hyperlinks, tabs, line breaks, protectedElements, or any span where editable is false. Do not add IDs, remove paragraphs or spans, use Markdown, or invent facts or metrics. Prefer focused edits to existing body text and preserve greeting, closing, signature, contact details, hyperlinks, and formatting.`
       : `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v2. Each block has stable blockId, type, original, editable, and spans fields; each span has stable spanId, type, original, editable, and evidenceId fields. Profile fields expose evidence IDs in candidate.evidence_ids, and saved confirmations expose evidenceId. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0002","spanId":"block-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason","evidenceIds":["source:block-0002-span-0001","profile:experience"]}]}. Every replacement must include one or more evidenceIds copied exactly from CONTEXT_JSON. Cite every source span, profile field, or confirmation needed to support the replacement. New numbers, dates, companies, job titles, and technologies are allowed only when they appear in the cited evidence. Include only text spans where editable is true, and copy blockId, spanId, and original exactly from CONTEXT_JSON. Never target headings, contacts, immutable or structural table-cell blocks, hyperlinks, tabs, line breaks, or any span where editable is false. Do not add IDs, remove blocks or spans, use Markdown, or invent facts or metrics. Prefer targeted edits to summary, skill, and achievement text spans.`;
     const generate = () => askAssistant(prompt, [selectedSource], assistantConfirmations);
     const assistantResult = onRetry
@@ -1668,6 +1680,7 @@ function DocumentCard({
     : currentVersion?.visualValidation.tableOverflow === false ? "No overflow detected" : currentVersion?.visualValidation.tableOverflow === true ? "Overflow detected" : "Not reported";
   const geometryIssueCount = visualValidation?.issues?.length ?? (structuralChecksStatus === "passed" ? 0 : undefined);
   const isResume = documentType === "tailored_resume";
+  const showsChangeList = isResume || hasStructuredReplacements(document);
   const isRestoringDocument = Boolean(document && restoringVersionKey.startsWith(`${document.id}:`));
   return (
     <article className="flex flex-col rounded-2xl border border-white/[0.08] bg-black/15 p-4 transition hover:border-white/[0.12]">
@@ -1676,9 +1689,9 @@ function DocumentCard({
         <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-bold text-white">{label}</h3>{document ? readiness.ready ? <span className="inline-flex items-center gap-1 rounded-full border border-success/25 bg-success/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-success"><FileCheck2 className="h-3 w-3" /> Ready · v{document.currentVersion}</span> : <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-1 text-[8px] font-black uppercase tracking-wide text-amber-200"><AlertTriangle className="h-3 w-3" /> {readiness.label} · v{document.currentVersion}</span> : <span className="rounded-full border border-white/[0.08] bg-white/[0.025] px-2 py-1 text-[8px] font-black uppercase tracking-wide text-muted">Not generated</span>}</div><p className="mt-1 text-[10px] leading-4 text-muted">{description}</p></div>
       </div>
       {sourceControl}
-      <div className="mt-3"><p className="text-[9px] font-black uppercase tracking-[0.1em] text-muted">{isResume ? "CV change list" : "Document text preview"}</p>{isResume ? <p className="mt-1 text-[9px] leading-4 text-muted">Proposed content changes only — this is not a visual DOCX preview.</p> : null}</div>
-      <div className={cn("mt-2 min-h-[132px] overflow-hidden rounded-xl border p-4", content ? isResume ? "border-white/[0.09] bg-white/[0.025] text-[#dfe5ec]" : "border-white/[0.09] bg-[#f6f4ef] text-[#20242a] shadow-inner" : "border-dashed border-white/[0.1] bg-white/[0.015]")}>
-        {isGenerating ? <div className="grid min-h-[100px] place-items-center text-center"><div><LoaderCircle className="mx-auto h-5 w-5 animate-spin text-accent" /><p className="mt-2 text-[11px] font-semibold text-muted">Writing an evidence-based version…</p></div></div> : content ? <p className={cn("line-clamp-[7] whitespace-pre-wrap text-[9px] leading-[1.55]", !isResume && "font-serif")}>{content}</p> : <div className="grid min-h-[100px] place-items-center text-center"><div><Icon className="mx-auto h-5 w-5 text-[#606b79]" /><p className="mt-2 text-[10px] font-semibold text-[#7f8998]">{isResume ? "Change list will appear after generation" : "Text preview will appear after generation"}</p></div></div>}
+      <div className="mt-3"><p className="text-[9px] font-black uppercase tracking-[0.1em] text-muted">{showsChangeList ? `${isResume ? "CV" : "Cover letter"} change list` : "Document text preview"}</p>{showsChangeList ? <p className="mt-1 text-[9px] leading-4 text-muted">Proposed content changes only — this is not a visual DOCX preview.</p> : null}</div>
+      <div className={cn("mt-2 min-h-[132px] overflow-hidden rounded-xl border p-4", content ? showsChangeList ? "border-white/[0.09] bg-white/[0.025] text-[#dfe5ec]" : "border-white/[0.09] bg-[#f6f4ef] text-[#20242a] shadow-inner" : "border-dashed border-white/[0.1] bg-white/[0.015]")}>
+        {isGenerating ? <div className="grid min-h-[100px] place-items-center text-center"><div><LoaderCircle className="mx-auto h-5 w-5 animate-spin text-accent" /><p className="mt-2 text-[11px] font-semibold text-muted">Writing an evidence-based version…</p></div></div> : content ? <p className={cn("line-clamp-[7] whitespace-pre-wrap text-[9px] leading-[1.55]", !showsChangeList && "font-serif")}>{content}</p> : <div className="grid min-h-[100px] place-items-center text-center"><div><Icon className="mx-auto h-5 w-5 text-[#606b79]" /><p className="mt-2 text-[10px] font-semibold text-[#7f8998]">{showsChangeList ? "Change list will appear after generation" : "Text preview will appear after generation"}</p></div></div>}
       </div>
       {currentVersion ? (
         <details open className="mt-3 rounded-xl border border-white/[0.08] bg-white/[0.02]">

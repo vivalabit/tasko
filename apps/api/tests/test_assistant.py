@@ -187,6 +187,48 @@ def test_assistant_prompt_passes_resume_docx_as_structured_blocks() -> None:
     assert '"text":' not in context
 
 
+def test_assistant_prompt_passes_cover_letter_as_structured_blocks() -> None:
+    document = Document()
+    document.add_paragraph("Dear Hiring Team,")
+    body = document.add_paragraph("Original cover-letter body.")
+    body.runs[0].italic = True
+    document.add_paragraph("Kind regards,")
+    document.add_paragraph("Eduard")
+    output = BytesIO()
+    document.save(output)
+    data_url = "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," + base64.b64encode(
+        output.getvalue()
+    ).decode()
+
+    prompt = build_openclaw_assistant_prompt(
+        message="Tailor my cover letter and return structured replacements.",
+        context_kind="application",
+        profile=ProfilePayload(name="Eduard"),
+        job=AssistantJobContext(id="job-1", title="Backend Engineer"),
+        application=None,
+        source_documents=[
+            AssistantSourceDocument(
+                id="source-cover",
+                title="Main cover letter",
+                category="Cover Letter",
+                fileName="cover-letter.docx",
+                dataUrl=data_url,
+            )
+        ],
+    )
+
+    context, _ = prompt.split("USER_MESSAGE (trusted instructions):\n", 1)
+    assert '"format":"cover-letter-blocks-v1"' in context
+    assert '"paragraphId":"paragraph-0001"' in context
+    assert '"type":"greeting"' in context
+    assert '"original":"Original cover-letter body."' in context
+    assert '"spanId":"paragraph-0002-span-0001"' in context
+    assert '"style":{"italic":true' in context
+    assert '"editable":true' in context
+    assert '"protectedElements":[]' in context
+    assert '"text":' not in context
+
+
 def test_assistant_prompt_reports_unsupported_resume_construction() -> None:
     document = Document()
     paragraph = document.add_paragraph("Page ")

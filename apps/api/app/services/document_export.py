@@ -12,6 +12,10 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 from lxml import etree
 
+from app.services.cover_letter_blocks import (
+    parse_cover_letter_blocks,
+    replace_cover_letter_text_span,
+)
 from app.services.resume_blocks import (
     parse_resume_blocks,
     replace_resume_text_span,
@@ -52,11 +56,39 @@ def build_document_from_template(
     """Replace text inside a copied DOCX while retaining its visual structure."""
     if document_type == "tailored_resume":
         return build_resume_from_template_package(template_content, content)
+    if is_structured_cover_letter_content(content):
+        return build_cover_letter_from_template_package(template_content, content)
 
     document = Document(BytesIO(template_content))
     replace_cover_letter_text(document, content)
     output = BytesIO()
     document.save(output)
+    return output.getvalue()
+
+
+def build_cover_letter_from_template_package(template_content: bytes, content: str) -> bytes:
+    """Patch editable cover-letter spans without rebuilding the DOCX package."""
+    with zipfile.ZipFile(BytesIO(template_content)) as source:
+        document_xml = source.read("word/document.xml")
+        root = etree.fromstring(document_xml)
+        body = root.find(qn("w:body"))
+        if body is None:
+            raise ValueError("Cover-letter template has no document body")
+        replace_cover_letter_spans(body, content)
+        rendered_xml = etree.tostring(
+            root,
+            encoding="UTF-8",
+            xml_declaration=True,
+            standalone=True,
+        )
+
+        output = BytesIO()
+        with zipfile.ZipFile(output, "w") as target:
+            for item in source.infolist():
+                target.writestr(
+                    item,
+                    rendered_xml if item.filename == "word/document.xml" else source.read(item.filename),
+                )
     return output.getvalue()
 
 
@@ -84,6 +116,30 @@ def build_resume_from_template_package(template_content: bytes, content: str) ->
                     rendered_xml if item.filename == "word/document.xml" else source.read(item.filename),
                 )
     return output.getvalue()
+
+
+def replace_cover_letter_spans(body, content: str) -> None:
+    paragraphs = parse_cover_letter_blocks(body)
+    paragraphs_by_id = {paragraph.paragraph_id: paragraph for paragraph in paragraphs}
+    seen_span_ids: set[str] = set()
+    for replacement in parse_cover_letter_replacements(content):
+        paragraph_id = replacement["paragraphId"]
+        paragraph = paragraphs_by_id.get(paragraph_id)
+        if paragraph is None:
+            raise ValueError(f"Unknown cover-letter paragraph: {paragraph_id}")
+        span_id = replacement["spanId"]
+        if span_id in seen_span_ids:
+            raise ValueError(f"Duplicate cover-letter replacement for {span_id}")
+        seen_span_ids.add(span_id)
+        span = next(
+            (candidate for candidate in paragraph.spans if candidate.span_id == span_id),
+            None,
+        )
+        if span is None:
+            raise ValueError(f"Unknown cover-letter span for {paragraph_id}: {span_id}")
+        if replacement["original"] != span.original:
+            raise ValueError(f"Cover-letter span original does not match template: {span_id}")
+        replace_cover_letter_text_span(span, replacement["replacement"])
 
 
 def replace_cover_letter_text(document: Document, content: str) -> None:
@@ -219,6 +275,77 @@ def parse_resume_replacements(content: str) -> list[dict[str, object]]:
             }
         )
     return replacements
+
+
+def is_structured_cover_letter_content(content: str) -> bool:
+    cleaned = content.strip()
+    if cleaned.lower().startswith("```json"):
+        return True
+    if not cleaned.startswith(("{", "[")):
+        return False
+    try:
+        payload = parse_json_content(cleaned)
+    except ValueError:
+        return True
+    return isinstance(payload, (dict, list))
+
+
+def parse_cover_letter_replacements(content: str) -> list[dict[str, object]]:
+    payload = parse_json_content(
+        content, error_message="Generated cover letter must be structured JSON"
+    )
+    if isinstance(payload, dict) and isinstance(payload.get("replacements"), list):
+        raw_replacements = payload["replacements"]
+    elif isinstance(payload, list):
+        raw_replacements = payload
+    elif isinstance(payload, dict) and "paragraphId" in payload:
+        raw_replacements = [payload]
+    else:
+        raise ValueError("Generated cover-letter JSON must contain a replacements array")
+
+    replacements: list[dict[str, object]] = []
+    required_fields = ("paragraphId", "spanId", "original", "replacement", "reason")
+    for index, raw_replacement in enumerate(raw_replacements):
+        if not isinstance(raw_replacement, dict) or not all(
+            isinstance(raw_replacement.get(field), str) for field in required_fields
+        ):
+            raise ValueError(
+                f"Cover-letter replacement {index + 1} must contain string fields: "
+                "paragraphId, spanId, original, replacement, reason"
+            )
+        evidence_ids = raw_replacement.get("evidenceIds")
+        if (
+            not isinstance(evidence_ids, list)
+            or not 1 <= len(evidence_ids) <= 20
+            or not all(
+                isinstance(evidence_id, str)
+                and evidence_id == evidence_id.strip()
+                and 1 <= len(evidence_id) <= 200
+                for evidence_id in evidence_ids
+            )
+            or len(set(evidence_ids)) != len(evidence_ids)
+        ):
+            raise ValueError(
+                f"Cover-letter replacement {index + 1} must contain 1-20 unique evidenceIds strings"
+            )
+        replacements.append(
+            {
+                **{field: raw_replacement[field] for field in required_fields},
+                "evidenceIds": evidence_ids,
+            }
+        )
+    return replacements
+
+
+def parse_json_content(content: str, *, error_message: str = "Generated content must be JSON"):
+    cleaned = content.strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", cleaned, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        cleaned = fenced.group(1).strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise ValueError(error_message) from exc
 
 
 def normalized_content_paragraphs(content: str) -> list[str]:
