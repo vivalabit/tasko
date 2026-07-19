@@ -19,6 +19,7 @@ type WorkspaceApiOptions = {
   confirmations?: unknown[];
   documents?: unknown[];
   templates?: unknown[];
+  workspaceSources?: unknown[];
   requestHandler?: (
     url: URL,
     method: string,
@@ -184,6 +185,7 @@ export function installApplicationWorkspaceApiMock({
   confirmations = [],
   documents = [],
   templates = [],
+  workspaceSources = [],
   requestHandler,
 }: WorkspaceApiOptions = {}) {
   const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
@@ -206,6 +208,9 @@ export function installApplicationWorkspaceApiMock({
     }
     if (url.pathname === "/documents/templates/library" && method === "GET") {
       return Response.json(templates);
+    }
+    if (url.pathname === "/documents/workspace-sources/library" && method === "GET") {
+      return Response.json(workspaceSources);
     }
     if (url.pathname === "/documents/templates/preflight" && method === "POST") {
       const request = JSON.parse(String(init?.body)) as {

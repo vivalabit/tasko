@@ -114,6 +114,95 @@ def test_template_preflight_reports_capabilities_and_rejections() -> None:
     assert template_count == 0
 
 
+def test_workspace_source_documents_persist_by_application_and_can_be_deleted() -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(bind=engine)
+    testing_session_local = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    def override_get_db() -> Generator[Session, None, None]:
+        with testing_session_local() as db:
+            yield db
+
+    with testing_session_local() as db:
+        db.add_all(
+            [
+                StoredApplicationRecord(
+                    id="application-sources",
+                    data={"id": "application-sources", "status": "draft"},
+                ),
+                StoredApplicationRecord(
+                    id="application-other",
+                    data={"id": "application-other", "status": "draft"},
+                ),
+            ]
+        )
+        db.commit()
+
+    document = Document()
+    document.add_paragraph("Professional profile")
+    output = BytesIO()
+    document.save(output)
+    original_content = output.getvalue()
+    data_url = (
+        "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;"
+        "base64," + base64.b64encode(original_content).decode()
+    )
+
+    app.dependency_overrides[get_db] = override_get_db
+    client = TestClient(app)
+    try:
+        created = client.post(
+            "/documents/workspace-sources",
+            json={
+                "applicationId": "application-sources",
+                "category": "CV / Resume",
+                "title": "Target CV",
+                "language": "English",
+                "fileName": "target-cv.docx",
+                "dataUrl": data_url,
+            },
+        )
+        listed = client.get(
+            "/documents/workspace-sources/library",
+            params={"applicationId": "application-sources"},
+        )
+        other_workspace = client.get(
+            "/documents/workspace-sources/library",
+            params={"applicationId": "application-other"},
+        )
+        source_id = created.json()["id"]
+        wrong_workspace_delete = client.delete(
+            f"/documents/workspace-sources/{source_id}",
+            params={"applicationId": "application-other"},
+        )
+        deleted = client.delete(
+            f"/documents/workspace-sources/{source_id}",
+            params={"applicationId": "application-sources"},
+        )
+        listed_after_delete = client.get(
+            "/documents/workspace-sources/library",
+            params={"applicationId": "application-sources"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert created.status_code == 201
+    assert created.json()["fileName"] == "target-cv.docx"
+    assert created.json()["category"] == "CV / Resume"
+    assert listed.status_code == 200
+    assert [source["id"] for source in listed.json()] == [source_id]
+    restored_content = base64.b64decode(listed.json()[0]["dataUrl"].partition(",")[2])
+    assert restored_content == original_content
+    assert other_workspace.json() == []
+    assert wrong_workspace_delete.status_code == 404
+    assert deleted.status_code == 204
+    assert listed_after_delete.json() == []
+
+
 def test_document_versions_download_and_application_attachments() -> None:
     engine = create_engine(
         "sqlite://",

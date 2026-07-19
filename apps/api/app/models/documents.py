@@ -218,6 +218,31 @@ class DocumentTemplateRecord(Base):
     )
 
 
+class WorkspaceSourceDocumentRecord(Base):
+    __tablename__ = "workspace_source_documents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    application_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("stored_applications.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    language: Mapped[str] = mapped_column(String(40), nullable=False, default="")
+    file_name: Mapped[str] = mapped_column(String(240), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        onupdate=utc_now,
+        index=True,
+    )
+
+
 class DocumentFileRecord(Base):
     __tablename__ = "document_files"
     __table_args__ = (
@@ -246,6 +271,7 @@ class DocumentFileRecord(Base):
 
 DocumentType = Literal["cover_letter", "tailored_resume"]
 DocumentPackPersistenceMode = Literal["atomic", "partial"]
+WorkspaceSourceCategory = Literal["CV / Resume", "Cover Letter"]
 
 
 class DocumentVersionPayload(BaseModel):
@@ -454,5 +480,31 @@ class DocumentTemplatePreflightPayload(BaseModel):
     rejected_elements: list[dict[str, str]] = Field(alias="rejectedElements")
     ai_context: dict[str, Any] | None = Field(default=None, alias="aiContext")
     warnings: list[str] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}
+
+
+class WorkspaceSourceDocumentCreateRequest(BaseModel):
+    application_id: str = Field(min_length=1, max_length=160, alias="applicationId")
+    category: WorkspaceSourceCategory
+    title: str = Field(min_length=1, max_length=240)
+    language: str = Field(default="", max_length=40)
+    file_name: str = Field(min_length=1, max_length=240, alias="fileName")
+    data_url: str = Field(min_length=1, max_length=15_000_000, alias="dataUrl")
+
+    model_config = {"populate_by_name": True, "extra": "forbid"}
+
+
+class WorkspaceSourceDocumentPayload(BaseModel):
+    id: str
+    application_id: str = Field(alias="applicationId")
+    category: WorkspaceSourceCategory
+    title: str
+    language: str
+    file_name: str = Field(alias="fileName")
+    file_size: str = Field(alias="fileSize")
+    file_type: str = Field(alias="fileType")
+    uploaded_at: datetime = Field(alias="uploadedAt")
+    data_url: str = Field(alias="dataUrl")
 
     model_config = {"populate_by_name": True}

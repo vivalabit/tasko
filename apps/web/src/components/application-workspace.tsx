@@ -169,6 +169,20 @@ type ProfileSourceDocument = {
   file_type: string;
   uploaded_at: string;
   data_url: string;
+  workspace_upload?: boolean;
+};
+
+type WorkspaceSourceDocumentPayload = {
+  id: string;
+  applicationId: string;
+  category: "CV / Resume" | "Cover Letter";
+  title: string;
+  language: string;
+  fileName: string;
+  fileSize: string;
+  fileType: string;
+  uploadedAt: string;
+  dataUrl: string;
 };
 
 type GeneratedDocumentVersion = {
@@ -558,6 +572,23 @@ function parseProfileSourceDocuments(profile: WorkspaceProfile): ProfileSourceDo
   return sources;
 }
 
+function parseWorkspaceSourceDocument(
+  source: WorkspaceSourceDocumentPayload,
+): ProfileSourceDocument {
+  return {
+    id: source.id,
+    title: source.title,
+    category: source.category,
+    language: source.language,
+    file_name: source.fileName,
+    file_size: source.fileSize,
+    file_type: source.fileType,
+    uploaded_at: source.uploadedAt,
+    data_url: source.dataUrl,
+    workspace_upload: true,
+  };
+}
+
 function evidenceStatusMeta(status: NonNullable<ApplicationGuide["evidenceMatrix"]>[number]["status"]) {
   if (status === "verified") return { label: "Verified", className: "border-success/35 bg-success/10 text-success" };
   if (status === "transferable") return { label: "Transferable", className: "border-[#2f80ed]/35 bg-[#2f80ed]/10 text-[#8cc7ff]" };
@@ -591,7 +622,7 @@ export function ApplicationWorkspace({
   const [languageMode, setLanguageMode] = useState<"auto" | "English" | "German">("auto");
   const [isResumeSourceManual, setIsResumeSourceManual] = useState(false);
   const [isCoverSourceManual, setIsCoverSourceManual] = useState(false);
-  const [temporarySources, setTemporarySources] = useState<ProfileSourceDocument[]>([]);
+  const [workspaceSources, setWorkspaceSources] = useState<ProfileSourceDocument[]>([]);
   const [generationType, setGenerationType] = useState<GeneratedDocument["type"] | "">("");
   const [isGeneratingPack, setIsGeneratingPack] = useState(false);
   const [packPersistenceMode, setPackPersistenceMode] = useState<PackPersistenceMode>("atomic");
@@ -600,6 +631,7 @@ export function ApplicationWorkspace({
   const [loadingVersionHistoryId, setLoadingVersionHistoryId] = useState("");
   const [deletingDocumentId, setDeletingDocumentId] = useState("");
   const [deletingTemplateId, setDeletingTemplateId] = useState("");
+  const [deletingSourceId, setDeletingSourceId] = useState("");
   const [documentError, setDocumentError] = useState("");
   const [candidateConfirmations, setCandidateConfirmations] = useState<Record<string, CandidateConfirmation>>({});
   const [confirmationsDirty, setConfirmationsDirty] = useState(false);
@@ -647,20 +679,24 @@ export function ApplicationWorkspace({
     if (!application) return;
     setDocumentsLoaded(false);
     setDocuments([]);
+    setWorkspaceSources([]);
     setDocumentError("");
     const controller = new AbortController();
     Promise.all([
       fetchWithTimeout(`${apiBaseUrl}/documents?applicationId=${encodeURIComponent(application.id)}`, { signal: controller.signal }),
       fetchWithTimeout(`${apiBaseUrl}/documents/templates/library`, { signal: controller.signal }),
+      fetchWithTimeout(`${apiBaseUrl}/documents/workspace-sources/library?applicationId=${encodeURIComponent(application.id)}`, { cache: "no-store", signal: controller.signal }),
       fetchWithTimeout(`${apiBaseUrl}/assistant/config`, { signal: controller.signal }),
     ])
-      .then(async ([documentsResponse, templatesResponse, aiConfigurationResponse]) => {
-        if (!documentsResponse.ok || !templatesResponse.ok || !aiConfigurationResponse.ok) throw new Error("Application documents are temporarily unavailable");
+      .then(async ([documentsResponse, templatesResponse, sourcesResponse, aiConfigurationResponse]) => {
+        if (!documentsResponse.ok || !templatesResponse.ok || !sourcesResponse.ok || !aiConfigurationResponse.ok) throw new Error("Application documents are temporarily unavailable");
         const loadedDocuments = await documentsResponse.json() as GeneratedDocument[];
         const loadedTemplates = await templatesResponse.json() as DocumentTemplate[];
+        const loadedSources = await sourcesResponse.json() as WorkspaceSourceDocumentPayload[];
         const loadedAiConfiguration = await aiConfigurationResponse.json() as AiConfiguration;
         setDocuments(loadedDocuments);
         setTemplates(loadedTemplates);
+        setWorkspaceSources(loadedSources.map(parseWorkspaceSourceDocument));
         setAiConfiguration(loadedAiConfiguration);
         window.localStorage.removeItem(legacyAiDisclosureStorageKey);
         setAiDisclosureAccepted(hasCurrentAiConsent(loadedAiConfiguration));
@@ -683,8 +719,8 @@ export function ApplicationWorkspace({
     [documents],
   );
   const profileSources = useMemo(
-    () => [...temporarySources, ...parseProfileSourceDocuments(profile)],
-    [profile, temporarySources],
+    () => [...workspaceSources, ...parseProfileSourceDocuments(profile)],
+    [profile, workspaceSources],
   );
   const resumeSources = useMemo(
     () => profileSources.filter((source) => source.category === "CV / Resume" && source.file_name.toLowerCase().endsWith(".docx")),
@@ -1462,7 +1498,7 @@ export function ApplicationWorkspace({
   }
 
   async function attachWorkspaceSource(file: File | undefined, category: "CV / Resume" | "Cover Letter") {
-    if (!file) return;
+    if (!file || !application) return;
     const lowerName = file.name.toLowerCase();
     if (!lowerName.endsWith(".docx")) {
       setDocumentError("CV and cover letter sources must be DOCX files so their design can be preserved");
@@ -1480,18 +1516,21 @@ export function ApplicationWorkspace({
         reader.onerror = () => reject(new Error("Source document reading failed"));
         reader.readAsDataURL(file);
       });
-      const source: ProfileSourceDocument = {
-        id: createId("workspace-source"),
-        title: file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "),
-        category,
-        language: effectiveLanguage || inferSourceLanguage(file.name) || "English",
-        file_name: file.name,
-        file_size: `${Math.max(1, Math.round(file.size / 1024))} KB`,
-        file_type: file.type || "application/octet-stream",
-        uploaded_at: new Date().toISOString(),
-        data_url: dataUrl,
-      };
-      setTemporarySources((current) => [source, ...current]);
+      const response = await fetch(`${apiBaseUrl}/documents/workspace-sources`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          applicationId: application.id,
+          title: file.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "),
+          category,
+          language: effectiveLanguage || inferSourceLanguage(file.name) || "English",
+          fileName: file.name,
+          dataUrl,
+        }),
+      });
+      if (!response.ok) throw new Error(await readApiError(response, "Source document could not be uploaded"));
+      const source = parseWorkspaceSourceDocument(await response.json() as WorkspaceSourceDocumentPayload);
+      setWorkspaceSources((current) => [source, ...current.filter((item) => item.id !== source.id)]);
       if (category === "CV / Resume") {
         setSelectedResumeSourceId(source.id);
         setIsResumeSourceManual(true);
@@ -1501,6 +1540,33 @@ export function ApplicationWorkspace({
       }
     } catch (error) {
       setDocumentError(error instanceof Error ? error.message : "Source document reading failed");
+    }
+  }
+
+  async function deleteWorkspaceSource(source: ProfileSourceDocument) {
+    if (!application || !source.workspace_upload) return;
+    if (!window.confirm(`Delete uploaded source ${source.file_name}?`)) return;
+    setDeletingSourceId(source.id);
+    setDocumentError("");
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/documents/workspace-sources/${encodeURIComponent(source.id)}?applicationId=${encodeURIComponent(application.id)}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) throw new Error(await readApiError(response, "Source document could not be deleted"));
+      setWorkspaceSources((current) => current.filter((item) => item.id !== source.id));
+      if (source.id === selectedResumeSourceId) {
+        setSelectedResumeSourceId("");
+        setIsResumeSourceManual(false);
+      }
+      if (source.id === selectedCoverSourceId) {
+        setSelectedCoverSourceId("");
+        setIsCoverSourceManual(false);
+      }
+    } catch (error) {
+      setDocumentError(error instanceof Error ? error.message : "Source document could not be deleted");
+    } finally {
+      setDeletingSourceId("");
     }
   }
 
@@ -1682,8 +1748,8 @@ export function ApplicationWorkspace({
                 {effectiveLanguage && !resumeSources.some((source) => source.language === effectiveLanguage) ? <div className="mb-4 rounded-xl border border-amber-400/25 bg-amber-400/[0.07] px-3 py-2.5 text-xs leading-5 text-amber-200">No {effectiveLanguage} CV DOCX is saved in Profile. Add one or choose another language.</div> : null}
                 {templates.length ? <details className="mb-4 rounded-xl border border-white/[0.07] bg-black/15"><summary className="cursor-pointer px-3 py-2.5 text-[10px] font-bold text-[#cbd3df] marker:text-muted">Stored templates · {templates.length}</summary><div className="divide-y divide-white/[0.06] border-t border-white/[0.07] px-3">{templates.map((template) => <div key={template.id} className="flex items-center gap-3 py-2"><div className="min-w-0 flex-1"><p className="truncate text-[10px] font-bold text-white">{template.name}</p><p className="truncate text-[9px] text-muted">{template.type === "tailored_resume" ? "CV" : "Cover letter"} · {template.fileName}</p></div><Button type="button" variant="ghost" aria-label={`Delete template ${template.name}`} disabled={deletingTemplateId === template.id} onClick={() => void deleteStoredTemplate(template)} className="h-8 rounded-lg border border-red-400/20 px-2 text-red-200 hover:bg-red-500/10">{deletingTemplateId === template.id ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}</Button></div>)}</div></details> : null}
                 <div className="grid gap-4 lg:grid-cols-2">
-                  <DocumentCard documentType="tailored_resume" icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} onLoadMoreVersions={() => latestResume && void loadMoreDocumentVersions(latestResume)} onDelete={() => latestResume && void deleteGeneratedDocument(latestResume)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedResumeSourceId && resumePreflightReady && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedResumeSourceId ? "Select source first" : resumePreflight.status === "checking" ? "Checking template…" : resumePreflight.status === "error" ? "Preflight failed" : !resumePreflight.report?.supported ? "Template unsupported" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} preflight={resumePreflight} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} />} />
-                  <DocumentCard documentType="cover_letter" icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} onLoadMoreVersions={() => latestCoverLetter && void loadMoreDocumentVersions(latestCoverLetter)} onDelete={() => latestCoverLetter && void deleteGeneratedDocument(latestCoverLetter)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && coverPreflightReady && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedCoverSourceId ? "Select source first" : coverPreflight.status === "checking" ? "Checking template…" : coverPreflight.status === "error" ? "Preflight failed" : !coverPreflight.report?.supported ? "Template unsupported" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} preflight={coverPreflight} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} />} />
+                  <DocumentCard documentType="tailored_resume" icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} onLoadMoreVersions={() => latestResume && void loadMoreDocumentVersions(latestResume)} onDelete={() => latestResume && void deleteGeneratedDocument(latestResume)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedResumeSourceId && resumePreflightReady && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedResumeSourceId ? "Select source first" : resumePreflight.status === "checking" ? "Checking template…" : resumePreflight.status === "error" ? "Preflight failed" : !resumePreflight.report?.supported ? "Template unsupported" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} preflight={resumePreflight} deletingSourceId={deletingSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} onDelete={(source) => void deleteWorkspaceSource(source)} />} />
+                  <DocumentCard documentType="cover_letter" icon={Mail} label="Cover letter" description="A concise role-specific letter based only on verified evidence." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} onLoadMoreVersions={() => latestCoverLetter && void loadMoreDocumentVersions(latestCoverLetter)} onDelete={() => latestCoverLetter && void deleteGeneratedDocument(latestCoverLetter)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && coverPreflightReady && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedCoverSourceId ? "Select source first" : coverPreflight.status === "checking" ? "Checking template…" : coverPreflight.status === "error" ? "Preflight failed" : !coverPreflight.report?.supported ? "Template unsupported" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} preflight={coverPreflight} deletingSourceId={deletingSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} onDelete={(source) => void deleteWorkspaceSource(source)} />} />
                 </div>
               </div>
             </section>
@@ -1870,17 +1936,22 @@ function SourcePicker({
   sources,
   selectedId,
   preflight,
+  deletingSourceId,
   onChange,
   onAttach,
+  onDelete,
 }: {
   label: string;
   sources: ProfileSourceDocument[];
   selectedId: string;
   preflight: SourcePreflightState;
+  deletingSourceId: string;
   onChange: (sourceId: string) => void;
   onAttach: (file: File | undefined) => void;
+  onDelete: (source: ProfileSourceDocument) => void;
 }) {
   const activePreflight = preflight.sourceId === selectedId ? preflight : undefined;
+  const selectedSource = sources.find((source) => source.id === selectedId);
   const report = activePreflight?.report;
   const immutableTypes = report
     ? [...new Set(report.immutableElements.map((item) => item.type))]
@@ -1902,10 +1973,17 @@ function SourcePicker({
           />
         </label>
       </div>
-      <select value={selectedId} onChange={(event) => onChange(event.target.value)} className="mt-2 h-9 w-full rounded-lg border border-white/[0.08] bg-[#111821] px-2.5 text-[10px] font-semibold text-white outline-none focus:border-accent/60">
-        <option value="">Select DOCX source</option>
-        {sources.map((source) => <option key={source.id} value={source.id}>{source.language ? `${source.language} · ` : ""}{source.title} · {source.file_name}</option>)}
-      </select>
+      <div className="mt-2 flex items-center gap-2">
+        <select value={selectedId} onChange={(event) => onChange(event.target.value)} className="h-9 min-w-0 flex-1 rounded-lg border border-white/[0.08] bg-[#111821] px-2.5 text-[10px] font-semibold text-white outline-none focus:border-accent/60">
+          <option value="">Select DOCX source</option>
+          {sources.map((source) => <option key={source.id} value={source.id}>{source.language ? `${source.language} · ` : ""}{source.title} · {source.file_name}</option>)}
+        </select>
+        {selectedSource?.workspace_upload ? (
+          <button type="button" aria-label={`Delete uploaded source ${selectedSource.file_name}`} disabled={Boolean(deletingSourceId)} onClick={() => onDelete(selectedSource)} className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-red-400/20 text-red-200 transition hover:bg-red-500/10 disabled:opacity-40">
+            {deletingSourceId === selectedSource.id ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+          </button>
+        ) : null}
+      </div>
       <p className="mt-2 text-[9px] leading-4 text-muted">{sources.length ? "Layout, styles, images, header and footer stay intact." : "No DOCX found. Upload one here or add it to Profile."}</p>
       {activePreflight?.status === "checking" ? (
         <p className="mt-2 flex items-center gap-1.5 rounded-lg border border-white/[0.08] bg-white/[0.025] px-2.5 py-2 text-[9px] font-bold text-[#cbd3df]" role="status">

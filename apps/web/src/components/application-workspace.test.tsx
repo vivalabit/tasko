@@ -620,6 +620,86 @@ describe("ApplicationWorkspace", () => {
     expect(screen.getByText(/context will be truncated/)).toBeInTheDocument();
   });
 
+  it("restores persisted workspace uploads and lets the user delete them", async () => {
+    const persistedSource = {
+      id: "workspace-source-restored",
+      applicationId: "application-v3",
+      title: "Reloaded CV",
+      category: "CV / Resume",
+      language: "English",
+      fileName: "reloaded-cv.docx",
+      fileSize: "24 KB",
+      fileType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      uploadedAt: "2026-07-19T09:00:00.000Z",
+      dataUrl: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cv",
+    };
+    const fetchMock = installApplicationWorkspaceApiMock({
+      workspaceSources: [persistedSource],
+      requestHandler: (url, method) => {
+        if (url.pathname === `/documents/workspace-sources/${persistedSource.id}` && method === "DELETE") {
+          return new Response(null, { status: 204 });
+        }
+        return undefined;
+      },
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderApplicationWorkspace(createV3WorkspaceApplication());
+
+    const restoredOption = await screen.findByRole("option", { name: /Reloaded CV · reloaded-cv\.docx/ });
+    expect(restoredOption).toBeInTheDocument();
+    const deleteButton = await screen.findByRole("button", { name: "Delete uploaded source reloaded-cv.docx" });
+    fireEvent.click(deleteButton);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("option", { name: /Reloaded CV · reloaded-cv\.docx/ })).not.toBeInTheDocument();
+    });
+    expect(fetchMock.mock.calls.some(([input, init]) => {
+      const url = new URL(String(input));
+      return url.pathname === `/documents/workspace-sources/${persistedSource.id}`
+        && url.searchParams.get("applicationId") === "application-v3"
+        && init?.method === "DELETE";
+    })).toBe(true);
+  });
+
+  it("persists a newly uploaded DOCX before selecting it", async () => {
+    let uploadedRequest: Record<string, string> | undefined;
+    installApplicationWorkspaceApiMock({
+      requestHandler: (url, method, init) => {
+        if (url.pathname !== "/documents/workspace-sources" || method !== "POST") return undefined;
+        uploadedRequest = JSON.parse(String(init?.body)) as Record<string, string>;
+        return Response.json({
+          id: "workspace-source-new",
+          applicationId: uploadedRequest.applicationId,
+          title: uploadedRequest.title,
+          category: uploadedRequest.category,
+          language: uploadedRequest.language,
+          fileName: uploadedRequest.fileName,
+          fileSize: "1 KB",
+          fileType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+          uploadedAt: "2026-07-19T10:00:00.000Z",
+          dataUrl: uploadedRequest.dataUrl,
+        }, { status: 201 });
+      },
+    });
+
+    const { container } = renderApplicationWorkspace(createV3WorkspaceApplication());
+    await screen.findByText("API online");
+    const file = new File(["docx-content"], "target_cv.docx", {
+      type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    });
+    const uploadInput = container.querySelectorAll<HTMLInputElement>('input[type="file"]')[0];
+    fireEvent.change(uploadInput, { target: { files: [file] } });
+
+    expect(await screen.findByRole("option", { name: /target cv · target_cv\.docx/ })).toBeInTheDocument();
+    expect(uploadedRequest).toMatchObject({
+      applicationId: "application-v3",
+      category: "CV / Resume",
+      fileName: "target_cv.docx",
+    });
+    expect(uploadedRequest?.dataUrl).toMatch(/^data:.*;base64,/);
+  });
+
   it("does not loop fingerprint updates when the application guide is missing", async () => {
     const fetchMock = installApplicationWorkspaceApiMock();
 
@@ -634,6 +714,6 @@ describe("ApplicationWorkspace", () => {
         screen.getAllByRole("button", { name: "Select source first" }),
       ).toHaveLength(2);
     });
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
   });
 });

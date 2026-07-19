@@ -17,6 +17,7 @@ from app.models.applications import (
     StoredApplicationRecord,
     StoredApplicationsRequest,
 )
+from app.models.documents import WorkspaceSourceDocumentRecord
 from app.models.jobs import StoredJobRecord
 from app.services.generation_context import (
     ClarificationQuestion,
@@ -302,6 +303,9 @@ def delete_application(application_id: str, db: Session = Depends(get_db)) -> No
 
         db.query(CandidateConfirmationRecord).filter(
             CandidateConfirmationRecord.application_id == application_id
+        ).delete()
+        db.query(WorkspaceSourceDocumentRecord).filter(
+            WorkspaceSourceDocumentRecord.application_id == application_id
         ).delete()
 
         db.delete(record)

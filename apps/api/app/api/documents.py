@@ -50,6 +50,9 @@ from app.models.documents import (
     DocumentVersionPayload,
     DocumentVersionRecord,
     DocumentVersionValidationRecord,
+    WorkspaceSourceDocumentCreateRequest,
+    WorkspaceSourceDocumentPayload,
+    WorkspaceSourceDocumentRecord,
     utc_now,
 )
 from app.models.profile import ProfilePayload
@@ -1136,6 +1139,118 @@ def preflight_document_template(
     )
 
 
+@router.get(
+    "/workspace-sources/library",
+    response_model=list[WorkspaceSourceDocumentPayload],
+)
+def list_workspace_source_documents(
+    application_id: str = Query(min_length=1, max_length=160, alias="applicationId"),
+    db: Session = Depends(get_db),
+) -> list[WorkspaceSourceDocumentPayload]:
+    try:
+        require_stored_application(db, application_id)
+        records = db.scalars(
+            select(WorkspaceSourceDocumentRecord)
+            .where(WorkspaceSourceDocumentRecord.application_id == application_id)
+            .order_by(WorkspaceSourceDocumentRecord.updated_at.desc())
+        ).all()
+        return [workspace_source_document_payload(record) for record in records]
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        raise database_unavailable(exc) from exc
+
+
+@router.post(
+    "/workspace-sources",
+    response_model=WorkspaceSourceDocumentPayload,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_workspace_source_document(
+    request: WorkspaceSourceDocumentCreateRequest,
+    db: Session = Depends(get_db),
+) -> WorkspaceSourceDocumentPayload:
+    if not request.file_name.lower().endswith(".docx"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Workspace source must be a .docx file",
+        )
+    _, content = decode_data_url(request.data_url)
+    if not content or len(content) > MAX_TEMPLATE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail="Workspace source must be a non-empty DOCX file under 10 MB",
+        )
+    try:
+        validate_docx_package(content)
+    except DocumentSecurityError as exc:
+        raise HTTPException(
+            status_code=(
+                status.HTTP_413_CONTENT_TOO_LARGE
+                if exc.limit_exceeded
+                else status.HTTP_422_UNPROCESSABLE_ENTITY
+            ),
+            detail=str(exc),
+        ) from exc
+
+    now = utc_now()
+    record = WorkspaceSourceDocumentRecord(
+        id=str(uuid4()),
+        application_id=request.application_id,
+        category=request.category,
+        title=request.title.strip(),
+        language=request.language.strip(),
+        file_name=safe_upload_filename(request.file_name),
+        content_type=DOCX_CONTENT_TYPE,
+        content=content,
+        created_at=now,
+        updated_at=now,
+    )
+    try:
+        require_stored_application(db, request.application_id)
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        return workspace_source_document_payload(record)
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+
+
+@router.delete(
+    "/workspace-sources/{source_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_workspace_source_document(
+    source_id: str,
+    application_id: str = Query(min_length=1, max_length=160, alias="applicationId"),
+    db: Session = Depends(get_db),
+) -> None:
+    try:
+        record = db.scalar(
+            select(WorkspaceSourceDocumentRecord).where(
+                WorkspaceSourceDocumentRecord.id == source_id,
+                WorkspaceSourceDocumentRecord.application_id == application_id,
+            )
+        )
+        if record is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Workspace source not found",
+            )
+        db.delete(record)
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+
+
 @router.post(
     "/templates",
     response_model=DocumentTemplatePayload,
@@ -1722,6 +1837,16 @@ def attach_document_record(
     )
 
 
+def require_stored_application(db: Session, application_id: str) -> StoredApplicationRecord:
+    application = db.get(StoredApplicationRecord, application_id)
+    if application is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Application not found",
+        )
+    return application
+
+
 def current_version_record(record: DocumentRecord) -> DocumentVersionRecord:
     current = next(
         (version for version in record.versions if version.version == record.current_version),
@@ -1865,6 +1990,24 @@ def document_template_payload(record: DocumentTemplateRecord) -> DocumentTemplat
         file_name=record.file_name,
         created_at=record.created_at,
         updated_at=record.updated_at,
+    )
+
+
+def workspace_source_document_payload(
+    record: WorkspaceSourceDocumentRecord,
+) -> WorkspaceSourceDocumentPayload:
+    encoded_content = base64.b64encode(record.content).decode()
+    return WorkspaceSourceDocumentPayload(
+        id=record.id,
+        application_id=record.application_id,
+        category=record.category,
+        title=record.title,
+        language=record.language,
+        file_name=record.file_name,
+        file_size=f"{max(1, round(len(record.content) / 1024))} KB",
+        file_type=record.content_type,
+        uploaded_at=record.updated_at,
+        data_url=f"data:{record.content_type};base64,{encoded_content}",
     )
 
 
