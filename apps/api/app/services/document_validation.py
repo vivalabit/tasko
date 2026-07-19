@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import zipfile
 from collections import Counter
+from datetime import date
 from difflib import SequenceMatcher
 from io import BytesIO
 from pathlib import Path
@@ -122,6 +123,80 @@ STOP_WORDS = {
     "using",
     "with",
 }
+EXPERIENCE_CLAIM_TYPES = {
+    "employer",
+    "title",
+    "period",
+    "technology",
+    "achievement",
+}
+FACTUAL_ASSERTION_PATTERN = re.compile(
+    r"\b(?:build|certified|creat(?:e|ed|ing)|deliver(?:ed|ing)?|deploy(?:ed|ing)?|"
+    r"design(?:ed|ing)?|develop(?:ed|ing)?|experienced|expert(?:ise)?|held|"
+    r"implement(?:ed|ing)?|improv(?:e|ed|ing)|know|led|maintained|manag(?:e|ed|ing)|"
+    r"master(?:ed|y)|operated|optimi[sz](?:e|ed|ing)|proficient|reduc(?:e|ed|ing)|"
+    r"responsible|scal(?:e|ed|ing)|served|skilled|speciali[sz](?:e|ed|ing|t)|"
+    r"support(?:ed|ing)?|used|worked|"
+    r"arbeitete|eingesetzt|erfahren|experte|verantwortlich|zertifiziert)\b",
+    re.IGNORECASE,
+)
+CURRENT_PERIOD_PATTERN = re.compile(
+    r"\b(?:current(?:ly)?|present(?:ly)?|ongoing|today|now|"
+    r"aktuell|derzeit|gegenw[aä]rtig|heute|laufend|bis heute)\b",
+    re.IGNORECASE,
+)
+PAST_PERIOD_PATTERN = re.compile(
+    r"\b(?:former(?:ly)?|previously|past|ehemalig|fr[uü]her|zuvor)\b",
+    re.IGNORECASE,
+)
+NEGATION_PATTERN = re.compile(
+    r"\b(?:no|not|never|without|cannot|can't|couldn't|didn't|doesn't|don't|"
+    r"hasn't|haven't|isn't|wasn't|weren't|"
+    r"kein(?:e|en|em|er|es)?|nicht|nie|niemals|ohne|"
+    r"ne|pas|jamais|sans|non|senza|nunca|sin)\b",
+    re.IGNORECASE,
+)
+MODALITY_PATTERNS = {
+    "capability": re.compile(
+        r"\b(?:can|able to|capable of|kann|f[aä]hig|capable de|puede)\b",
+        re.IGNORECASE,
+    ),
+    "hypothetical": re.compile(
+        r"\b(?:could|may|might|would|perhaps|possibly|probably|"
+        r"k[oö]nnte|w[uü]rde|m[oö]glicherweise|vermutlich|"
+        r"pourrait|peut-être|podr[ií]a)\b",
+        re.IGNORECASE,
+    ),
+    "obligation": re.compile(
+        r"\b(?:must|should|required to|muss|sollte|doit|debe)\b",
+        re.IGNORECASE,
+    ),
+    "future": re.compile(
+        r"\b(?:will|going to|intend(?:s|ed)? to|werde|wird|va a)\b",
+        re.IGNORECASE,
+    ),
+}
+ATTRIBUTION_GLUE_WORDS = {
+    "able",
+    "can",
+    "could",
+    "currently",
+    "did",
+    "former",
+    "formerly",
+    "may",
+    "might",
+    "must",
+    "never",
+    "not",
+    "presently",
+    "previously",
+    "should",
+    "will",
+    "worked",
+    "would",
+}
+MIN_CLAIM_TOKEN_COVERAGE = 0.7
 DATE_PATTERN = re.compile(
     r"\b(?:19|20)\d{2}\b|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|"
     r"may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|"
@@ -310,8 +385,8 @@ def build_authoritative_evidence_catalog(
     evidence: dict[str, Any],
     *,
     document_type: str = "tailored_resume",
-) -> dict[str, dict[str, str]]:
-    catalog: dict[str, dict[str, str]] = {}
+) -> dict[str, dict[str, Any]]:
+    catalog: dict[str, dict[str, Any]] = {}
     containers = (
         extract_resume_blocks_from_docx(template_content)
         if document_type == "tailored_resume"
@@ -337,16 +412,28 @@ def build_authoritative_evidence_catalog(
             and text.strip()
             and evidence_id.startswith(f"{evidence_type}:")
         ):
-            catalog[evidence_id] = {
+            catalog_item: dict[str, Any] = {
                 "type": evidence_type,
                 "text": text.strip(),
             }
+            claim_type = item.get("claimType")
+            experience_id = item.get("experienceId")
+            if (
+                evidence_type == "profile"
+                and evidence_id.startswith("profile:experience:")
+                and claim_type in EXPERIENCE_CLAIM_TYPES
+                and isinstance(experience_id, str)
+                and experience_id.strip()
+            ):
+                catalog_item["claimType"] = claim_type
+                catalog_item["experienceId"] = experience_id.strip()
+            catalog[evidence_id] = catalog_item
     return catalog
 
 
 def validate_evidence_id_references(
     replacements: list[dict[str, object]],
-    evidence_catalog: dict[str, dict[str, str]],
+    evidence_catalog: dict[str, dict[str, Any]],
 ) -> list[str]:
     return [
         f'{replacement["spanId"]} references unknown evidence "{evidence_id}"'
@@ -358,23 +445,30 @@ def validate_evidence_id_references(
 
 def validate_referenced_factual_changes(
     diff: list[dict[str, Any]],
-    evidence_catalog: dict[str, dict[str, str]],
+    evidence_catalog: dict[str, dict[str, Any]],
 ) -> list[str]:
     issues: list[str] = []
     for change in diff:
-        referenced_text = "\n".join(
-            evidence_catalog[evidence_id]["text"]
+        referenced_items = [
+            evidence_catalog[evidence_id]
             for evidence_id in change["evidenceIds"]
             if evidence_id in evidence_catalog
-        )
+        ]
+        referenced_text = "\n".join(item["text"] for item in referenced_items)
         if referenced_text:
             issues.extend(
                 validate_factual_change_against_text(
                     change,
                     referenced_text,
                     referenced=True,
+                    allowed_periods=[
+                        item["text"]
+                        for item in referenced_items
+                        if item.get("claimType") == "period"
+                    ],
                 )
             )
+            issues.extend(validate_atomic_experience_attribution(change, referenced_items))
     return issues
 
 
@@ -383,13 +477,14 @@ def validate_factual_change_against_text(
     allowed_text: str,
     *,
     referenced: bool = False,
+    allowed_periods: list[str] | None = None,
 ) -> list[str]:
     issues: list[str] = []
     original = change["original"]
     replacement = change["replacement"]
     location = change.get("spanId", change["blockId"])
     allowed_normalized = normalize_fact(allowed_text)
-    allowed_tokens = significant_tokens(allowed_text)
+    allowed_tokens = semantic_tokens(allowed_text)
     for label, extractor in (
         ("date", extract_dates),
         ("number", extract_numbers),
@@ -400,9 +495,18 @@ def validate_factual_change_against_text(
         original_values = {normalize_fact(value) for value in extractor(original)}
         for value in extractor(replacement):
             normalized = normalize_fact(value)
-            if normalized not in original_values and not contains_normalized_fact(
-                allowed_normalized,
-                normalized,
+            supported_by_period = (
+                label == "date"
+                or (
+                    label == "number"
+                    and normalized
+                    in {normalize_fact(date_value) for date_value in extract_dates(replacement)}
+                )
+            ) and any(date_is_within_period(value, period) for period in (allowed_periods or []))
+            if (
+                normalized not in original_values
+                and not contains_normalized_fact(allowed_normalized, normalized)
+                and not supported_by_period
             ):
                 if referenced:
                     issues.append(
@@ -411,22 +515,369 @@ def validate_factual_change_against_text(
                 else:
                     issues.append(f'{location} adds unsupported {label} "{value}"')
 
+    original_tokens = semantic_tokens(original)
+    original_negated = has_negation(original)
+    original_modality = modality_signature(original)
     for sentence in split_sentences(replacement):
-        sentence_tokens = significant_tokens(sentence) - CLAIM_VERBS
-        if not (significant_tokens(sentence) & CLAIM_VERBS) or not sentence_tokens:
+        sentence_tokens = semantic_tokens(sentence) - CLAIM_VERBS - ATTRIBUTION_GLUE_WORDS
+        if not sentence_tokens or not is_factual_assertion(sentence):
+            continue
+        if (
+            sentence_tokens <= original_tokens
+            and has_negation(sentence) == original_negated
+            and modality_signature(sentence) == original_modality
+        ):
             continue
         supported = sentence_tokens & allowed_tokens
-        if len(supported) / len(sentence_tokens) < 0.5:
+        if len(supported) / len(sentence_tokens) < MIN_CLAIM_TOKEN_COVERAGE:
             if referenced:
                 issues.append(
-                    f'{location} adds a claim not supported by referenced evidence '
+                    f"{location} adds a claim not supported by referenced evidence "
                     f'"{sentence[:100]}"'
                 )
             else:
-                issues.append(
-                    f'{location} adds an unsupported claim "{sentence[:100]}"'
-                )
+                issues.append(f'{location} adds an unsupported claim "{sentence[:100]}"')
+            continue
+        semantic_evidence = best_supporting_sentence(sentence, allowed_text)
+        if semantic_evidence is None:
+            continue
+        qualifier = "referenced evidence" if referenced else "evidence"
+        if has_negation(sentence) != has_negation(semantic_evidence):
+            issues.append(f"{location} changes negation relative to {qualifier}")
+        if modality_signature(sentence) != modality_signature(semantic_evidence):
+            issues.append(f"{location} changes modality relative to {qualifier}")
     return issues
+
+
+def validate_atomic_experience_attribution(
+    change: dict[str, Any],
+    referenced_items: list[dict[str, Any]],
+) -> list[str]:
+    atomic_items = [
+        item
+        for item in referenced_items
+        if item.get("claimType") in EXPERIENCE_CLAIM_TYPES
+        and isinstance(item.get("experienceId"), str)
+    ]
+    if not atomic_items:
+        return []
+
+    non_atomic_text = "\n".join(
+        item["text"] for item in referenced_items if item not in atomic_items
+    )
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for item in atomic_items:
+        groups.setdefault(item["experienceId"], []).append(item)
+
+    issues: list[str] = []
+    location = change.get("spanId", change["blockId"])
+    original = str(change["original"])
+    for sentence in split_sentences(str(change["replacement"])):
+        if not is_factual_assertion(sentence):
+            continue
+        if sentence_supported_by_text(sentence, original):
+            continue
+        if non_atomic_text and sentence_supported_by_text(sentence, non_atomic_text):
+            continue
+
+        required_types = required_experience_claim_types(sentence, atomic_items)
+        if not required_types:
+            issues.append(
+                f'{location} adds an unknown factual assertion and fails closed "{sentence[:100]}"'
+            )
+            continue
+
+        typed_candidates = [
+            (experience_id, items)
+            for experience_id, items in groups.items()
+            if required_types <= {item["claimType"] for item in items}
+        ]
+        if not typed_candidates:
+            cited_types = {item["claimType"] for item in atomic_items}
+            if required_types <= cited_types:
+                issues.append(
+                    f"{location} mixes claims attributed to different experience records; "
+                    f"{', '.join(sorted(required_types))} must share one experienceId"
+                )
+            else:
+                missing = ", ".join(sorted(required_types - cited_types))
+                issues.append(
+                    f"{location} adds an unknown claim without cited atomic evidence "
+                    f"for {missing} (fail-closed)"
+                )
+            continue
+
+        chronological_candidates = [
+            candidate
+            for candidate in typed_candidates
+            if group_supports_chronology(sentence, candidate[1])
+        ]
+        if not chronological_candidates:
+            issues.append(
+                f"{location} adds a chronology or employment-period claim not supported "
+                f'by the cited experience "{sentence[:100]}"'
+            )
+            continue
+
+        attributed_candidates = [
+            candidate
+            for candidate in chronological_candidates
+            if group_supports_attributed_values(
+                sentence,
+                candidate[1],
+                atomic_items,
+            )
+        ]
+        if not attributed_candidates:
+            issues.append(
+                f"{location} attributes a fact to an unsupported employer or experience "
+                f'"{sentence[:100]}"'
+            )
+            continue
+
+        supported_candidates = [
+            candidate
+            for candidate in attributed_candidates
+            if atomic_group_token_coverage(sentence, candidate[1])
+            >= MIN_CLAIM_TOKEN_COVERAGE
+        ]
+        if not supported_candidates:
+            issues.append(
+                f"{location} adds an unknown assertion not supported by cited atomic "
+                f'evidence (fail-closed) "{sentence[:100]}"'
+            )
+            continue
+
+        _, supporting_items = max(
+            supported_candidates,
+            key=lambda candidate: atomic_group_token_coverage(sentence, candidate[1]),
+        )
+        semantic_evidence = best_semantic_atomic_claim(sentence, supporting_items)
+        if semantic_evidence is None:
+            continue
+        evidence_text = semantic_evidence["text"]
+        if has_negation(sentence) != has_negation(evidence_text):
+            issues.append(
+                f'{location} changes negation relative to cited evidence "{evidence_text[:80]}"'
+            )
+        if modality_signature(sentence) != modality_signature(evidence_text):
+            issues.append(
+                f'{location} changes modality relative to cited evidence "{evidence_text[:80]}"'
+            )
+    return issues
+
+
+def required_experience_claim_types(
+    sentence: str,
+    atomic_items: list[dict[str, Any]],
+) -> set[str]:
+    normalized = normalize_fact(sentence)
+    required: set[str] = set()
+    for claim_type in ("employer", "title", "technology"):
+        if any(
+            item["claimType"] == claim_type
+            and contains_normalized_fact(normalized, normalize_fact(item["text"]))
+            for item in atomic_items
+        ):
+            required.add(claim_type)
+    if extract_companies(sentence):
+        required.add("employer")
+    if extract_titles(sentence):
+        required.add("title")
+    if (
+        extract_dates(sentence)
+        or CURRENT_PERIOD_PATTERN.search(sentence)
+        or PAST_PERIOD_PATTERN.search(sentence)
+    ):
+        required.add("period")
+    if extract_technologies(sentence):
+        required.add("technology")
+    if requires_achievement_evidence(sentence):
+        required.add("achievement")
+    return required
+
+
+def requires_achievement_evidence(sentence: str) -> bool:
+    tokens = significant_tokens(sentence)
+    if tokens & CLAIM_VERBS:
+        return True
+    match = FACTUAL_ASSERTION_PATTERN.search(sentence)
+    return bool(
+        match and match.group(0).casefold() not in {"worked", "arbeitete", "held", "served"}
+    )
+
+
+def group_supports_chronology(
+    sentence: str,
+    items: list[dict[str, Any]],
+) -> bool:
+    periods = [item["text"] for item in items if item["claimType"] == "period"]
+    dates = extract_dates(sentence)
+    if dates and not all(
+        any(date_is_within_period(value, period) for period in periods) for value in dates
+    ):
+        return False
+    if CURRENT_PERIOD_PATTERN.search(sentence) and not any(
+        CURRENT_PERIOD_PATTERN.search(period) for period in periods
+    ):
+        return False
+    if PAST_PERIOD_PATTERN.search(sentence) and any(
+        CURRENT_PERIOD_PATTERN.search(period) for period in periods
+    ):
+        return False
+    return True
+
+
+def group_supports_attributed_values(
+    sentence: str,
+    items: list[dict[str, Any]],
+    all_atomic_items: list[dict[str, Any]],
+) -> bool:
+    normalized = normalize_fact(sentence)
+    claims_by_type = {
+        claim_type: [
+            normalize_fact(item["text"]) for item in items if item["claimType"] == claim_type
+        ]
+        for claim_type in EXPERIENCE_CLAIM_TYPES
+    }
+    for claim_type in ("employer", "title", "technology"):
+        all_mentioned_claims = {
+            normalize_fact(item["text"])
+            for item in all_atomic_items
+            if item["claimType"] == claim_type
+            and contains_normalized_fact(normalized, normalize_fact(item["text"]))
+        }
+        if not all_mentioned_claims <= set(claims_by_type[claim_type]):
+            return False
+        mentioned_claims = [
+            claim
+            for claim in claims_by_type[claim_type]
+            if contains_normalized_fact(normalized, claim)
+        ]
+        if mentioned_claims:
+            continue
+        extractor = {
+            "employer": extract_companies,
+            "title": extract_titles,
+            "technology": extract_technologies,
+        }[claim_type]
+        values = extractor(sentence)
+        if values and not all(
+            any(
+                contains_normalized_fact(claim, normalize_fact(value))
+                or contains_normalized_fact(normalize_fact(value), claim)
+                for claim in claims_by_type[claim_type]
+            )
+            for value in values
+        ):
+            return False
+
+    group_text = "\n".join(item["text"] for item in items)
+    group_normalized = normalize_fact(group_text)
+    sentence_dates = {normalize_fact(value) for value in extract_dates(sentence)}
+    for number in extract_numbers(sentence):
+        normalized_number = normalize_fact(number)
+        if contains_normalized_fact(group_normalized, normalized_number):
+            continue
+        if normalized_number in sentence_dates and any(
+            date_is_within_period(number, period) for period in claims_by_type["period"]
+        ):
+            continue
+        return False
+    return True
+
+
+def atomic_group_token_coverage(
+    sentence: str,
+    items: list[dict[str, Any]],
+) -> float:
+    sentence_tokens = semantic_tokens(sentence) - CLAIM_VERBS - ATTRIBUTION_GLUE_WORDS
+    if not sentence_tokens:
+        return 1.0
+    evidence_tokens = semantic_tokens("\n".join(item["text"] for item in items))
+    return len(sentence_tokens & evidence_tokens) / len(sentence_tokens)
+
+
+def best_semantic_atomic_claim(
+    sentence: str,
+    items: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    candidates = [item for item in items if item["claimType"] == "achievement"] or items
+    sentence_tokens = semantic_tokens(sentence) - CLAIM_VERBS - ATTRIBUTION_GLUE_WORDS
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: len(sentence_tokens & semantic_tokens(item["text"])),
+    )
+
+
+def sentence_supported_by_text(sentence: str, text: str) -> bool:
+    sentence_tokens = semantic_tokens(sentence) - CLAIM_VERBS - ATTRIBUTION_GLUE_WORDS
+    if not sentence_tokens:
+        return True
+    text_tokens = semantic_tokens(text)
+    if len(sentence_tokens & text_tokens) / len(sentence_tokens) < 0.85:
+        return False
+    if has_negation(sentence) != has_negation(text):
+        return False
+    return modality_signature(sentence) == modality_signature(text)
+
+
+def best_supporting_sentence(sentence: str, evidence_text: str) -> str | None:
+    sentence_tokens = semantic_tokens(sentence) - CLAIM_VERBS - ATTRIBUTION_GLUE_WORDS
+    if not sentence_tokens:
+        return None
+    candidates = split_sentences(evidence_text)
+    if not candidates:
+        return None
+    candidate = max(
+        candidates,
+        key=lambda value: len(sentence_tokens & semantic_tokens(value)),
+    )
+    if (
+        len(sentence_tokens & semantic_tokens(candidate)) / len(sentence_tokens)
+        < MIN_CLAIM_TOKEN_COVERAGE
+    ):
+        return None
+    return candidate
+
+
+def date_is_within_period(value: str, period: str) -> bool:
+    value_years = [int(year) for year in re.findall(r"\b(?:19|20)\d{2}\b", value)]
+    period_years = [int(year) for year in re.findall(r"\b(?:19|20)\d{2}\b", period)]
+    if not value_years or not period_years:
+        return contains_normalized_fact(normalize_fact(period), normalize_fact(value))
+    if len(period_years) >= 2:
+        lower, upper = min(period_years), max(period_years)
+        return all(lower <= year <= upper for year in value_years)
+    if CURRENT_PERIOD_PATTERN.search(period):
+        return all(period_years[0] <= year <= date.today().year for year in value_years)
+    return all(year == period_years[0] for year in value_years)
+
+
+def has_negation(text: str) -> bool:
+    return NEGATION_PATTERN.search(text) is not None
+
+
+def modality_signature(text: str) -> frozenset[str]:
+    without_month_may = re.sub(r"\bmay\s+(?=(?:19|20)\d{2}\b)", "", text, flags=re.IGNORECASE)
+    return frozenset(
+        label for label, pattern in MODALITY_PATTERNS.items() if pattern.search(without_month_may)
+    )
+
+
+def is_factual_assertion(sentence: str) -> bool:
+    tokens = significant_tokens(sentence)
+    return bool(
+        tokens & CLAIM_VERBS
+        or FACTUAL_ASSERTION_PATTERN.search(sentence)
+        or extract_dates(sentence)
+        or extract_numbers(sentence)
+        or extract_technologies(sentence)
+        or extract_companies(sentence)
+        or extract_titles(sentence)
+    )
 
 
 def validate_visual_output(
@@ -1254,10 +1705,21 @@ def split_sentences(text: str) -> list[str]:
 
 def significant_tokens(text: str) -> set[str]:
     return {
-        token
+        cleaned
         for token in re.findall(r"[^\W\d_][\w+#.-]{2,}", text.casefold())
-        if token not in STOP_WORDS
+        if (cleaned := token.strip(".-")) and cleaned not in STOP_WORDS
     }
+
+
+def semantic_tokens(text: str) -> set[str]:
+    tokens: set[str] = set()
+    for token in significant_tokens(text):
+        if len(token) > 5 and token.endswith("ing"):
+            token = token[:-3]
+        elif len(token) > 4 and token.endswith("ed"):
+            token = token[:-2]
+        tokens.add(token)
+    return tokens
 
 
 def normalize_fact(value: str) -> str:

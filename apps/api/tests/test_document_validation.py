@@ -66,6 +66,20 @@ def pdf_geometry(
     }
 
 
+def atomic_evidence(
+    experience_id: str,
+    claim_type: str,
+    text: str,
+) -> tuple[str, dict[str, str]]:
+    evidence_id = f"profile:experience:{experience_id}:{claim_type}"
+    return evidence_id, {
+        "type": "profile",
+        "claimType": claim_type,
+        "experienceId": experience_id,
+        "text": text,
+    }
+
+
 def add_hyperlink(document: Document, target: str) -> None:
     paragraph = document.add_paragraph("Portfolio: ")
     relationship_id = paragraph.part.relate_to(
@@ -154,6 +168,33 @@ def test_authoritative_evidence_catalog_contains_source_profile_and_confirmation
     assert "vacancy:title" not in catalog
 
 
+def test_authoritative_evidence_catalog_preserves_atomic_claim_metadata() -> None:
+    source = Document()
+    source.add_paragraph("Original")
+
+    catalog = build_authoritative_evidence_catalog(
+        document_bytes(source),
+        {
+            "evidenceCatalog": [
+                {
+                    "id": "profile:experience:acme:employer",
+                    "type": "profile",
+                    "claimType": "employer",
+                    "experienceId": "acme",
+                    "text": "Acme",
+                }
+            ]
+        },
+    )
+
+    assert catalog["profile:experience:acme:employer"] == {
+        "type": "profile",
+        "claimType": "employer",
+        "experienceId": "acme",
+        "text": "Acme",
+    }
+
+
 def test_referenced_validation_rejects_unknown_and_uncited_evidence() -> None:
     catalog = {
         "source:block-0002-span-0001": {
@@ -198,6 +239,211 @@ def test_referenced_validation_rejects_unknown_and_uncited_evidence() -> None:
 
     diff[0]["evidenceIds"] = ["confirmation:principal-role"]
     assert validate_referenced_factual_changes(diff, catalog) == []
+
+
+def test_atomic_validation_accepts_one_attributed_experience_and_period() -> None:
+    catalog = dict(
+        [
+            atomic_evidence("acme", "employer", "Acme"),
+            atomic_evidence("acme", "title", "Platform Engineer"),
+            atomic_evidence("acme", "period", "2022 — 2024"),
+            atomic_evidence("acme", "technology", "Python"),
+            atomic_evidence(
+                "acme",
+                "achievement",
+                "Built a Python service reducing latency.",
+            ),
+        ]
+    )
+    change = {
+        "blockId": "block-0002",
+        "spanId": "block-0002-span-0001",
+        "original": "Software engineering experience.",
+        "replacement": (
+            "As a Platform Engineer at Acme in 2023, built a Python service reducing latency."
+        ),
+        "evidenceIds": list(catalog),
+    }
+
+    assert validate_referenced_factual_changes([change], catalog) == []
+
+
+def test_atomic_validation_rejects_cross_employer_claim_laundering() -> None:
+    catalog = dict(
+        [
+            atomic_evidence("acme", "employer", "Acme"),
+            atomic_evidence("globex", "period", "2021 — 2024"),
+            atomic_evidence("globex", "technology", "Kubernetes"),
+            atomic_evidence(
+                "globex",
+                "achievement",
+                "Built a Kubernetes deployment platform.",
+            ),
+        ]
+    )
+    change = {
+        "blockId": "block-0002",
+        "spanId": "block-0002-span-0001",
+        "original": "Engineering experience.",
+        "replacement": "At Acme in 2023, built a Kubernetes deployment platform.",
+        "evidenceIds": list(catalog),
+    }
+
+    issues = validate_referenced_factual_changes([change], catalog)
+
+    assert any("different experience records" in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        "At Acme in 2025, built a Python service.",
+        "Currently at Acme, built a Python service.",
+    ],
+)
+def test_atomic_validation_rejects_unsupported_chronology(replacement: str) -> None:
+    catalog = dict(
+        [
+            atomic_evidence("acme", "employer", "Acme"),
+            atomic_evidence("acme", "period", "2021 — 2024"),
+            atomic_evidence("acme", "technology", "Python"),
+            atomic_evidence("acme", "achievement", "Built a Python service."),
+        ]
+    )
+    change = {
+        "blockId": "block-0002",
+        "spanId": "block-0002-span-0001",
+        "original": "Engineering experience.",
+        "replacement": replacement,
+        "evidenceIds": list(catalog),
+    }
+
+    issues = validate_referenced_factual_changes([change], catalog)
+
+    assert any("chronology or employment-period" in issue for issue in issues)
+
+
+@pytest.mark.parametrize(
+    ("evidence_text", "replacement", "expected_issue"),
+    [
+        (
+            "Deployed Kubernetes to production.",
+            "Did not deploy Kubernetes to production.",
+            "changes negation",
+        ),
+        (
+            "Could deploy Kubernetes to production.",
+            "Deployed Kubernetes to production.",
+            "changes modality",
+        ),
+    ],
+)
+def test_atomic_validation_preserves_negation_and_modality(
+    evidence_text: str,
+    replacement: str,
+    expected_issue: str,
+) -> None:
+    catalog = dict(
+        [
+            atomic_evidence("acme", "technology", "Kubernetes"),
+            atomic_evidence("acme", "achievement", evidence_text),
+        ]
+    )
+    change = {
+        "blockId": "block-0002",
+        "spanId": "block-0002-span-0001",
+        "original": "Platform operations experience.",
+        "replacement": replacement,
+        "evidenceIds": list(catalog),
+    }
+
+    issues = validate_referenced_factual_changes([change], catalog)
+
+    assert any(expected_issue in issue for issue in issues)
+
+
+def test_atomic_validation_rejects_unknown_assertions_fail_closed() -> None:
+    catalog = dict(
+        [
+            atomic_evidence("acme", "technology", "Python"),
+            atomic_evidence("acme", "achievement", "Built a Python API."),
+        ]
+    )
+    change = {
+        "blockId": "block-0002",
+        "spanId": "block-0002-span-0001",
+        "original": "Engineering experience.",
+        "replacement": "Certified quantum computing expert.",
+        "evidenceIds": list(catalog),
+    }
+
+    issues = validate_referenced_factual_changes([change], catalog)
+
+    assert any("fail-closed" in issue for issue in issues)
+
+
+def test_referenced_validation_preserves_confirmation_modality() -> None:
+    catalog = {
+        "confirmation:kubernetes": {
+            "type": "confirmation",
+            "text": "Could deploy Kubernetes to production.",
+        }
+    }
+    change = {
+        "blockId": "block-0002",
+        "spanId": "block-0002-span-0001",
+        "original": "Platform operations experience.",
+        "replacement": "Deployed Kubernetes to production.",
+        "evidenceIds": list(catalog),
+    }
+
+    issues = validate_referenced_factual_changes([change], catalog)
+
+    assert any("changes modality relative to referenced evidence" in issue for issue in issues)
+
+
+def test_referenced_validation_rejects_unknown_profile_assertion_fail_closed() -> None:
+    catalog = {
+        "profile:skills": {
+            "type": "profile",
+            "text": "Python",
+        }
+    }
+    change = {
+        "blockId": "block-0002",
+        "spanId": "block-0002-span-0001",
+        "original": "Engineering experience.",
+        "replacement": "Certified Python expert.",
+        "evidenceIds": list(catalog),
+    }
+
+    issues = validate_referenced_factual_changes([change], catalog)
+
+    assert any("not supported by referenced evidence" in issue for issue in issues)
+
+
+def test_period_does_not_authorize_a_same_number_of_clients() -> None:
+    catalog = dict(
+        [
+            atomic_evidence("acme", "period", "2021 — 2024"),
+            atomic_evidence(
+                "acme",
+                "achievement",
+                "Managed a customer migration.",
+            ),
+        ]
+    )
+    change = {
+        "blockId": "block-0002",
+        "spanId": "block-0002-span-0001",
+        "original": "Customer migration experience.",
+        "replacement": "Managed a migration for 2023 clients.",
+        "evidenceIds": list(catalog),
+    }
+
+    issues = validate_referenced_factual_changes([change], catalog)
+
+    assert any('number "2023 clients"' in issue for issue in issues)
 
 
 def test_generated_resume_validation_rejects_unknown_evidence_before_success(
