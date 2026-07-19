@@ -258,16 +258,16 @@ def test_assistant_prompt_passes_cover_letter_as_structured_blocks() -> None:
 def test_assistant_prompt_reports_unsupported_resume_construction() -> None:
     document = Document()
     paragraph = document.add_paragraph("Page ")
-    field = OxmlElement("w:fldChar")
-    field.set(qn("w:fldCharType"), "begin")
-    paragraph.add_run()._r.append(field)
+    field = OxmlElement("w:fldSimple")
+    field.set(qn("w:instr"), ' INCLUDETEXT "https://example.com/resume.docx" ')
+    paragraph._p.append(field)
     output = BytesIO()
     document.save(output)
     data_url = "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64," + base64.b64encode(
         output.getvalue()
     ).decode()
 
-    with pytest.raises(OpenClawAssistantError, match="Word fields"):
+    with pytest.raises(OpenClawAssistantError, match="unsupported Word field INCLUDETEXT"):
         build_openclaw_assistant_prompt(
             message="Tailor my CV",
             context_kind="application",
@@ -328,10 +328,11 @@ def test_source_docx_preflight_returns_all_unsupported_elements_before_ai(
 ) -> None:
     document = Document()
     paragraph = document.add_paragraph("Unsupported source")
-    field = OxmlElement("w:fldChar")
-    field.set(qn("w:fldCharType"), "begin")
-    paragraph.add_run()._r.append(field)
+    field = OxmlElement("w:fldSimple")
+    field.set(qn("w:instr"), ' INCLUDETEXT "https://example.com/source.docx" ')
+    paragraph._p.append(field)
     paragraph.add_run()._r.append(OxmlElement("w:drawing"))
+    paragraph.add_run()._r.append(OxmlElement("w:object"))
     output = BytesIO()
     document.save(output)
     data_url = (
@@ -405,8 +406,8 @@ def test_source_docx_preflight_returns_all_unsupported_elements_before_ai(
         detail = response.json()["detail"]
         assert detail["code"] == "unsupported_document"
         assert [item["element"] for item in detail["unsupportedElements"]] == [
-            "fldChar",
-            "drawing",
+            "field",
+            "object",
         ]
         assert all(item["fileName"] == "unsafe.docx" for item in detail["unsupportedElements"])
     assert ai_calls == 0

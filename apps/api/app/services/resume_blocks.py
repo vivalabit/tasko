@@ -19,7 +19,15 @@ ResumeBlockType = Literal[
     "contact",
     "table cell",
 ]
-ResumeSpanType = Literal["text", "hyperlink", "tab", "lineBreak"]
+ResumeSpanType = Literal[
+    "text",
+    "hyperlink",
+    "tab",
+    "lineBreak",
+    "drawing",
+    "symbol",
+    "field",
+]
 EDITABLE_BLOCK_TYPES = {"summary", "skill", "achievement"}
 
 HEADING_WORDS = {
@@ -78,23 +86,41 @@ UNSUPPORTED_ELEMENTS = {
     "altChunk": "embedded alternative content",
     "customXml": "custom XML blocks",
     "del": "tracked deletions",
-    "drawing": "drawings or text boxes",
-    "fldChar": "Word fields",
-    "fldSimple": "Word fields",
     "ins": "tracked insertions",
-    "instrText": "Word fields",
     "moveFrom": "tracked moves",
     "moveTo": "tracked moves",
     "noBreakHyphen": "special hyphen runs",
     "object": "embedded objects",
     "oMath": "equations",
     "oMathPara": "equations",
-    "pict": "legacy drawings",
     "ptab": "positional tabs",
     "softHyphen": "special hyphen runs",
     "smartTag": "smart tags",
-    "sym": "symbol runs",
     "txbxContent": "text boxes",
+}
+SUPPORTED_WORD_FIELDS = {
+    "AUTHOR",
+    "COMMENTS",
+    "CREATEDATE",
+    "DATE",
+    "DOCPROPERTY",
+    "FILENAME",
+    "FILESIZE",
+    "HYPERLINK",
+    "KEYWORDS",
+    "LASTSAVEDBY",
+    "NUMPAGES",
+    "PAGE",
+    "PAGEREF",
+    "PRINTDATE",
+    "REF",
+    "REVNUM",
+    "SAVEDATE",
+    "SECTION",
+    "SECTIONPAGES",
+    "SUBJECT",
+    "TIME",
+    "TITLE",
 }
 UNSUPPORTED_CONTENT_CONTROL_PROPERTIES = {
     "checkBox": "checkbox content controls",
@@ -169,7 +195,7 @@ def extract_resume_blocks_from_docx(content: bytes) -> list[dict[str, Any]]:
 
 
 def parse_resume_blocks(body: Any) -> list[ResumeBlock]:
-    validate_supported_resume_structure(body)
+    validate_supported_word_structure(body)
     blocks: list[ResumeBlock] = []
     document_section = ""
     table_column_sections: dict[Any, dict[int, str]] = {}
@@ -268,7 +294,7 @@ def paragraph_text(element: Any) -> str:
 
 @dataclass(frozen=True)
 class InlineToken:
-    token_type: Literal["text", "tab", "lineBreak"]
+    token_type: ResumeSpanType
     original: str
     text_node: Any | None
     hyperlink: Any | None
@@ -277,8 +303,35 @@ class InlineToken:
 
 def paragraph_inline_tokens(element: Any) -> list[InlineToken]:
     tokens: list[InlineToken] = []
+    complex_field_depth = 0
     for node in element.iter():
         if node is element or nearest_paragraph(node) is not element:
+            continue
+        if nearest_ancestor(node, qn("w:fldSimple")) is not None:
+            continue
+        if nearest_ancestor(node, qn("w:drawing")) is not None:
+            continue
+        if nearest_ancestor(node, qn("w:pict")) is not None:
+            continue
+        if node.tag == qn("w:fldSimple"):
+            tokens.append(protected_inline_token("field", "[Field]", node))
+            continue
+        if node.tag == qn("w:fldChar"):
+            field_type = node.get(qn("w:fldCharType"), "")
+            if field_type == "begin":
+                if complex_field_depth == 0:
+                    tokens.append(protected_inline_token("field", "[Field]", node))
+                complex_field_depth += 1
+            elif field_type == "end":
+                complex_field_depth = max(0, complex_field_depth - 1)
+            continue
+        if complex_field_depth:
+            continue
+        if node.tag in {qn("w:drawing"), qn("w:pict")}:
+            tokens.append(protected_inline_token("drawing", "[Drawing]", node))
+            continue
+        if node.tag == qn("w:sym"):
+            tokens.append(protected_inline_token("symbol", symbol_label(node), node))
             continue
         if node.tag == qn("w:t"):
             value = node.text or ""
@@ -316,6 +369,25 @@ def paragraph_inline_tokens(element: Any) -> list[InlineToken]:
                 )
             )
     return tokens
+
+
+def protected_inline_token(
+    token_type: ResumeSpanType,
+    original: str,
+    node: Any,
+) -> InlineToken:
+    return InlineToken(
+        token_type=token_type,
+        original=original,
+        text_node=None,
+        hyperlink=nearest_ancestor(node, qn("w:hyperlink")),
+        formatting_signature=b"",
+    )
+
+
+def symbol_label(node: Any) -> str:
+    character = node.get(qn("w:char"), "").upper()
+    return f"[Symbol {character}]" if character else "[Symbol]"
 
 
 def build_resume_spans(
@@ -443,7 +515,7 @@ def source_span_evidence_id(span_id: str) -> str:
     return f"source:{span_id}"
 
 
-def validate_supported_resume_structure(body: Any) -> None:
+def validate_supported_word_structure(body: Any) -> None:
     unsupported = find_unsupported_word_constructions(body)
     if unsupported:
         raise UnsupportedResumeStructureError(unsupported[0].message)
@@ -465,11 +537,14 @@ def find_unsupported_word_constructions(body: Any) -> list[UnsupportedWordConstr
                 )
             )
 
+    field_stack: list[tuple[Any | None, list[str]]] = []
     for element in body.iter():
         local_name = etree.QName(element).localname
         unsupported = UNSUPPORTED_ELEMENTS.get(local_name)
         if unsupported:
             append_issue(local_name, unsupported)
+        if local_name == "blip" and element.get(qn("r:link")):
+            append_issue("drawing", "externally linked drawings")
         if local_name == "t":
             value = element.text or ""
             if "\t" in value or "\n" in value or "\r" in value:
@@ -480,7 +555,48 @@ def find_unsupported_word_constructions(body: Any) -> list[UnsupportedWordConstr
                 unsupported_property = UNSUPPORTED_CONTENT_CONTROL_PROPERTIES.get(property_name)
                 if unsupported_property:
                     append_issue(property_name, unsupported_property)
+        if local_name == "fldSimple":
+            append_field_issue(
+                append_issue,
+                element.get(qn("w:instr"), ""),
+            )
+        elif local_name == "fldChar":
+            field_type = element.get(qn("w:fldCharType"), "")
+            if field_type == "begin":
+                if field_stack:
+                    append_issue("field", "nested Word fields")
+                field_stack.append((nearest_paragraph(element), []))
+            elif field_type == "end":
+                if not field_stack:
+                    append_issue("field", "field end without a matching begin")
+                else:
+                    field_paragraph, instructions = field_stack.pop()
+                    if field_paragraph is not nearest_paragraph(element):
+                        append_issue("field", "Word fields spanning multiple paragraphs")
+                    append_field_issue(append_issue, "".join(instructions))
+            elif field_type not in {"separate"}:
+                append_issue("field", f"unknown field marker {field_type or 'empty'}")
+        elif local_name == "instrText":
+            if not field_stack:
+                append_issue("field", "field instruction without a matching begin")
+            else:
+                field_stack[-1][1].append(element.text or "")
+    if field_stack:
+        append_issue("field", "field begin without a matching end")
     return issues
+
+
+def append_field_issue(
+    append_issue: Any,
+    instruction: str,
+) -> None:
+    match = re.match(r"\s*([A-Za-z][A-Za-z0-9]*)\b", instruction)
+    if not match:
+        append_issue("field", "Word field has no supported instruction")
+        return
+    field_name = match.group(1).upper()
+    if field_name not in SUPPORTED_WORD_FIELDS:
+        append_issue("field", f"unsupported Word field {field_name}")
 
 
 def nearest_ancestor(element: Any | None, tag: str) -> Any | None:

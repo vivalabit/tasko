@@ -7,10 +7,22 @@ from docx.oxml.ns import qn
 from lxml import etree
 
 from app.services.document_security import validate_docx_package
-from app.services.resume_blocks import set_text_node_value
+from app.services.resume_blocks import (
+    set_text_node_value,
+    symbol_label,
+    validate_supported_word_structure,
+)
 
 
-CoverLetterSpanType = Literal["text", "hyperlink", "tab", "lineBreak"]
+CoverLetterSpanType = Literal[
+    "text",
+    "hyperlink",
+    "tab",
+    "lineBreak",
+    "drawing",
+    "symbol",
+    "field",
+]
 XML_RELATIONSHIP_ID = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
 GREETING_PREFIXES = (
     "dear ",
@@ -169,7 +181,7 @@ class CoverLetterParagraph:
 
 @dataclass(frozen=True)
 class InlineToken:
-    token_type: Literal["text", "tab", "lineBreak"]
+    token_type: CoverLetterSpanType
     original: str
     text_node: Any | None
     run: Any | None
@@ -198,6 +210,7 @@ def parse_cover_letter_blocks(
     *,
     hyperlink_targets: dict[str, str] | None = None,
 ) -> list[CoverLetterParagraph]:
+    validate_supported_word_structure(body)
     targets = hyperlink_targets or {}
     elements = list(body.iter(qn("w:p")))
     originals = [paragraph_text(element) for element in elements]
@@ -406,11 +419,38 @@ def append_span(
 
 def inline_tokens(paragraph: Any) -> list[InlineToken]:
     tokens: list[InlineToken] = []
+    complex_field_depth = 0
     for node in paragraph.iter():
         if node is paragraph or nearest_paragraph(node) is not paragraph:
             continue
         run = nearest_ancestor(node, qn("w:r"))
         hyperlink = nearest_ancestor(node, qn("w:hyperlink"))
+        if nearest_ancestor(node, qn("w:fldSimple")) is not None:
+            continue
+        if nearest_ancestor(node, qn("w:drawing")) is not None:
+            continue
+        if nearest_ancestor(node, qn("w:pict")) is not None:
+            continue
+        if node.tag == qn("w:fldSimple"):
+            tokens.append(InlineToken("field", "[Field]", None, run, hyperlink))
+            continue
+        if node.tag == qn("w:fldChar"):
+            field_type = node.get(qn("w:fldCharType"), "")
+            if field_type == "begin":
+                if complex_field_depth == 0:
+                    tokens.append(InlineToken("field", "[Field]", None, run, hyperlink))
+                complex_field_depth += 1
+            elif field_type == "end":
+                complex_field_depth = max(0, complex_field_depth - 1)
+            continue
+        if complex_field_depth:
+            continue
+        if node.tag in {qn("w:drawing"), qn("w:pict")}:
+            tokens.append(InlineToken("drawing", "[Drawing]", None, run, hyperlink))
+            continue
+        if node.tag == qn("w:sym"):
+            tokens.append(InlineToken("symbol", symbol_label(node), None, run, hyperlink))
+            continue
         if node.tag == qn("w:t"):
             value = node.text or ""
             if "\t" in value or "\n" in value or "\r" in value:

@@ -1,3 +1,4 @@
+import base64
 import json
 import zipfile
 from io import BytesIO
@@ -180,7 +181,9 @@ def test_cover_letter_renderer_preserves_distinct_paragraph_and_run_styles() -> 
     assert rendered_document.paragraphs[1].runs[0].bold is True
     assert rendered_document.paragraphs[2].runs[0].italic is True
 
-    with zipfile.ZipFile(BytesIO(template)) as source, zipfile.ZipFile(BytesIO(rendered)) as result:
+    with zipfile.ZipFile(BytesIO(template)) as source, zipfile.ZipFile(
+        BytesIO(rendered)
+    ) as result:
         source_root = etree.fromstring(source.read("word/document.xml"))
         rendered_root = etree.fromstring(result.read("word/document.xml"))
     source_properties = [
@@ -192,6 +195,80 @@ def test_cover_letter_renderer_preserves_distinct_paragraph_and_run_styles() -> 
         for paragraph in rendered_root.findall(".//" + qn("w:body") + "/" + qn("w:p"))
     ]
     assert rendered_properties == source_properties
+
+
+def test_cover_letter_preserves_immutable_drawing_symbol_and_supported_field() -> None:
+    document = Document()
+    document.add_paragraph("Dear Hiring Team,")
+    paragraph = document.add_paragraph()
+    paragraph.add_run("Original ")
+    paragraph.add_run().add_picture(
+        BytesIO(
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
+                "x8AAusB9Y9ZJYQAAAAASUVORK5CYII="
+            )
+        )
+    )
+    symbol = OxmlElement("w:sym")
+    symbol.set(qn("w:font"), "Wingdings")
+    symbol.set(qn("w:char"), "F0B7")
+    paragraph.add_run()._r.append(symbol)
+    field = OxmlElement("w:fldSimple")
+    field.set(qn("w:instr"), " PAGE ")
+    field_run = OxmlElement("w:r")
+    field_result = OxmlElement("w:t")
+    field_result.text = "1"
+    field_run.append(field_result)
+    field.append(field_run)
+    paragraph._p.append(field)
+    paragraph.add_run("body backed by evidence.")
+    document.add_paragraph("Kind regards,")
+    template = document_bytes(document)
+
+    paragraphs = extract_cover_letter_blocks_from_docx(template)
+    body = paragraphs[1]
+    assert [(span["type"], span["editable"]) for span in body["spans"]] == [
+        ("text", True),
+        ("drawing", False),
+        ("symbol", False),
+        ("field", False),
+        ("text", True),
+    ]
+    assert [item["type"] for item in body["protectedElements"]] == [
+        "drawing",
+        "symbol",
+        "field",
+    ]
+
+    rendered = build_document_from_template(
+        template_content=template,
+        content=json.dumps(
+            {
+                "replacements": [
+                    {
+                        "paragraphId": "paragraph-0002",
+                        "spanId": "paragraph-0002-span-0001",
+                        "original": "Original ",
+                        "replacement": "Targeted ",
+                        "reason": "Tailors only editable text",
+                        "evidenceIds": ["source:paragraph-0002-span-0001"],
+                    }
+                ]
+            }
+        ),
+        document_type="cover_letter",
+    )
+
+    with zipfile.ZipFile(BytesIO(template)) as source_archive, zipfile.ZipFile(
+        BytesIO(rendered)
+    ) as rendered_archive:
+        source_root = etree.fromstring(source_archive.read("word/document.xml"))
+        rendered_root = etree.fromstring(rendered_archive.read("word/document.xml"))
+        for tag in (qn("w:drawing"), qn("w:sym"), qn("w:fldSimple")):
+            assert etree.tostring(rendered_root.find(".//" + tag)) == etree.tostring(
+                source_root.find(".//" + tag)
+            )
 
 
 def test_cover_letter_blocks_model_protected_paragraphs_and_editable_spans() -> None:

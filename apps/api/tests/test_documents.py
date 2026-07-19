@@ -45,9 +45,10 @@ def test_template_preflight_reports_capabilities_and_rejections() -> None:
 
     supported_document = Document()
     supported_document.add_paragraph("PROFILE", style="Heading 1")
-    supported_document.add_paragraph(
+    supported_body = supported_document.add_paragraph(
         "Product designer building reliable B2B workflows with research evidence."
     )
+    supported_body.add_run()._r.append(OxmlElement("w:drawing"))
     supported_output = BytesIO()
     supported_document.save(supported_output)
     supported_data_url = (
@@ -57,7 +58,7 @@ def test_template_preflight_reports_capabilities_and_rejections() -> None:
 
     unsupported_document = Document()
     unsupported_paragraph = unsupported_document.add_paragraph("Unsupported source")
-    unsupported_paragraph.add_run()._r.append(OxmlElement("w:drawing"))
+    unsupported_paragraph.add_run()._r.append(OxmlElement("w:object"))
     unsupported_output = BytesIO()
     unsupported_document.save(unsupported_output)
     unsupported_data_url = (
@@ -98,14 +99,17 @@ def test_template_preflight_reports_capabilities_and_rejections() -> None:
     assert supported.json()["supported"] is True
     assert supported.json()["template"] is None
     assert supported.json()["editableCount"] == 1
-    assert supported.json()["immutableCount"] == 1
-    assert supported.json()["immutableElements"][0]["type"] == "heading"
+    assert supported.json()["immutableCount"] == 2
+    assert {item["type"] for item in supported.json()["immutableElements"]} == {
+        "heading",
+        "drawing",
+    }
     assert supported.json()["aiContext"] is None
     assert rejected.status_code == 200
     assert rejected.json()["supported"] is False
     assert rejected.json()["template"] is None
     assert rejected.json()["rejectedElements"] == [
-        {"element": "drawing", "description": "drawings or text boxes"}
+        {"element": "object", "description": "embedded objects"}
     ]
     assert template_count == 0
 

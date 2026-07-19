@@ -95,9 +95,10 @@ def analyze_document_template(content: bytes, document_type: str) -> dict[str, A
                     str(element.get("original") or ""),
                 )
             )
-            continue
         for span in element.get("spans", []):
             if span.get("editable"):
+                continue
+            if not element.get("editable") and span.get("type") == "text":
                 continue
             immutable_elements.append(
                 immutable_item(

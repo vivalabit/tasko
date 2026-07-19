@@ -1,3 +1,4 @@
+import base64
 import json
 import zipfile
 from io import BytesIO
@@ -26,6 +27,12 @@ def resume_template() -> bytes:
     document.add_paragraph("Built and operated a verified production API for customers.")
     table = document.add_table(rows=1, cols=1)
     table.cell(0, 0).text = "German B2"
+    output = BytesIO()
+    document.save(output)
+    return output.getvalue()
+
+
+def document_bytes(document: Document) -> bytes:
     output = BytesIO()
     document.save(output)
     return output.getvalue()
@@ -192,6 +199,99 @@ def test_resume_renderer_applies_editable_span_replacements() -> None:
             "evidenceIds": ["source:block-0003-span-0001"],
         }
     ]
+
+
+def test_resume_preserves_immutable_drawing_symbol_and_supported_field() -> None:
+    document = Document()
+    document.add_paragraph("SUMMARY", style="Heading 1")
+    paragraph = document.add_paragraph()
+    paragraph.add_run("Original ")
+    paragraph.add_run().add_picture(
+        BytesIO(
+            base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
+                "x8AAusB9Y9ZJYQAAAAASUVORK5CYII="
+            )
+        )
+    )
+    symbol = OxmlElement("w:sym")
+    symbol.set(qn("w:font"), "Wingdings")
+    symbol.set(qn("w:char"), "F0B7")
+    paragraph.add_run()._r.append(symbol)
+    field_begin = OxmlElement("w:fldChar")
+    field_begin.set(qn("w:fldCharType"), "begin")
+    paragraph.add_run()._r.append(field_begin)
+    instruction = OxmlElement("w:instrText")
+    instruction.text = " PAGE "
+    paragraph.add_run()._r.append(instruction)
+    field_separator = OxmlElement("w:fldChar")
+    field_separator.set(qn("w:fldCharType"), "separate")
+    paragraph.add_run()._r.append(field_separator)
+    paragraph.add_run("1")
+    field_end = OxmlElement("w:fldChar")
+    field_end.set(qn("w:fldCharType"), "end")
+    paragraph.add_run()._r.append(field_end)
+    paragraph.add_run("professional profile backed by evidence.")
+    template = document_bytes(document)
+
+    blocks = extract_resume_blocks_from_docx(template)
+    body = blocks[1]
+    assert [(span["type"], span["editable"]) for span in body["spans"]] == [
+        ("text", True),
+        ("drawing", False),
+        ("symbol", False),
+        ("field", False),
+        ("text", True),
+    ]
+
+    rendered = build_document_from_template(
+        template_content=template,
+        content=json.dumps(
+            {
+                "replacements": [
+                    {
+                        "blockId": "block-0002",
+                        "spanId": "block-0002-span-0001",
+                        "original": "Original ",
+                        "replacement": "Targeted ",
+                        "reason": "Tailors only editable text",
+                        "evidenceIds": ["source:block-0002-span-0001"],
+                    }
+                ]
+            }
+        ),
+        document_type="tailored_resume",
+    )
+
+    with zipfile.ZipFile(BytesIO(template)) as source_archive, zipfile.ZipFile(
+        BytesIO(rendered)
+    ) as rendered_archive:
+        source_root = etree.fromstring(source_archive.read("word/document.xml"))
+        rendered_root = etree.fromstring(rendered_archive.read("word/document.xml"))
+        for tag in (qn("w:drawing"), qn("w:sym")):
+            assert etree.tostring(rendered_root.find(".//" + tag)) == etree.tostring(
+                source_root.find(".//" + tag)
+            )
+        for tag in (qn("w:fldChar"), qn("w:instrText")):
+            assert [etree.tostring(item) for item in rendered_root.findall(".//" + tag)] == [
+                etree.tostring(item) for item in source_root.findall(".//" + tag)
+            ]
+        assert rendered_archive.read("word/media/image1.png") == source_archive.read(
+            "word/media/image1.png"
+        )
+
+
+def test_resume_rejects_externally_linked_drawing() -> None:
+    document = Document()
+    paragraph = document.add_paragraph("Profile")
+    drawing = OxmlElement("w:drawing")
+    blip = OxmlElement("a:blip")
+    blip.set(qn("r:link"), "rIdExternalImage")
+    drawing.append(blip)
+    paragraph.add_run()._r.append(drawing)
+
+    with pytest.raises(ValueError, match="externally linked drawings"):
+        extract_resume_blocks_from_docx(document_bytes(document))
 
 
 def test_resume_renderer_rejects_immutable_and_mismatched_spans() -> None:
@@ -509,12 +609,11 @@ def test_v2_rejects_protected_spans_ambiguous_formatting_and_word_fields() -> No
 
     unsupported = Document()
     paragraph = unsupported.add_paragraph("Total ")
-    field_run = paragraph.add_run()._r
-    field_begin = OxmlElement("w:fldChar")
-    field_begin.set(qn("w:fldCharType"), "begin")
-    field_run.append(field_begin)
+    field = OxmlElement("w:fldSimple")
+    field.set(qn("w:instr"), ' INCLUDETEXT "https://example.com/source.docx" ')
+    paragraph._p.append(field)
     output = BytesIO()
     unsupported.save(output)
 
-    with pytest.raises(ValueError, match=r"Unsupported DOCX construction: Word fields"):
+    with pytest.raises(ValueError, match=r"unsupported Word field INCLUDETEXT"):
         extract_resume_blocks_from_docx(output.getvalue())
