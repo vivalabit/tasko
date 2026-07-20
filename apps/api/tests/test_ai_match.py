@@ -36,6 +36,66 @@ from app.services.candidate_snapshot import (
 )
 
 
+def valid_application_guide() -> dict[str, object]:
+    return {
+        "language": "English",
+        "positioning": "Lead with verified Python delivery experience.",
+        "readiness": "ready",
+        "roleMission": "Build reliable production software.",
+        "hiringPriorities": ["Ship reliable software."],
+        "mustHave": ["Python"],
+        "niceToHave": [],
+        "hardConstraints": [],
+        "evidenceMatrix": [
+            {
+                "requirement": "Python",
+                "importance": "required",
+                "status": "verified",
+                "evidence": "Python is listed in the candidate profile.",
+                "action": "Lead with the strongest verified Python example.",
+            }
+        ],
+        "clarificationQuestions": [],
+        "resumePlan": {
+            "targetHeadline": "Python Engineer",
+            "summaryFocus": "Verified production delivery.",
+            "evidenceToLead": ["Python delivery"],
+            "bulletStrategy": ["Lead with verified outcomes."],
+        },
+        "coverLetterPlan": {
+            "openingAngle": "Connect Python delivery to the role mission.",
+            "proofPoints": ["Python delivery"],
+            "motivationAngle": "Focus on the technical mission.",
+        },
+        "cvImprovements": ["Prioritize relevant Python evidence."],
+        "coverLetterStrategy": ["Connect evidence to the vacancy."],
+        "risks": [],
+        "keywords": ["Python"],
+        "applicationQuestions": [],
+        "finalChecklist": ["Verify every claim against the source CV."],
+    }
+
+
+def valid_match_result(job_id: str = "job-strict") -> dict[str, object]:
+    return {
+        "id": job_id,
+        "score": 88,
+        "confidence": "high",
+        "breakdown": {
+            "role_fit": 18,
+            "skills_fit": 26,
+            "experience_fit": 14,
+            "preferences_fit": 14,
+            "constraints_fit": 10,
+            "industry_fit": 4,
+            "evidence_fit": 2,
+        },
+        "reasons": ["Strong verified fit."],
+        "gaps": [],
+        "applicationGuide": valid_application_guide(),
+    }
+
+
 @pytest.fixture(autouse=True)
 def bypass_ai_consent_boundary() -> Generator[None, None, None]:
     app.dependency_overrides[require_current_ai_consent] = lambda: None
@@ -86,7 +146,14 @@ def install_openclaw_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
                                 "status": "verified",
                                 "evidence": "Python is listed in the candidate profile.",
                                 "action": "Lead with the strongest Python project.",
-                            }
+                            },
+                            {
+                                "requirement": "Production ML",
+                                "importance": "required",
+                                "status": "needs_confirmation",
+                                "evidence": "",
+                                "action": "Confirm a concrete production deployment example.",
+                            },
                         ],
                         "clarificationQuestions": [
                             {
@@ -333,6 +400,99 @@ def test_openclaw_prompt_treats_score_as_expert_judgment() -> None:
     assert '"weights"' not in prompt
 
 
+@pytest.mark.parametrize(
+    "missing_path",
+    ["reasons", "applicationGuide", "evidenceMatrix", "clarificationQuestions"],
+)
+def test_strict_ai_match_schema_rejects_missing_analysis_fields(missing_path: str) -> None:
+    result = valid_match_result()
+    if missing_path in {"evidenceMatrix", "clarificationQuestions"}:
+        guide = result["applicationGuide"]
+        assert isinstance(guide, dict)
+        guide.pop(missing_path)
+    else:
+        result.pop(missing_path)
+
+    with pytest.raises(OpenClawAiMatchError, match="Field required"):
+        ai_match_service.validate_openclaw_result(result, {"id": "job-strict"})
+
+
+@pytest.mark.parametrize("category,max_score", list(ai_match_service.WEIGHTS.items()))
+def test_strict_ai_match_schema_enforces_breakdown_category_maxima(
+    category: str,
+    max_score: int,
+) -> None:
+    result = valid_match_result()
+    breakdown = result["breakdown"]
+    assert isinstance(breakdown, dict)
+    breakdown[category] = max_score + 1
+
+    with pytest.raises(OpenClawAiMatchError, match=f"breakdown.{category}"):
+        ai_match_service.validate_openclaw_result(result, {"id": "job-strict"})
+
+
+def test_strict_ai_match_schema_forbids_extra_fields_and_inconsistent_ready_state() -> None:
+    extra_result = valid_match_result()
+    extra_result["unsupported"] = True
+    with pytest.raises(OpenClawAiMatchError, match="Extra inputs are not permitted"):
+        ai_match_service.validate_openclaw_result(extra_result, {"id": "job-strict"})
+
+    inconsistent_result = valid_match_result()
+    guide = inconsistent_result["applicationGuide"]
+    assert isinstance(guide, dict)
+    evidence = guide["evidenceMatrix"]
+    assert isinstance(evidence, list)
+    assert isinstance(evidence[0], dict)
+    evidence[0] = {
+        **evidence[0],
+        "status": "missing",
+        "evidence": "",
+    }
+    with pytest.raises(OpenClawAiMatchError, match="ready analysis cannot contain unresolved"):
+        ai_match_service.validate_openclaw_result(
+            inconsistent_result,
+            {"id": "job-strict"},
+        )
+
+
+def test_incomplete_ai_match_is_retried_and_never_synthetically_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    def fake_score_with_openclaw(**_: object) -> list[dict]:
+        nonlocal attempts
+        attempts += 1
+        result = valid_match_result("job-retry")
+        if attempts == 1:
+            result.pop("applicationGuide")
+        return [result]
+
+    monkeypatch.setattr(ai_match_service, "score_with_openclaw", fake_score_with_openclaw)
+    job = {
+        "id": "job-retry",
+        "title": "Python Engineer",
+        "company": "Acme",
+        "requirements": ["Python"],
+        "skills": ["Python"],
+    }
+
+    matched = calculate_ai_matches(
+        ProfilePayload(skills="Python"),
+        [job],
+        command="openclaw",
+        agent_id="main",
+        thinking="low",
+        timeout_seconds=1,
+        openclaw_enabled=True,
+        openclaw_max_jobs=1,
+        max_attempts=2,
+    )
+
+    assert attempts == 2
+    assert matched[0]["aiMatch"]["applicationGuide"] == valid_application_guide()
+
+
 def test_openclaw_candidate_snapshot_reads_top_level_payloads_text() -> None:
     payload = extract_openclaw_candidate_snapshot_payload(
         json.dumps(
@@ -566,6 +726,7 @@ def test_ai_match_endpoint_ignores_cached_local_candidate_snapshot(
                 },
                 "reasons": ["OpenClaw matched this role"],
                 "gaps": ["No major gaps detected from available data"],
+                "applicationGuide": valid_application_guide(),
             }
             for job in jobs
         ]
@@ -651,10 +812,14 @@ def test_ai_match_endpoint_ignores_cached_local_candidate_snapshot(
 def test_ai_match_endpoint_rejects_incomplete_openclaw_breakdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    score_calls = 0
+
     def fake_build_snapshot_with_openclaw(*, fallback_snapshot: dict, **_: object) -> dict:
         return {**fallback_snapshot, "roles": ["openclaw normalized role"]}
 
     def fake_score_with_openclaw(*, jobs: list[dict], **_: object) -> list[dict]:
+        nonlocal score_calls
+        score_calls += 1
         return [
             {
                 "id": jobs[0]["id"],
@@ -666,6 +831,7 @@ def test_ai_match_endpoint_rejects_incomplete_openclaw_breakdown(
                 },
                 "reasons": ["OpenClaw matched this role"],
                 "gaps": ["No major gaps detected from available data"],
+                "applicationGuide": valid_application_guide(),
             }
         ]
 
@@ -730,7 +896,8 @@ def test_ai_match_endpoint_rejects_incomplete_openclaw_breakdown(
         response = client.post("/jobs/ai-match", json={"jobs": [{"id": job["id"], "data": job}]})
 
         assert response.status_code == 502
-        assert "missing breakdown keys" in response.json()["detail"]
+        assert "breakdown.experience_fit: Field required" in response.json()["detail"]
+        assert score_calls == 2
         assert "experience_fit" in response.json()["detail"]
         with testing_session_local() as db:
             assert db.query(JobMatchRecord).count() == 0
@@ -1056,6 +1223,7 @@ def test_ai_match_run_endpoint_batches_openclaw_scoring(monkeypatch: pytest.Monk
                 },
                 "reasons": ["OpenClaw matched this role"],
                 "gaps": ["No major gaps detected from available data"],
+                "applicationGuide": valid_application_guide(),
             }
             for job in jobs
         ]

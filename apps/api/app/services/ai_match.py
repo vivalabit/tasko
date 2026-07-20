@@ -7,7 +7,9 @@ import shutil
 import subprocess
 import unicodedata
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
 
 from app.models.profile import ProfilePayload
 from app.services.resume_import import (
@@ -18,22 +20,11 @@ from app.services.resume_import import (
 )
 
 MATCHER_VERSION = "ai-match-v3"
-MATCH_PROMPT_VERSION = "ai-match-prompt-v1"
+MATCH_PROMPT_VERSION = "ai-match-prompt-v2"
 DEFAULT_AI_MATCH_MODEL = "openai/gpt-5.6-terra"
+DEFAULT_AI_MATCH_MAX_ATTEMPTS = 2
 MAX_REASON_COUNT = 3
 MAX_GAP_COUNT = 3
-APPLICATION_GUIDE_LIST_LIMITS = {
-    "hiringPriorities": 4,
-    "mustHave": 6,
-    "niceToHave": 5,
-    "hardConstraints": 4,
-    "cvImprovements": 4,
-    "coverLetterStrategy": 3,
-    "risks": 3,
-    "keywords": 8,
-    "applicationQuestions": 3,
-    "finalChecklist": 4,
-}
 MAX_EVIDENCE_MATRIX_COUNT = 8
 MAX_CLARIFICATION_QUESTION_COUNT = 3
 JOB_ADDED_AT_FIELDS = ("addedAt", "importedAt", "createdAt", "created_at")
@@ -102,6 +93,134 @@ class OpenClawAiMatchError(RuntimeError):
     pass
 
 
+StrictText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
+OptionalEvidenceText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)]
+
+
+class StrictAiMatchModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=True)
+
+
+class AiMatchBreakdown(StrictAiMatchModel):
+    role_fit: int = Field(ge=0, le=WEIGHTS["role_fit"])
+    skills_fit: int = Field(ge=0, le=WEIGHTS["skills_fit"])
+    experience_fit: int = Field(ge=0, le=WEIGHTS["experience_fit"])
+    preferences_fit: int = Field(ge=0, le=WEIGHTS["preferences_fit"])
+    constraints_fit: int = Field(ge=0, le=WEIGHTS["constraints_fit"])
+    industry_fit: int = Field(ge=0, le=WEIGHTS["industry_fit"])
+    evidence_fit: int = Field(ge=0, le=WEIGHTS["evidence_fit"])
+
+
+class AiMatchEvidence(StrictAiMatchModel):
+    requirement: StrictText
+    importance: Literal["required", "preferred"]
+    status: Literal["verified", "transferable", "needs_confirmation", "missing"]
+    evidence: OptionalEvidenceText
+    action: StrictText
+
+    @model_validator(mode="after")
+    def require_evidence_for_supported_status(self) -> "AiMatchEvidence":
+        if self.status in {"verified", "transferable"} and not self.evidence:
+            raise ValueError(f"evidence is required when status is {self.status}")
+        return self
+
+
+class AiMatchClarificationQuestion(StrictAiMatchModel):
+    id: Annotated[
+        str,
+        StringConstraints(
+            strip_whitespace=True,
+            min_length=1,
+            max_length=80,
+            pattern=r"^[a-z0-9][a-z0-9_-]*$",
+        ),
+    ]
+    requirement: StrictText
+    question: StrictText
+    why: StrictText
+    claim_if_confirmed: StrictText = Field(alias="claimIfConfirmed")
+    blocking: bool
+
+
+class AiMatchResumePlan(StrictAiMatchModel):
+    target_headline: StrictText = Field(alias="targetHeadline")
+    summary_focus: StrictText = Field(alias="summaryFocus")
+    evidence_to_lead: list[StrictText] = Field(alias="evidenceToLead", max_length=4)
+    bullet_strategy: list[StrictText] = Field(alias="bulletStrategy", min_length=1, max_length=4)
+
+
+class AiMatchCoverLetterPlan(StrictAiMatchModel):
+    opening_angle: StrictText = Field(alias="openingAngle")
+    proof_points: list[StrictText] = Field(alias="proofPoints", max_length=3)
+    motivation_angle: StrictText = Field(alias="motivationAngle")
+
+
+class AiMatchApplicationGuide(StrictAiMatchModel):
+    language: Literal["English", "German"]
+    positioning: StrictText
+    readiness: Literal["ready", "needs_confirmation", "weak_fit"]
+    role_mission: StrictText = Field(alias="roleMission")
+    hiring_priorities: list[StrictText] = Field(alias="hiringPriorities", min_length=1, max_length=4)
+    must_have: list[StrictText] = Field(alias="mustHave", max_length=6)
+    nice_to_have: list[StrictText] = Field(alias="niceToHave", max_length=5)
+    hard_constraints: list[StrictText] = Field(alias="hardConstraints", max_length=4)
+    evidence_matrix: list[AiMatchEvidence] = Field(alias="evidenceMatrix", min_length=1, max_length=MAX_EVIDENCE_MATRIX_COUNT)
+    clarification_questions: list[AiMatchClarificationQuestion] = Field(
+        alias="clarificationQuestions",
+        max_length=MAX_CLARIFICATION_QUESTION_COUNT,
+    )
+    resume_plan: AiMatchResumePlan = Field(alias="resumePlan")
+    cover_letter_plan: AiMatchCoverLetterPlan = Field(alias="coverLetterPlan")
+    cv_improvements: list[StrictText] = Field(alias="cvImprovements", max_length=4)
+    cover_letter_strategy: list[StrictText] = Field(alias="coverLetterStrategy", max_length=3)
+    risks: list[StrictText] = Field(max_length=3)
+    keywords: list[StrictText] = Field(max_length=8)
+    application_questions: list[StrictText] = Field(alias="applicationQuestions", max_length=3)
+    final_checklist: list[StrictText] = Field(alias="finalChecklist", min_length=1, max_length=4)
+
+    @model_validator(mode="after")
+    def validate_readiness_consistency(self) -> "AiMatchApplicationGuide":
+        question_ids = [question.id for question in self.clarification_questions]
+        if len(question_ids) != len(set(question_ids)):
+            raise ValueError("clarification question IDs must be unique")
+
+        unresolved = any(
+            evidence.status in {"needs_confirmation", "missing"}
+            for evidence in self.evidence_matrix
+        )
+        has_questions = bool(self.clarification_questions)
+        if self.readiness == "ready" and (unresolved or has_questions):
+            raise ValueError("ready analysis cannot contain unresolved evidence or questions")
+        if self.readiness == "needs_confirmation" and not (unresolved and has_questions):
+            raise ValueError(
+                "needs_confirmation requires unresolved evidence and a clarification question"
+            )
+        if self.readiness == "weak_fit" and has_questions:
+            raise ValueError("weak_fit analysis cannot contain clarification questions")
+        return self
+
+
+class OpenClawAiMatchResult(StrictAiMatchModel):
+    id: StrictText
+    score: int = Field(ge=0, le=100)
+    confidence: Literal["low", "medium", "high"]
+    breakdown: AiMatchBreakdown
+    reasons: list[StrictText] = Field(min_length=1, max_length=MAX_REASON_COUNT)
+    gaps: list[StrictText] = Field(max_length=MAX_GAP_COUNT)
+    application_guide: AiMatchApplicationGuide = Field(alias="applicationGuide")
+
+    @model_validator(mode="after")
+    def validate_score_consistency(self) -> "OpenClawAiMatchResult":
+        breakdown_total = sum(self.breakdown.model_dump().values())
+        if abs(self.score - breakdown_total) > 20:
+            raise ValueError("score differs from the breakdown total by more than 20 points")
+        return self
+
+
+class OpenClawAiMatchPayload(StrictAiMatchModel):
+    matches: list[OpenClawAiMatchResult] = Field(min_length=1)
+
+
 def calculate_ai_matches(
     profile: ProfilePayload,
     jobs: list[dict[str, Any]],
@@ -113,6 +232,7 @@ def calculate_ai_matches(
     openclaw_enabled: bool,
     openclaw_max_jobs: int,
     model: str = DEFAULT_AI_MATCH_MODEL,
+    max_attempts: int = DEFAULT_AI_MATCH_MAX_ATTEMPTS,
     force: bool = False,
     candidate_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
@@ -152,15 +272,26 @@ def calculate_ai_matches(
     by_id: dict[str, dict[str, Any]] = {}
     for start in range(0, len(jobs_to_score), openclaw_max_jobs):
         chunk = jobs_to_score[start : start + openclaw_max_jobs]
-        openclaw_results = score_with_openclaw(
-            profile_snapshot=profile_snapshot,
-            jobs=[job_snapshot for _, job_snapshot, _ in chunk],
-            command=command,
-            agent_id=agent_id,
-            thinking=thinking,
-            timeout_seconds=timeout_seconds,
-            model=model,
-        )
+        chunk_snapshots = [job_snapshot for _, job_snapshot, _ in chunk]
+        for attempt in range(max(1, max_attempts)):
+            try:
+                openclaw_results = score_with_openclaw(
+                    profile_snapshot=profile_snapshot,
+                    jobs=chunk_snapshots,
+                    command=command,
+                    agent_id=agent_id,
+                    thinking=thinking,
+                    timeout_seconds=timeout_seconds,
+                    model=model,
+                )
+                openclaw_results = validate_openclaw_batch(
+                    openclaw_results,
+                    expected_job_ids=[job["id"] for job in chunk_snapshots],
+                )
+                break
+            except OpenClawAiMatchError:
+                if attempt + 1 >= max(1, max_attempts):
+                    raise
         by_id.update(
             {
                 result["id"]: result
@@ -335,11 +466,11 @@ def score_with_openclaw(
         raise OpenClawAiMatchError(summarize_openclaw_error(error_output)) from exc
 
     payload = extract_openclaw_ai_match_payload(result.stdout)
-    matches = payload.get("matches", [])
-    if not isinstance(matches, list):
-        return []
-
-    return [match for match in matches if isinstance(match, dict)]
+    try:
+        validated = OpenClawAiMatchPayload.model_validate(payload)
+    except ValidationError as exc:
+        raise invalid_openclaw_response(exc) from exc
+    return [match.model_dump(by_alias=True) for match in validated.matches]
 
 
 def build_openclaw_ai_match_prompt(profile_snapshot: dict[str, Any], jobs: list[dict[str, Any]]) -> str:
@@ -371,11 +502,14 @@ def build_openclaw_ai_match_prompt(profile_snapshot: dict[str, Any], jobs: list[
     return (
         "You score job fit for a personal job search app.\n"
         "Return ONLY one valid JSON object, no markdown and no prose.\n"
+        "Every field shown in the JSON shape is required. Use [] for empty lists. "
+        "Do not add fields.\n"
         "Use only the provided snapshots. Do not invent missing evidence.\n"
         "For every job, set score as your expert judgment from 0 to 100.\n"
         "Score is the final AI assessment, not an arithmetic sum of breakdown values.\n"
         "Breakdown is a structured explanation with category scores capped by breakdownMaxScores; "
-        "it must be internally consistent, but it is not the formula for score.\n"
+        "it must be internally consistent, but it is not the formula for score. The score must be "
+        "within 20 points of the breakdown total.\n"
         "Apply caps: hard dealbreaker max 30, salary below candidate minimum max 50, "
         "work authorization mismatch max 35, major seniority mismatch max 45.\n"
         "JSON shape:\n"
@@ -415,6 +549,10 @@ def build_openclaw_ai_match_prompt(profile_snapshot: dict[str, Any], jobs: list[
         "cover letter. Creativity is allowed in positioning and wording, never in facts. Never suggest an "
         "unsupported claim, metric, skill, certification, title, or experience. Keywords must either be "
         "supported or explicitly marked needs_confirmation in evidenceMatrix.\n"
+        "Set readiness=ready only when every evidenceMatrix item is verified or transferable and "
+        "clarificationQuestions is empty. Set readiness=needs_confirmation only when unresolved "
+        "evidence and at least one clarification question are both present. Set readiness=weak_fit "
+        "without clarification questions.\n"
         f"Input JSON:\n{payload}"
     )
 
@@ -454,46 +592,76 @@ def extract_openclaw_ai_match_payload(value: str) -> dict[str, object]:
 
 def normalize_openclaw_result(result: dict[str, Any], current_job: dict[str, Any]) -> dict[str, Any]:
     fallback = current_job.get("aiMatch", {}) if isinstance(current_job.get("aiMatch"), dict) else {}
-    validate_openclaw_result(result, current_job)
-    breakdown = result["breakdown"]
-    normalized_breakdown = {key: clamp_round(breakdown[key]) for key in WEIGHTS}
-
-    reasons = normalize_string_list(result.get("reasons"), MAX_REASON_COUNT)
-    gaps = normalize_string_list(result.get("gaps"), MAX_GAP_COUNT)
+    validated = validate_openclaw_result(result, current_job)
+    normalized = validated.model_dump(by_alias=True)
     return {
-        "score": clamp_round(result["score"]),
+        "score": normalized["score"],
         "source": "openclaw",
-        "confidence": normalize_confidence(result.get("confidence", fallback.get("confidence", "medium"))),
-        "breakdown": normalized_breakdown,
-        "reasons": reasons,
-        "gaps": gaps,
-        "applicationGuide": normalize_application_guide(
-            result.get("applicationGuide"),
-            current_job=current_job,
-            reasons=reasons,
-            gaps=gaps,
-        ),
+        "confidence": normalized["confidence"],
+        "breakdown": normalized["breakdown"],
+        "reasons": normalized["reasons"],
+        "gaps": normalized["gaps"],
+        "applicationGuide": normalized["applicationGuide"],
         "heuristicScore": clamp_round(fallback.get("heuristicScore", current_job.get("match", 0))),
     }
 
 
-def validate_openclaw_result(result: dict[str, Any], current_job: dict[str, Any]) -> None:
+def validate_openclaw_result(
+    result: dict[str, Any],
+    current_job: dict[str, Any],
+) -> OpenClawAiMatchResult:
     job_id = str(result.get("id") or current_job.get("id") or "unknown")
-    if "score" not in result:
-        raise OpenClawAiMatchError(f"OpenClaw returned an incomplete match for {job_id}: missing score")
-
-    breakdown = result.get("breakdown")
-    if not isinstance(breakdown, dict):
+    try:
+        validated = OpenClawAiMatchResult.model_validate(result)
+    except ValidationError as exc:
+        raise invalid_openclaw_response(exc, job_id=job_id) from exc
+    if validated.id != str(current_job.get("id") or ""):
         raise OpenClawAiMatchError(
-            f"OpenClaw returned an incomplete match for {job_id}: missing breakdown"
+            f"OpenClaw returned an invalid match for {job_id}: result ID does not match vacancy"
         )
+    return validated
 
-    missing_breakdown_keys = [key for key in WEIGHTS if key not in breakdown]
-    if missing_breakdown_keys:
+
+def validate_openclaw_batch(
+    results: list[dict[str, Any]],
+    *,
+    expected_job_ids: list[str],
+) -> list[dict[str, Any]]:
+    if not isinstance(results, list) or any(not isinstance(result, dict) for result in results):
+        raise OpenClawAiMatchError("OpenClaw returned an invalid matches array")
+    validated = [
+        validate_openclaw_result(result, {"id": result.get("id")})
+        for result in results
+    ]
+    result_ids = [result.id for result in validated]
+    if len(result_ids) != len(set(result_ids)):
+        raise OpenClawAiMatchError("OpenClaw returned duplicate match IDs")
+    if set(result_ids) != set(expected_job_ids):
+        missing = sorted(set(expected_job_ids) - set(result_ids))
+        unexpected = sorted(set(result_ids) - set(expected_job_ids))
+        details = []
+        if missing:
+            details.append(f"missing: {', '.join(missing[:8])}")
+        if unexpected:
+            details.append(f"unexpected: {', '.join(unexpected[:8])}")
         raise OpenClawAiMatchError(
-            f"OpenClaw returned an incomplete match for {job_id}: missing breakdown keys "
-            f"{', '.join(missing_breakdown_keys)}"
+            "OpenClaw returned a mismatched match set"
+            + (f" ({'; '.join(details)})" if details else "")
         )
+    return [result.model_dump(by_alias=True) for result in validated]
+
+
+def invalid_openclaw_response(
+    exc: ValidationError,
+    *,
+    job_id: str = "payload",
+) -> OpenClawAiMatchError:
+    first_error = exc.errors(include_url=False, include_input=False)[0]
+    location = ".".join(str(part) for part in first_error["loc"]) or "response"
+    return OpenClawAiMatchError(
+        f"OpenClaw returned an invalid match for {job_id}: "
+        f"{location}: {first_error['msg']}"
+    )
 
 
 def apply_match_result(
@@ -523,174 +691,11 @@ def apply_match_result(
         "breakdown": result.get("breakdown", {}),
         "reasons": normalize_string_list(result.get("reasons"), MAX_REASON_COUNT),
         "gaps": normalize_string_list(result.get("gaps"), MAX_GAP_COUNT),
-        "applicationGuide": normalize_application_guide(
-            result.get("applicationGuide"),
-            current_job=job,
-            reasons=normalize_string_list(result.get("reasons"), MAX_REASON_COUNT),
-            gaps=normalize_string_list(result.get("gaps"), MAX_GAP_COUNT),
-        ),
+        "applicationGuide": result["applicationGuide"],
         "heuristicScore": clamp_round(result.get("heuristicScore", score)),
         "updatedAt": updated_at,
     }
     return next_job
-
-
-def normalize_application_guide(
-    value: Any,
-    *,
-    current_job: dict[str, Any] | None = None,
-    reasons: list[str] | None = None,
-    gaps: list[str] | None = None,
-) -> dict[str, Any]:
-    guide = value if isinstance(value, dict) else {}
-    language = str(guide.get("language") or "").strip().lower()
-    if language in {"german", "de", "deutsch"}:
-        normalized_language = "German"
-    elif language in {"english", "en", "englisch"}:
-        normalized_language = "English"
-    else:
-        normalized_language = detect_job_language(current_job or {})
-    positioning = normalize_guide_text(guide.get("positioning"), 300)
-    normalized_reasons = normalize_string_list(reasons, MAX_REASON_COUNT)
-    normalized_gaps = normalize_string_list(gaps, MAX_GAP_COUNT)
-    if not positioning:
-        positioning = (
-            normalized_reasons[0]
-            if normalized_reasons
-            else "Align verified experience with the vacancy's strongest requirements."
-        )
-
-    normalized: dict[str, Any] = {
-        "language": normalized_language,
-        "positioning": positioning,
-        "readiness": normalize_guide_choice(
-            guide.get("readiness"),
-            {"ready", "needs_confirmation", "weak_fit"},
-            "needs_confirmation" if guide.get("clarificationQuestions") else "ready",
-        ),
-        "roleMission": normalize_guide_text(guide.get("roleMission"), 500)
-        or fallback_role_mission(current_job or {}),
-    }
-    for key, limit in APPLICATION_GUIDE_LIST_LIMITS.items():
-        normalized[key] = normalize_string_list(guide.get(key), limit)
-
-    if not normalized["cvImprovements"]:
-        normalized["cvImprovements"] = normalized_gaps or normalized_reasons
-    if not normalized["coverLetterStrategy"]:
-        normalized["coverLetterStrategy"] = normalized_reasons
-    if not normalized["risks"]:
-        normalized["risks"] = normalized_gaps
-    if not normalized["keywords"]:
-        normalized["keywords"] = normalize_list((current_job or {}).get("skills", []))[:8]
-    if not normalized["finalChecklist"]:
-        normalized["finalChecklist"] = [
-            "Verify every claim against the source CV.",
-            "Confirm the selected documents and application language before submitting.",
-        ]
-    normalized["evidenceMatrix"] = normalize_evidence_matrix(guide.get("evidenceMatrix"))
-    normalized["clarificationQuestions"] = normalize_clarification_questions(
-        guide.get("clarificationQuestions")
-    )
-    normalized["resumePlan"] = normalize_resume_plan(guide.get("resumePlan"))
-    normalized["coverLetterPlan"] = normalize_cover_letter_plan(guide.get("coverLetterPlan"))
-    if normalized["clarificationQuestions"] and normalized["readiness"] == "ready":
-        normalized["readiness"] = "needs_confirmation"
-    return normalized
-
-
-def normalize_guide_text(value: Any, limit: int = 300) -> str:
-    return str(value or "").strip()[:limit]
-
-
-def normalize_guide_choice(value: Any, allowed: set[str], default: str) -> str:
-    normalized = str(value or "").strip().lower()
-    return normalized if normalized in allowed else default
-
-
-def normalize_evidence_matrix(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    normalized: list[dict[str, Any]] = []
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        requirement = normalize_guide_text(item.get("requirement"), 240)
-        if not requirement:
-            continue
-        normalized.append(
-            {
-                "requirement": requirement,
-                "importance": normalize_guide_choice(
-                    item.get("importance"), {"required", "preferred"}, "required"
-                ),
-                "status": normalize_guide_choice(
-                    item.get("status"),
-                    {"verified", "transferable", "needs_confirmation", "missing"},
-                    "needs_confirmation",
-                ),
-                "evidence": normalize_guide_text(item.get("evidence"), 500),
-                "action": normalize_guide_text(item.get("action"), 400),
-            }
-        )
-        if len(normalized) >= MAX_EVIDENCE_MATRIX_COUNT:
-            break
-    return normalized
-
-
-def normalize_clarification_questions(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-    normalized: list[dict[str, Any]] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, dict):
-            continue
-        question = normalize_guide_text(item.get("question"), 500)
-        if not question:
-            continue
-        raw_id = re.sub(
-            r"[^a-z0-9_-]+", "-", str(item.get("id") or "").strip().lower()
-        ).strip("-")
-        normalized.append(
-            {
-                "id": (raw_id or f"question-{index + 1}")[:80],
-                "requirement": normalize_guide_text(item.get("requirement"), 200),
-                "question": question,
-                "why": normalize_guide_text(item.get("why"), 400),
-                "claimIfConfirmed": normalize_guide_text(item.get("claimIfConfirmed"), 500),
-                "blocking": bool(item.get("blocking")),
-            }
-        )
-        if len(normalized) >= MAX_CLARIFICATION_QUESTION_COUNT:
-            break
-    return normalized
-
-
-def normalize_resume_plan(value: Any) -> dict[str, Any]:
-    plan = value if isinstance(value, dict) else {}
-    return {
-        "targetHeadline": normalize_guide_text(plan.get("targetHeadline"), 240),
-        "summaryFocus": normalize_guide_text(plan.get("summaryFocus"), 500),
-        "evidenceToLead": normalize_string_list(plan.get("evidenceToLead"), 4),
-        "bulletStrategy": normalize_string_list(plan.get("bulletStrategy"), 4),
-    }
-
-
-def normalize_cover_letter_plan(value: Any) -> dict[str, Any]:
-    plan = value if isinstance(value, dict) else {}
-    return {
-        "openingAngle": normalize_guide_text(plan.get("openingAngle"), 500),
-        "proofPoints": normalize_string_list(plan.get("proofPoints"), 3),
-        "motivationAngle": normalize_guide_text(plan.get("motivationAngle"), 500),
-    }
-
-
-def fallback_role_mission(job: dict[str, Any]) -> str:
-    overview = normalize_guide_text(job.get("overview"), 500)
-    if overview:
-        return overview
-    title = normalize_guide_text(job.get("title"), 160) or "this role"
-    company = normalize_guide_text(job.get("company"), 160)
-    return f"Succeed as {title}{f' at {company}' if company else ''}."
 
 
 def detect_job_language(job: dict[str, Any]) -> str:

@@ -101,6 +101,7 @@ class AiMatchJobManager:
                     openclaw_enabled=settings.openclaw_ai_match_enabled,
                     openclaw_max_jobs=batch_size,
                     model=settings.openclaw_ai_match_model,
+                    max_attempts=settings.openclaw_ai_match_max_attempts,
                     force=force,
                     candidate_snapshot=candidate_snapshot,
                 )

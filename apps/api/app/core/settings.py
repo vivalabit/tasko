@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     openclaw_ai_match_thinking: str = "low"
     openclaw_ai_match_timeout_seconds: int = 120
     openclaw_ai_match_max_jobs: int = 3
+    openclaw_ai_match_max_attempts: int = Field(default=2, ge=1, le=4)
     openclaw_assistant_enabled: bool = True
     openclaw_assistant_agent_id: str = "tasko-assistant"
     openclaw_assistant_model: str = "openai/gpt-5.6-terra"
