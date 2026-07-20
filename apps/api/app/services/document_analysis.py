@@ -24,7 +24,7 @@ from app.services.resume_blocks import (
 
 
 AnalyzedDocumentType = Literal["cover_letter", "generic", "tailored_resume"]
-SOURCE_CONTEXT_MAX_CHARS = 10_000
+SOURCE_CONTEXT_MAX_CHARS = 16_000
 DOCUMENT_ANALYSIS_CACHE_SIZE = 64
 
 
@@ -72,14 +72,13 @@ class DocumentAnalysisResult:
             "format": self.format_name,
             self.elements_key: [],
         }
-        for element in self.structured_elements():
-            candidate = {
-                **context,
-                self.elements_key: [*context[self.elements_key], element],
-            }
-            if serialized_length(candidate) > max_characters:
-                break
-            context = candidate
+        elements = self.structured_elements()
+        context[self.elements_key] = select_source_context_elements(
+            elements,
+            base_context=context,
+            elements_key=self.elements_key,
+            max_characters=max_characters,
+        )
         return context
 
 
@@ -375,12 +374,12 @@ def source_context_report(
 ) -> dict[str, Any]:
     base: dict[str, Any] = {"format": format_name, elements_key: []}
     total_characters = serialized_length({**base, elements_key: elements})
-    included: list[dict[str, Any]] = []
-    for element in elements:
-        candidate = {**base, elements_key: [*included, element]}
-        if serialized_length(candidate) > SOURCE_CONTEXT_MAX_CHARS:
-            break
-        included.append(element)
+    included = select_source_context_elements(
+        elements,
+        base_context=base,
+        elements_key=elements_key,
+        max_characters=SOURCE_CONTEXT_MAX_CHARS,
+    )
     included_characters = serialized_length({**base, elements_key: included})
     return {
         "totalElements": len(elements),
@@ -390,6 +389,38 @@ def source_context_report(
         "includedCharacters": included_characters,
         "truncated": len(included) < len(elements),
     }
+
+
+def select_source_context_elements(
+    elements: list[dict[str, Any]],
+    *,
+    base_context: dict[str, Any],
+    elements_key: str,
+    max_characters: int,
+) -> list[dict[str, Any]]:
+    selected_indexes: set[int] = set()
+
+    def try_include(index: int) -> None:
+        candidate_indexes = sorted({*selected_indexes, index})
+        candidate = {
+            **base_context,
+            elements_key: [elements[item_index] for item_index in candidate_indexes],
+        }
+        if serialized_length(candidate) <= max_characters:
+            selected_indexes.add(index)
+
+    priority_indexes = [
+        index
+        for index, element in enumerate(elements)
+        if element.get("editable") or element.get("type") == "heading"
+    ]
+    for index in priority_indexes:
+        try_include(index)
+    for index in range(len(elements)):
+        if index not in selected_indexes:
+            try_include(index)
+
+    return [elements[index] for index in sorted(selected_indexes)]
 
 
 def serialized_length(value: dict[str, Any]) -> int:

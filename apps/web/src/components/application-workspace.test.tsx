@@ -890,6 +890,7 @@ describe("ApplicationWorkspace", () => {
     expect(assistantCalls).toBe(2);
     expect(saveCalls).toBe(0);
     expect(props.onDocumentAttached).not.toHaveBeenCalled();
+    expect(assistantPrompts[0]).toContain("return at least one meaningful evidence-backed replacement");
     expect(assistantPrompts[1]).toContain("zero replacements");
     expect(assistantPrompts[1]).toContain("PREVIOUS_DRAFT_JSON");
   });

@@ -29,6 +29,7 @@ from app.models.profile import ProfilePayload
 from app.services.cover_letter_blocks import UnsupportedCoverLetterStructureError
 from app.services.document_analysis import (
     DocumentAnalysisResult,
+    SOURCE_CONTEXT_MAX_CHARS,
     analyze_docx_source,
     serialized_length,
 )
@@ -185,7 +186,7 @@ async def run_openclaw_assistant(
     source_documents: list[AssistantSourceDocument] | None = None,
     candidate_confirmations: list[AssistantCandidateConfirmation] | None = None,
     session_scope: str = "",
-    max_prompt_chars: int = 32_000,
+    max_prompt_chars: int = 48_000,
     max_attempts: int = 1,
     retry_backoff_seconds: float = 0,
 ) -> OpenClawAssistantRun:
@@ -372,7 +373,7 @@ def build_openclaw_assistant_prompt(
     history: dict[str, Any] | None = None,
     source_documents: list[AssistantSourceDocument] | None = None,
     candidate_confirmations: list[AssistantCandidateConfirmation] | None = None,
-    max_prompt_chars: int = 32_000,
+    max_prompt_chars: int = 48_000,
 ) -> str:
     context_payload = build_openclaw_context_payload(
         context_kind=context_kind,
@@ -413,13 +414,13 @@ def build_openclaw_context_payload(
         "context_kind": context_kind,
         "candidate": build_profile_context(profile),
     }
-    if job:
-        context_payload["job"] = job.model_dump(
+    if application:
+        context_payload["application"] = application.model_dump(
             by_alias=True,
             exclude_defaults=True,
         )
-    if application:
-        context_payload["application"] = application.model_dump(
+    elif job:
+        context_payload["job"] = job.model_dump(
             by_alias=True,
             exclude_defaults=True,
         )
@@ -454,7 +455,7 @@ def analyze_openclaw_assistant_context(
     application: AssistantApplicationContext | None,
     source_documents: list[AssistantSourceDocument] | None = None,
     candidate_confirmations: list[AssistantCandidateConfirmation] | None = None,
-    max_prompt_chars: int = 32_000,
+    max_prompt_chars: int = 48_000,
 ) -> dict[str, int | bool]:
     context_payload = build_openclaw_context_payload(
         context_kind=context_kind,
@@ -507,9 +508,7 @@ def build_profile_context(profile: ProfilePayload) -> dict[str, Any]:
         if str(profile_context.get(field) or "").strip()
     }
     if experience_claims:
-        profile_context["evidence_ids"]["experience"] = [
-            claim["id"] for claim in experience_claims
-        ]
+        profile_context.pop("experience", None)
         profile_context["experience_claims"] = [
             {
                 "evidenceId": claim["id"],
@@ -552,7 +551,7 @@ def build_source_document_context(
                     title=source.title,
                     category=source.category,
                     file_name=source.file_name,
-                    max_characters=min(10_000, remaining_chars),
+                    max_characters=min(SOURCE_CONTEXT_MAX_CHARS, remaining_chars),
                 )
                 if not source_context[analysis.elements_key]:
                     continue

@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import json
 from dataclasses import FrozenInstanceError
 from io import BytesIO
 
@@ -10,6 +11,7 @@ from app.models.assistant import AssistantSourceDocument
 from app.services import document_analysis, document_security
 from app.services.assistant import build_source_document_context
 from app.services.document_analysis import (
+    DocumentAnalysisResult,
     analyze_docx_source,
     clear_document_analysis_cache,
     document_analysis_cache_info,
@@ -104,3 +106,59 @@ def test_cached_analysis_is_immutable_and_returns_independent_payloads() -> None
     assert second_payload[0]["original"] == "SUMMARY"
     with pytest.raises(FrozenInstanceError):
         analysis.extracted_text = "mutated"  # type: ignore[misc]
+
+
+def test_ai_context_prioritizes_editable_blocks_over_large_immutable_content() -> None:
+    elements = [
+        {
+            "blockId": "block-0001",
+            "type": "immutable",
+            "original": "x" * 2_000,
+            "editable": False,
+            "spans": [],
+        },
+        {
+            "blockId": "block-0002",
+            "type": "heading",
+            "original": "Experience",
+            "editable": False,
+            "spans": [],
+        },
+        {
+            "blockId": "block-0003",
+            "type": "achievement",
+            "original": "Built reliable Python services.",
+            "editable": True,
+            "spans": [
+                {
+                    "spanId": "block-0003-span-0001",
+                    "type": "text",
+                    "original": "Built reliable Python services.",
+                    "editable": True,
+                    "evidenceId": "source:block-0003-span-0001",
+                }
+            ],
+        },
+    ]
+    analysis = DocumentAnalysisResult(
+        content_sha256="a" * 64,
+        document_type="tailored_resume",
+        extracted_text="",
+        format_name="resume-blocks-v2",
+        elements_key="blocks",
+        structured_elements_json=json.dumps(elements),
+        preflight_json="{}",
+    )
+
+    context = analysis.build_ai_context(
+        source_id="source-cv",
+        title="CV",
+        category="CV / Resume",
+        file_name="cv.docx",
+        max_characters=900,
+    )
+
+    assert [block["blockId"] for block in context["blocks"]] == [
+        "block-0002",
+        "block-0003",
+    ]

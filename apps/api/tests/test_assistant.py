@@ -22,6 +22,7 @@ from app.core.settings import Settings, get_settings
 from app.main import app
 from app.models.applications import CandidateConfirmationRecord, StoredApplicationRecord
 from app.models.assistant import (
+    AssistantApplicationContext,
     AssistantCandidateConfirmation,
     AssistantJobContext,
     AssistantSourceDocument,
@@ -35,6 +36,7 @@ from app.services.assistant import (
     OpenClawAssistantTimeoutError,
     analyze_openclaw_assistant_context,
     build_openclaw_assistant_prompt,
+    build_openclaw_context_payload,
     compact_conversation_history,
     extract_openclaw_assistant_text,
     preflight_source_documents,
@@ -117,6 +119,29 @@ def test_build_openclaw_assistant_prompt_only_includes_dynamic_context() -> None
     assert "You are Tasko" not in prompt
 
 
+def test_application_context_does_not_duplicate_its_embedded_job() -> None:
+    job = AssistantJobContext(
+        id="job-1",
+        title="Backend Engineer",
+        company="Acme",
+    )
+    application = AssistantApplicationContext(
+        id="application-1",
+        status="draft",
+        job=job,
+    )
+
+    context = build_openclaw_context_payload(
+        context_kind="application",
+        profile=ProfilePayload(name="Eduard"),
+        job=job,
+        application=application,
+    )
+
+    assert "job" not in context
+    assert context["application"]["job"]["title"] == "Backend Engineer"
+
+
 def test_assistant_context_analysis_reports_budget_truncation() -> None:
     report = analyze_openclaw_assistant_context(
         message_characters=1_000,
@@ -159,6 +184,8 @@ def test_build_openclaw_assistant_prompt_omits_empty_fields_and_duplicate_resume
     assert '"experience_claims"' in prompt
     assert '"claimType":"achievement"' in prompt
     assert '"profile:experience:legacy-0001:achievement-' in prompt
+    assert '"experience":"Senior Product Designer at Example"' not in prompt
+    assert '"evidence_ids":{"experience"' not in prompt
     assert '"experience":"profile:experience"' not in prompt
 
 

@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     openclaw_assistant_timeout_seconds: int = Field(default=120, ge=10, le=600)
     openclaw_assistant_max_attempts: int = Field(default=2, ge=1, le=4)
     openclaw_assistant_retry_backoff_seconds: float = Field(default=0.8, ge=0, le=10)
-    openclaw_assistant_max_prompt_chars: int = Field(default=32_000, ge=4_000, le=200_000)
+    openclaw_assistant_max_prompt_chars: int = Field(default=48_000, ge=4_000, le=200_000)
     openclaw_assistant_max_user_message_chars: int = Field(default=6_000, ge=200, le=12_000)
     openclaw_assistant_max_history_messages: int = Field(default=12, ge=0, le=100)
     openclaw_assistant_max_history_chars: int = Field(default=8_000, ge=0, le=100_000)
