@@ -27,8 +27,8 @@ from app.services.generation_context import (
     load_stored_application_guide,
 )
 from app.services.job_match_store import (
-    authoritative_match_record,
     authoritative_match_to_ai_match,
+    latest_job_match_record,
 )
 
 router = APIRouter(dependencies=[Depends(bind_request_identity)])
@@ -49,7 +49,7 @@ def application_payload(
         job = dict(raw_job) if isinstance(raw_job, dict) else {}
     job.pop("aiMatch", None)
 
-    match_record = authoritative_match_record(db, job_id=job_id) if job_id else None
+    match_record = latest_job_match_record(db, job_id=job_id) if job_id else None
     if match_record:
         job["match"] = match_record.score
         job["aiMatch"] = authoritative_match_to_ai_match(match_record)

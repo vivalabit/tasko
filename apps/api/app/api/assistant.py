@@ -68,7 +68,7 @@ from app.services.generation_context import (
     load_authoritative_generation_context,
 )
 from app.services.job_match_store import (
-    authoritative_match_record,
+    latest_job_match_record,
     match_record_to_ai_match,
 )
 from app.services.profile_versions import record_profile_version
@@ -857,7 +857,7 @@ def load_server_job_context(
         job_data = dict(record.data)
         job_data["id"] = job_id
         job_data.pop("aiMatch", None)
-        match_record = authoritative_match_record(db, job_id=job_id)
+        match_record = latest_job_match_record(db, job_id=job_id)
         if match_record:
             job_data["aiMatch"] = match_record_to_ai_match(match_record)
         return AssistantJobContext.model_validate(job_data)

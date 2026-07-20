@@ -25,8 +25,15 @@ from app.models.documents import (
     DocumentVersionRecord,
 )
 from app.models.jobs import JobMatchRecord, StoredJobRecord
-from app.models.profile import ProfileRecord
-from app.services.ai_match import MATCHER_VERSION
+from app.models.profile import ProfilePayload, ProfileRecord
+from app.services.ai_match import (
+    DEFAULT_AI_MATCH_MODEL,
+    MATCHER_VERSION,
+    MATCH_PROMPT_VERSION,
+    build_job_snapshot,
+    build_job_snapshot_hash,
+    build_profile_hash,
+)
 from app.services.document_validation import DocumentValidationError
 from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
 from app.services.storage_cleanup import cleanup_expired_document_storage
@@ -46,6 +53,17 @@ def pack_client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, N
         with testing_session_local() as db:
             yield db
 
+    vacancy_data = {
+        "id": "vacancy-1",
+        "title": "Backend Engineer",
+        "company": "Acme",
+        "overview": "Build Python services.",
+    }
+    profile_data = {
+        "name": "Alex",
+        "experience": "Python delivery at Acme in 2023",
+        "skills": "Python",
+    }
     with testing_session_local() as db:
         db.add_all(
             [
@@ -67,25 +85,19 @@ def pack_client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, N
                 ),
                 StoredJobRecord(
                     id="vacancy-1",
-                    data={
-                        "id": "vacancy-1",
-                        "title": "Backend Engineer",
-                        "company": "Acme",
-                        "overview": "Build Python services.",
-                    },
+                    data=vacancy_data,
                 ),
                 ProfileRecord(
                     id="default",
-                    data={
-                        "name": "Alex",
-                        "experience": "Python delivery at Acme in 2023",
-                        "skills": "Python",
-                    },
+                    data=profile_data,
                 ),
                 JobMatchRecord(
                     id="match-pack",
                     job_id="vacancy-1",
-                    profile_hash="profile-pack",
+                    profile_hash=build_profile_hash(ProfilePayload.model_validate(profile_data)),
+                    vacancy_hash=build_job_snapshot_hash(build_job_snapshot(vacancy_data)),
+                    model=DEFAULT_AI_MATCH_MODEL,
+                    prompt_version=MATCH_PROMPT_VERSION,
                     matcher_version=MATCHER_VERSION,
                     cache_key="cache-pack",
                     score=90,
@@ -750,8 +762,12 @@ def test_pack_rejects_validation_artifact_hash_mismatch(
         artifact = db.get(DocumentValidationArtifactRecord, artifact_id)
         assert artifact is not None
         assert artifact.consumed_at is None
-    assert response.status_code == 422
-    assert "hashes do not match" in response.json()["detail"]["message"]
+    if changed_input == "evidence":
+        assert response.status_code == 409
+        assert response.json()["detail"] == "analysis_stale"
+    else:
+        assert response.status_code == 422
+        assert "hashes do not match" in response.json()["detail"]["message"]
 
 
 def test_atomic_pack_updates_both_documents_as_one_idempotent_version_batch(

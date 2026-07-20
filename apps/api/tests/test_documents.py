@@ -26,8 +26,15 @@ from app.models.documents import (
     DocumentVersionValidationRecord,
 )
 from app.models.jobs import JobMatchRecord, StoredJobRecord
-from app.models.profile import ProfileRecord
-from app.services.ai_match import MATCHER_VERSION
+from app.models.profile import ProfilePayload, ProfileRecord
+from app.services.ai_match import (
+    DEFAULT_AI_MATCH_MODEL,
+    MATCHER_VERSION,
+    MATCH_PROMPT_VERSION,
+    build_job_snapshot,
+    build_job_snapshot_hash,
+    build_profile_hash,
+)
 from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
 
 
@@ -740,7 +747,24 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
                 JobMatchRecord(
                     id="match-validated",
                     job_id="job-validated",
-                    profile_hash="profile-validated",
+                    profile_hash=build_profile_hash(
+                        ProfilePayload(
+                            name="Alex",
+                            skills="Python",
+                            experience="Built a Python service at Acme in 2023.",
+                        )
+                    ),
+                    vacancy_hash=build_job_snapshot_hash(
+                        build_job_snapshot(
+                            {
+                                "id": "job-validated",
+                                "title": "Backend Engineer",
+                                "company": "Acme",
+                            }
+                        )
+                    ),
+                    model=DEFAULT_AI_MATCH_MODEL,
+                    prompt_version=MATCH_PROMPT_VERSION,
                     matcher_version=MATCHER_VERSION,
                     cache_key="cache-validated",
                     score=90,

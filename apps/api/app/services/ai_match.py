@@ -18,6 +18,8 @@ from app.services.resume_import import (
 )
 
 MATCHER_VERSION = "ai-match-v3"
+MATCH_PROMPT_VERSION = "ai-match-prompt-v1"
+DEFAULT_AI_MATCH_MODEL = "openai/gpt-5.6-terra"
 MAX_REASON_COUNT = 3
 MAX_GAP_COUNT = 3
 APPLICATION_GUIDE_LIST_LIMITS = {
@@ -110,6 +112,7 @@ def calculate_ai_matches(
     timeout_seconds: int,
     openclaw_enabled: bool,
     openclaw_max_jobs: int,
+    model: str = DEFAULT_AI_MATCH_MODEL,
     force: bool = False,
     candidate_snapshot: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
@@ -128,7 +131,12 @@ def calculate_ai_matches(
             continue
 
         job_snapshot = build_job_snapshot(job)
-        cache_key = build_cache_key(profile_snapshot, job_snapshot)
+        cache_key = build_cache_key(
+            profile_snapshot,
+            job_snapshot,
+            model=model,
+            prompt_version=MATCH_PROMPT_VERSION,
+        )
         cached_match = job.get("aiMatch")
         if not force and is_cached_match_valid(cached_match, cache_key) and cached_match.get("source") == "openclaw":
             ordered_jobs.append(job)
@@ -151,6 +159,7 @@ def calculate_ai_matches(
             agent_id=agent_id,
             thinking=thinking,
             timeout_seconds=timeout_seconds,
+            model=model,
         )
         by_id.update(
             {
@@ -173,6 +182,10 @@ def calculate_ai_matches(
             normalize_openclaw_result(by_id[item[1]["id"]], item[0]),
             item[2],
             now,
+            profile_hash=build_candidate_snapshot_hash(profile_snapshot),
+            vacancy_hash=build_job_snapshot_hash(item[1]),
+            model=model,
+            prompt_version=MATCH_PROMPT_VERSION,
         )
         for item in ordered_jobs
     ]
@@ -282,6 +295,7 @@ def score_with_openclaw(
     agent_id: str,
     thinking: str,
     timeout_seconds: int,
+    model: str = DEFAULT_AI_MATCH_MODEL,
 ) -> list[dict[str, Any]]:
     if not jobs:
         return []
@@ -298,6 +312,8 @@ def score_with_openclaw(
                 agent_id,
                 "--message",
                 prompt,
+                "--model",
+                model,
                 "--thinking",
                 thinking,
                 "--json",
@@ -485,12 +501,21 @@ def apply_match_result(
     result: dict[str, Any],
     cache_key: str,
     updated_at: str,
+    *,
+    profile_hash: str,
+    vacancy_hash: str,
+    model: str,
+    prompt_version: str,
 ) -> dict[str, Any]:
     next_job = dict(job)
     score = clamp_round(result.get("score", next_job.get("match", 0)))
     next_job["match"] = score
     next_job["aiMatch"] = {
         "version": MATCHER_VERSION,
+        "profileHash": profile_hash,
+        "vacancyHash": vacancy_hash,
+        "model": model,
+        "promptVersion": prompt_version,
         "cacheKey": cache_key,
         "source": result.get("source", "openclaw"),
         "score": score,
@@ -718,12 +743,29 @@ def detect_job_language(job: dict[str, Any]) -> str:
     return "German" if german_score > english_score else "English"
 
 
-def build_cache_key(profile_snapshot: dict[str, Any], job_snapshot: dict[str, Any]) -> str:
+def build_cache_key(
+    profile_snapshot: dict[str, Any],
+    job_snapshot: dict[str, Any],
+    *,
+    model: str = DEFAULT_AI_MATCH_MODEL,
+    prompt_version: str = MATCH_PROMPT_VERSION,
+) -> str:
     payload = json.dumps(
-        {"version": MATCHER_VERSION, "candidate": profile_snapshot, "job": job_snapshot},
+        {
+            "version": MATCHER_VERSION,
+            "promptVersion": prompt_version,
+            "model": model,
+            "candidate": profile_snapshot,
+            "job": job_snapshot,
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_job_snapshot_hash(snapshot: dict[str, Any]) -> str:
+    payload = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

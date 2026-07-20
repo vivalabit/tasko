@@ -100,6 +100,7 @@ class AiMatchJobManager:
                     timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
                     openclaw_enabled=settings.openclaw_ai_match_enabled,
                     openclaw_max_jobs=batch_size,
+                    model=settings.openclaw_ai_match_model,
                     force=force,
                     candidate_snapshot=candidate_snapshot,
                 )

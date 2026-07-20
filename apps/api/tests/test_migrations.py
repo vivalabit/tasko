@@ -98,7 +98,7 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260719_0007"
+        assert revision == "20260720_0008"
     finally:
         engine.dispose()
 
@@ -233,7 +233,7 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260719_0007"
+        assert revision == "20260720_0008"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))

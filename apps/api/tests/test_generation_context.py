@@ -11,8 +11,15 @@ from app.core.database import Base
 from app.models.applications import CandidateConfirmationRecord, StoredApplicationRecord
 from app.models.documents import DocumentTemplateRecord
 from app.models.jobs import JobMatchRecord, StoredJobRecord
-from app.models.profile import ProfileRecord
-from app.services.ai_match import MATCHER_VERSION
+from app.models.profile import ProfilePayload, ProfileRecord
+from app.services.ai_match import (
+    DEFAULT_AI_MATCH_MODEL,
+    MATCHER_VERSION,
+    MATCH_PROMPT_VERSION,
+    build_job_snapshot,
+    build_job_snapshot_hash,
+)
+from app.services.candidate_snapshot import get_candidate_match_snapshot
 from app.services.generation_context import (
     GenerationContextError,
     load_authoritative_generation_context,
@@ -29,6 +36,33 @@ def generation_context_session(*, include_confirmation: bool = True) -> Session:
     Base.metadata.create_all(bind=engine)
     db = Session(engine)
     now = datetime.now(UTC)
+    profile_data = {
+        "name": "Alex",
+        "skills": "Python",
+        "experience": json.dumps(
+            [
+                {
+                    "id": "experience-acme",
+                    "title": "Platform Engineer",
+                    "company": "Acme",
+                    "start_date": "2022-01",
+                    "end_date": "2024-06",
+                    "is_current": False,
+                    "description": (
+                        "Built production Python and FastAPI services. "
+                        "Reduced request latency by 30%."
+                    ),
+                }
+            ]
+        ),
+    }
+    vacancy_data = {
+        "id": "job-context",
+        "title": "Platform Engineer",
+        "company": "Acme",
+    }
+    profile = ProfilePayload.model_validate(profile_data)
+    profile_hash = get_candidate_match_snapshot(db, profile=profile).profile_hash
     records = [
         StoredApplicationRecord(
             id="application-context",
@@ -40,39 +74,19 @@ def generation_context_session(*, include_confirmation: bool = True) -> Session:
         ),
         StoredJobRecord(
             id="job-context",
-            data={
-                "id": "job-context",
-                "title": "Platform Engineer",
-                "company": "Acme",
-            },
+            data=vacancy_data,
         ),
         ProfileRecord(
             id="default",
-            data={
-                "name": "Alex",
-                "skills": "Python",
-                "experience": json.dumps(
-                    [
-                        {
-                            "id": "experience-acme",
-                            "title": "Platform Engineer",
-                            "company": "Acme",
-                            "start_date": "2022-01",
-                            "end_date": "2024-06",
-                            "is_current": False,
-                            "description": (
-                                "Built production Python and FastAPI services. "
-                                "Reduced request latency by 30%."
-                            ),
-                        }
-                    ]
-                ),
-            },
+            data=profile_data,
         ),
         JobMatchRecord(
             id="match-context",
             job_id="job-context",
-            profile_hash="profile-context",
+            profile_hash=profile_hash,
+            vacancy_hash=build_job_snapshot_hash(build_job_snapshot(vacancy_data)),
+            model=DEFAULT_AI_MATCH_MODEL,
+            prompt_version=MATCH_PROMPT_VERSION,
             matcher_version=MATCHER_VERSION,
             cache_key="cache-context",
             score=88,
@@ -230,25 +244,72 @@ def test_computes_stable_provenance_from_authoritative_context() -> None:
         assert len(first.input_versions["sourceDocument"]["contentSha256"]) == 64
 
 
-def test_authoritative_provenance_changes_when_stored_profile_changes() -> None:
+def test_rejects_generation_when_stored_profile_changes() -> None:
     with generation_context_session() as db:
-        before = load_authoritative_generation_context(
+        load_authoritative_generation_context(
             db,
             application_id="application-context",
             template_id="template-context",
             document_type="cover_letter",
-        ).provenance()
+        )
         profile = db.get(ProfileRecord, "default")
         assert profile is not None
         profile.data = {**profile.data, "skills": "Python, PostgreSQL"}
         db.commit()
 
-        after = load_authoritative_generation_context(
-            db,
-            application_id="application-context",
-            template_id="template-context",
-            document_type="cover_letter",
-        ).provenance()
+        with pytest.raises(GenerationContextError, match="^analysis_stale$") as stale:
+            load_authoritative_generation_context(
+                db,
+                application_id="application-context",
+                template_id="template-context",
+                document_type="cover_letter",
+            )
 
-        assert after.generation_fingerprint != before.generation_fingerprint
-        assert after.input_versions["profile"] != before.input_versions["profile"]
+        assert stale.value.status_code == 409
+
+
+def test_rejects_generation_when_stored_vacancy_changes() -> None:
+    with generation_context_session() as db:
+        vacancy = db.get(StoredJobRecord, "job-context")
+        assert vacancy is not None
+        vacancy.data = {**vacancy.data, "title": "Principal Platform Engineer"}
+        db.commit()
+
+        with pytest.raises(GenerationContextError, match="^analysis_stale$") as stale:
+            load_authoritative_generation_context(
+                db,
+                application_id="application-context",
+                template_id="template-context",
+                document_type="cover_letter",
+            )
+
+        assert stale.value.status_code == 409
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("model", "openai/different-model"),
+        ("prompt_version", "ai-match-prompt-old"),
+        ("matcher_version", "ai-match-v2"),
+    ],
+)
+def test_rejects_generation_when_analysis_runtime_provenance_differs(
+    field: str,
+    value: str,
+) -> None:
+    with generation_context_session() as db:
+        match_record = db.get(JobMatchRecord, "match-context")
+        assert match_record is not None
+        setattr(match_record, field, value)
+        db.commit()
+
+        with pytest.raises(GenerationContextError, match="^analysis_stale$") as stale:
+            load_authoritative_generation_context(
+                db,
+                application_id="application-context",
+                template_id="template-context",
+                document_type="cover_letter",
+            )
+
+        assert stale.value.status_code == 409

@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     openclaw_resume_import_thinking: str = "high"
     openclaw_resume_import_timeout_seconds: int = 120
     openclaw_ai_match_enabled: bool = True
+    openclaw_ai_match_model: str = "openai/gpt-5.6-terra"
     openclaw_ai_match_thinking: str = "low"
     openclaw_ai_match_timeout_seconds: int = 120
     openclaw_ai_match_max_jobs: int = 3

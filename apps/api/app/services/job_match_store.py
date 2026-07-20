@@ -58,7 +58,34 @@ def latest_match_record(db: Session, *, job_id: str, profile_hash: str) -> JobMa
     )
 
 
-def authoritative_match_record(db: Session, *, job_id: str) -> JobMatchRecord | None:
+def authoritative_match_record(
+    db: Session,
+    *,
+    owner_id: str,
+    job_id: str,
+    profile_hash: str,
+    vacancy_hash: str,
+    model: str,
+    prompt_version: str,
+    matcher_version: str,
+) -> JobMatchRecord | None:
+    return (
+        db.query(JobMatchRecord)
+        .filter(
+            JobMatchRecord.owner_id == owner_id,
+            JobMatchRecord.job_id == job_id,
+            JobMatchRecord.profile_hash == profile_hash,
+            JobMatchRecord.vacancy_hash == vacancy_hash,
+            JobMatchRecord.model == model,
+            JobMatchRecord.prompt_version == prompt_version,
+            JobMatchRecord.matcher_version == matcher_version,
+        )
+        .order_by(JobMatchRecord.created_at.desc(), JobMatchRecord.id.desc())
+        .first()
+    )
+
+
+def latest_job_match_record(db: Session, *, job_id: str) -> JobMatchRecord | None:
     return (
         db.query(JobMatchRecord)
         .filter(
@@ -67,6 +94,15 @@ def authoritative_match_record(db: Session, *, job_id: str) -> JobMatchRecord | 
         )
         .order_by(JobMatchRecord.created_at.desc(), JobMatchRecord.id.desc())
         .first()
+    )
+
+
+def has_job_match_record(db: Session, *, job_id: str) -> bool:
+    return (
+        db.query(JobMatchRecord.id)
+        .filter(JobMatchRecord.job_id == job_id)
+        .first()
+        is not None
     )
 
 
@@ -219,6 +255,9 @@ def build_match_record(job_id: str, profile_hash: str, ai_match: dict[str, Any])
         id=uuid4().hex,
         job_id=job_id,
         profile_hash=profile_hash,
+        vacancy_hash=normalized["vacancyHash"],
+        model=normalized["model"],
+        prompt_version=normalized["promptVersion"],
         matcher_version=normalized["version"],
         cache_key=normalized["cacheKey"],
         score=normalized["score"],
@@ -244,6 +283,10 @@ def normalize_ai_match(
     )
     normalized = {
         "version": str(ai_match.get("version") or MATCHER_VERSION),
+        "profileHash": str(ai_match.get("profileHash") or ""),
+        "vacancyHash": str(ai_match.get("vacancyHash") or ""),
+        "model": str(ai_match.get("model") or ""),
+        "promptVersion": str(ai_match.get("promptVersion") or ""),
         "cacheKey": str(ai_match.get("cacheKey") or ""),
         "source": str(ai_match.get("source") or "openclaw"),
         "score": score,
@@ -266,6 +309,10 @@ def match_record_to_ai_match(record: JobMatchRecord) -> dict[str, Any]:
     application_guide = breakdown.pop(APPLICATION_GUIDE_STORAGE_KEY, None)
     ai_match = {
         "version": record.matcher_version,
+        "profileHash": record.profile_hash,
+        "vacancyHash": record.vacancy_hash,
+        "model": record.model,
+        "promptVersion": record.prompt_version,
         "cacheKey": record.cache_key,
         "source": record.source,
         "score": record.score,

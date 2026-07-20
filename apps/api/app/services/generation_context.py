@@ -8,15 +8,26 @@ from typing import Any
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from app.core.identity import DEFAULT_OWNER_ID, current_owner_id
+from app.core.settings import get_settings
 from app.models.applications import CandidateConfirmationRecord, StoredApplicationRecord
 from app.models.documents import DocumentTemplateRecord
-from app.models.jobs import StoredJobRecord
+from app.models.jobs import JobMatchRecord, StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
-from app.services.ai_match import detect_job_language
+from app.services.ai_match import (
+    MATCHER_VERSION,
+    MATCH_PROMPT_VERSION,
+    build_job_snapshot,
+    build_job_snapshot_hash,
+    detect_job_language,
+)
+from app.services.candidate_snapshot import get_candidate_match_snapshot
 from app.services.experience_evidence import build_atomic_experience_evidence
 from app.services.job_match_store import (
     authoritative_match_record,
     authoritative_match_to_ai_match,
+    has_job_match_record,
+    latest_job_match_record,
     match_record_to_ai_match,
 )
 
@@ -244,8 +255,15 @@ def load_authoritative_application_generation_context(
     except ValidationError as exc:
         raise GenerationContextError("Candidate profile is invalid") from exc
 
-    match_record = authoritative_match_record(db, job_id=job_id)
+    match_record = current_authoritative_match_record(
+        db,
+        job_id=job_id,
+        profile=ProfilePayload.model_validate(profile),
+        vacancy=vacancy,
+    )
     if not match_record:
+        if has_job_match_record(db, job_id=job_id):
+            raise GenerationContextError("analysis_stale")
         raise GenerationContextError("Stored ai-match-v3 is required")
     authoritative_analysis = authoritative_match_to_ai_match(match_record)
     application_guide = authoritative_analysis.get("applicationGuide")
@@ -340,13 +358,34 @@ def load_authoritative_generation_context(
 
 
 def load_stored_application_guide(db: Session, *, job_id: str) -> dict[str, Any]:
-    match_record = authoritative_match_record(db, job_id=job_id)
+    match_record = latest_job_match_record(db, job_id=job_id)
     if not match_record:
         raise GenerationContextError("Stored ai-match-v3 is required")
     application_guide = match_record_to_ai_match(match_record).get("applicationGuide")
     if not isinstance(application_guide, dict):
         raise GenerationContextError("Stored ai-match-v3 application guide is unavailable")
     return application_guide
+
+
+def current_authoritative_match_record(
+    db: Session,
+    *,
+    job_id: str,
+    profile: ProfilePayload,
+    vacancy: dict[str, Any],
+) -> JobMatchRecord | None:
+    candidate_snapshot = get_candidate_match_snapshot(db, profile=profile)
+    settings = get_settings()
+    return authoritative_match_record(
+        db,
+        owner_id=current_owner_id.get() or DEFAULT_OWNER_ID,
+        job_id=job_id,
+        profile_hash=candidate_snapshot.profile_hash,
+        vacancy_hash=build_job_snapshot_hash(build_job_snapshot(vacancy)),
+        model=settings.openclaw_ai_match_model,
+        prompt_version=MATCH_PROMPT_VERSION,
+        matcher_version=MATCHER_VERSION,
+    )
 
 
 def clarification_questions(

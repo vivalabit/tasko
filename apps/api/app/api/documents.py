@@ -1687,6 +1687,11 @@ def document_pack_payload(job: DocumentPackJobRecord, db: Session) -> DocumentPa
 
 
 def pack_validation_failed(stage: str, exc: Exception) -> HTTPException:
+    if isinstance(exc, GenerationContextError) and str(exc) == "analysis_stale":
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="analysis_stale",
+        )
     return HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
         detail={

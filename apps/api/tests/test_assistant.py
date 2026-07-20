@@ -41,7 +41,14 @@ from app.services.assistant import (
     preflight_source_documents,
     run_openclaw_assistant,
 )
-from app.services.ai_match import MATCHER_VERSION
+from app.services.ai_match import (
+    DEFAULT_AI_MATCH_MODEL,
+    MATCHER_VERSION,
+    MATCH_PROMPT_VERSION,
+    build_job_snapshot,
+    build_job_snapshot_hash,
+    build_profile_hash,
+)
 from app.services.ai_privacy import require_current_ai_consent
 from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
 
@@ -774,7 +781,25 @@ def test_document_generation_uses_only_authoritative_server_context(
                 JobMatchRecord(
                     id="match-authoritative",
                     job_id="job-authoritative",
-                    profile_hash="profile-hash",
+                    profile_hash=build_profile_hash(
+                        ProfilePayload(name="Server Candidate", skills="Python")
+                    ),
+                    vacancy_hash=build_job_snapshot_hash(
+                        build_job_snapshot(
+                            {
+                                "id": "job-authoritative",
+                                "title": "Server Platform Engineer",
+                                "company": "Server Corp",
+                                "aiMatch": {
+                                    "applicationGuide": {
+                                        "positioning": "Untrusted stored job copy"
+                                    }
+                                },
+                            }
+                        )
+                    ),
+                    model=DEFAULT_AI_MATCH_MODEL,
+                    prompt_version=MATCH_PROMPT_VERSION,
                     matcher_version=MATCHER_VERSION,
                     cache_key="cache-key",
                     score=91,
