@@ -666,6 +666,70 @@ def test_openclaw_ai_match_reads_top_level_payloads_text() -> None:
     assert payload["matches"][0]["score"] == 83
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        lambda match: match,
+        lambda match: {"matches": match},
+        lambda match: {"match": match},
+        lambda match: [match],
+        lambda match: {"payloads": [{"text": json.dumps(match)}]},
+    ],
+)
+def test_openclaw_ai_match_normalizes_single_job_responses(response) -> None:
+    match = valid_match_result("manual-job-single")
+
+    payload = extract_openclaw_ai_match_payload(json.dumps(response(match)))
+
+    assert payload == {"matches": [match]}
+
+
+def test_openclaw_ai_match_does_not_coerce_unrelated_payloads() -> None:
+    payload = extract_openclaw_ai_match_payload(
+        json.dumps({"result": {"status": "completed", "score": 91}})
+    )
+
+    assert payload == {}
+
+
+def test_score_with_openclaw_accepts_single_match_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    match = valid_match_result("manual-job-single")
+
+    def fake_run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=json.dumps(match),
+            stderr="",
+        )
+
+    monkeypatch.setattr(ai_match_service.subprocess, "run", fake_run)
+
+    results = ai_match_service.score_with_openclaw(
+        profile_snapshot={"roles": ["Python Engineer"]},
+        jobs=[
+            build_job_snapshot(
+                {
+                    "id": "manual-job-single",
+                    "title": "Python Engineer",
+                    "company": "Acme",
+                    "overview": "Build Python services.",
+                    "requirements": ["Python"],
+                    "skills": ["Python"],
+                }
+            )
+        ],
+        command="openclaw",
+        agent_id="main",
+        thinking="low",
+        timeout_seconds=10,
+    )
+
+    assert results == [match]
+
+
 def test_seniority_normalization_handles_common_variants() -> None:
     assert infer_seniority("Sr. Machine Learning Engineer") == "senior"
     assert infer_seniority("Mid-Senior level software engineer") == "senior"

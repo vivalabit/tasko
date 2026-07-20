@@ -14,7 +14,6 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, Validation
 from app.models.profile import ProfilePayload
 from app.services.experience_evidence import build_atomic_experience_evidence
 from app.services.resume_import import (
-    extract_json_object,
     extract_json_objects,
     extract_openclaw_text_payloads,
     summarize_openclaw_error,
@@ -625,34 +624,95 @@ def build_openclaw_ai_match_prompt(
     )
 
 
-def extract_openclaw_ai_match_payload(value: str) -> dict[str, object]:
+def coerce_openclaw_ai_match_payload(value: object) -> dict[str, object] | None:
+    if isinstance(value, list):
+        if all(isinstance(item, dict) for item in value):
+            return {"matches": value}
+        return None
+
+    if not isinstance(value, dict):
+        return None
+
+    matches = value.get("matches")
+    if isinstance(matches, list):
+        return value
+    if isinstance(matches, dict):
+        return {**value, "matches": [matches]}
+
+    match = value.get("match")
+    if isinstance(match, dict):
+        return {"matches": [match]}
+
+    if all(field in value for field in ("id", "score")):
+        return {"matches": [value]}
+
+    return None
+
+
+def extract_openclaw_ai_match_text_payload(value: str) -> dict[str, object] | None:
+    stripped = value.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+        stripped = re.sub(r"\s*```$", "", stripped)
+
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        parsed = None
+
+    coerced = coerce_openclaw_ai_match_payload(parsed)
+    if coerced is not None:
+        return coerced
+
     for payload in extract_json_objects(value):
-        if isinstance(payload.get("matches"), list):
-            return payload
+        coerced = coerce_openclaw_ai_match_payload(payload)
+        if coerced is not None:
+            return coerced
+
+    return None
+
+
+def extract_openclaw_ai_match_payload(value: str) -> dict[str, object]:
+    direct_payload = extract_openclaw_ai_match_text_payload(value)
+    if direct_payload is not None:
+        return direct_payload
+
+    for payload in extract_json_objects(value):
+        coerced = coerce_openclaw_ai_match_payload(payload)
+        if coerced is not None:
+            return coerced
 
         for text in extract_openclaw_text_payloads(payload):
-            final_payload = extract_json_object(text)
-            if isinstance(final_payload.get("matches"), list):
+            final_payload = extract_openclaw_ai_match_text_payload(text)
+            if final_payload is not None:
                 return final_payload
 
         result = payload.get("result")
         if not isinstance(result, dict):
             continue
 
+        coerced = coerce_openclaw_ai_match_payload(result)
+        if coerced is not None:
+            return coerced
+
         for key in ("finalAssistantVisibleText", "finalAssistantRawText"):
             final_text = result.get(key)
             if isinstance(final_text, str):
-                final_payload = extract_json_object(final_text)
-                if isinstance(final_payload.get("matches"), list):
+                final_payload = extract_openclaw_ai_match_text_payload(final_text)
+                if final_payload is not None:
                     return final_payload
 
         nested_result = result.get("result")
         if isinstance(nested_result, dict):
+            coerced = coerce_openclaw_ai_match_payload(nested_result)
+            if coerced is not None:
+                return coerced
+
             for key in ("finalAssistantVisibleText", "finalAssistantRawText"):
                 final_text = nested_result.get(key)
                 if isinstance(final_text, str):
-                    final_payload = extract_json_object(final_text)
-                    if isinstance(final_payload.get("matches"), list):
+                    final_payload = extract_openclaw_ai_match_text_payload(final_text)
+                    if final_payload is not None:
                         return final_payload
 
     return {}
