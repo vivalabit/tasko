@@ -99,6 +99,8 @@ type AiMatchMetadata = {
       status: "verified" | "transferable" | "needs_confirmation" | "missing";
       evidence: string;
       action: string;
+      sourceIds?: string[];
+      sources?: Array<{ id: string; label: string; excerpt: string }>;
     }>;
     clarificationQuestions?: Array<{
       id: string;
@@ -469,11 +471,7 @@ const jobs: Job[] = [
     salaryAverage: "$140k",
     salaryMin: "$120k",
     salaryMax: "$160k",
-    recommendations: [
-      { text: "Add more case studies", gain: "+5% match" },
-      { text: "Highlight design system experience", gain: "+3% match" },
-      { text: "Add metrics to your portfolio", gain: "+2% match" },
-    ],
+    recommendations: [],
     companyInfo:
       "Stripe builds financial infrastructure for internet businesses, with design teams focused on developer tools, dashboards, and payment experiences.",
     reviews: [
@@ -512,11 +510,7 @@ const jobs: Job[] = [
     salaryAverage: "$150k",
     salaryMin: "$130k",
     salaryMax: "$170k",
-    recommendations: [
-      { text: "Show examples of design leadership", gain: "+4% match" },
-      { text: "Add collaboration tooling case studies", gain: "+3% match" },
-      { text: "Mention facilitation experience", gain: "+2% match" },
-    ],
+    recommendations: [],
     companyInfo:
       "Figma creates collaborative design and product development software used by teams to ideate, design, prototype, and ship together.",
     reviews: [
@@ -1663,11 +1657,7 @@ function mapParsedJobToJob(job: ParsedJob, index: number): Job {
     salaryAverage: "N/A",
     salaryMin: "N/A",
     salaryMax: "N/A",
-    recommendations: [
-      { text: "Open the original LinkedIn posting", gain: "source" },
-      { text: "Check the company and role requirements", gain: "review" },
-      { text: "Save strong matches before applying", gain: "workflow" },
-    ],
+    recommendations: [],
     companyInfo: `${company} vacancy imported from LinkedIn${job.url ? `: ${job.url}` : "."}`,
     reviews: ["This vacancy was imported automatically and has not been reviewed yet."],
     similarJobs: [],
@@ -1867,11 +1857,7 @@ function createManualJobFromDraft(draft: ManualApplicationDraft): Job {
     salaryAverage: "N/A",
     salaryMin: "N/A",
     salaryMax: "N/A",
-    recommendations: [
-      { text: "Add the original posting link", gain: "source" },
-      { text: "Schedule the next follow-up", gain: "workflow" },
-      { text: "Add interview or assessment notes", gain: "tracking" },
-    ],
+    recommendations: [],
     companyInfo: `${company} vacancy added manually${applyUrl ? `: ${applyUrl}` : "."}`,
     reviews: ["This vacancy was added manually and has not been scored yet."],
     similarJobs: [],
@@ -2032,75 +2018,25 @@ function buildAiMatchRawExplanation(job: Job) {
 }
 
 function getProfileImprovementItems(job: Job) {
-  const gaps = job.aiMatch?.gaps.filter((item) => !item.toLowerCase().includes("no major gaps")) ?? [];
-  const skills = job.skills.slice(0, 4);
-  const items = [
-    skills.length ? `Add or strengthen these vacancy keywords in your profile/CV: ${skills.join(", ")}.` : "",
-    "Attach or refresh your resume so AI matching can use stronger evidence.",
-    "Add role-specific achievements with measurable outcomes for this vacancy.",
-    ...gaps.map((gap) => `Address gap: ${gap}.`),
-  ].filter(Boolean);
-
-  return Array.from(new Set(items)).slice(0, 5);
+  const evidence = job.aiMatch?.applicationGuide?.evidenceMatrix ?? [];
+  return evidence
+    .filter((item) => ["verified", "transferable"].includes(item.status) && item.sources?.length)
+    .map((item) => `${item.action} Sources: ${item.sources?.map((source) => `${source.label} — “${source.excerpt}”`).join("; ")}.`)
+    .slice(0, 5);
 }
 
 function buildRecommendationPlan(job: Job): JobRecommendation[] {
-  const sourceUrl = getJobApplyUrl(job);
-  const skills = job.skills.slice(0, 4).join(", ");
-  const firstGap = job.aiMatch?.gaps.find((gap) => !gap.toLowerCase().includes("no major gaps"));
-  const existingRecommendations = (Array.isArray(job.recommendations) ? job.recommendations : []).map((recommendation) => ({
-    ...recommendation,
-    why: recommendation.why ?? "Already suggested by the current match analysis.",
-    impact: recommendation.impact ?? recommendation.gain,
-    action: recommendation.action ?? "Review and apply this change before applying.",
-  }));
-
-  const plan: JobRecommendation[] = [
-    {
-      text: "Open the original posting",
-      gain: "source",
-      why: sourceUrl ? "Verify the source description, apply link, and any changes that were not captured during import." : "The original source is not attached, so review the saved vacancy details carefully.",
-      impact: "Reduces stale-data risk before tailoring or applying.",
-      action: sourceUrl ? "Open source posting" : "Review saved job description",
-    },
-    {
-      text: "Check requirements against profile evidence",
-      gain: "review",
-      why: "Requirements are the strongest source for skills, seniority, and constraint matching.",
-      impact: "Finds missing proof before CV tailoring.",
-      action: "Compare requirements, responsibilities, and listed skills.",
-    },
-    {
-      text: "Update CV for this vacancy",
-      gain: "+4-8%",
-      why: firstGap ?? "A tailored CV gives the matcher more explicit role and evidence signals.",
-      impact: "Can raise role, experience, and evidence scores.",
-      action: "Move the most relevant achievements and keywords into the top half of the CV.",
-    },
-    {
-      text: "Add missing skills and keywords",
-      gain: "+2-6%",
-      why: skills ? `The vacancy emphasizes: ${skills}.` : "The matcher has limited explicit skill evidence for this vacancy.",
-      impact: "Can raise skills fit and confidence when the skills are genuinely supported.",
-      action: "Add only skills you can defend with project or work evidence.",
-    },
-    {
-      text: "Generate a targeted cover letter",
-      gain: "application",
-      why: "A short role-specific note can connect profile evidence to the employer's stated needs.",
-      impact: "Improves application quality even when match score is already high.",
-      action: "Draft a cover letter from the top reasons and the main gaps.",
-    },
-    {
-      text: job.match >= 80 ? "Save and apply" : "Save for follow-up",
-      gain: job.match >= 80 ? "workflow" : "pipeline",
-      why: job.match >= 80 ? "The current score is high enough to justify moving into the application workflow." : "The match needs review before investing application time.",
-      impact: "Keeps strong opportunities from getting lost.",
-      action: job.match >= 80 ? "Save the job, apply, then track the application." : "Save the job and improve profile evidence first.",
-    },
-  ];
-
-  return [...plan, ...existingRecommendations].slice(0, 9);
+  const evidence = job.aiMatch?.applicationGuide?.evidenceMatrix ?? [];
+  return evidence
+    .filter((item) => ["verified", "transferable"].includes(item.status) && item.sources?.length)
+    .map((item) => ({
+      text: item.action,
+      gain: item.status === "verified" ? "verified evidence" : "transferable evidence",
+      why: `${item.requirement}: ${item.evidence}`,
+      impact: `Sources: ${item.sources?.map((source) => source.label).join(", ")}`,
+      action: item.sources?.map((source) => `${source.label}: “${source.excerpt}”`).join(" · "),
+    }))
+    .slice(0, 9);
 }
 
 function isImportedJob(job: Job) {
@@ -7936,9 +7872,9 @@ function ApplicationAiInfoDialog({
           </section>
 
           <section className="mt-4 rounded-md border border-border bg-white/[0.018] p-3 2xl:p-4">
-            <h3 className="text-sm font-bold text-white 2xl:text-base">AI recommendations</h3>
+            <h3 className="text-sm font-bold text-white 2xl:text-base">Evidence-backed recommendations</h3>
             <div className="mt-2 divide-y divide-border">
-              {recommendations.map((recommendation) => (
+              {recommendations.length ? recommendations.map((recommendation) => (
                 <div key={`${recommendation.text}-${recommendation.gain}`} className="grid gap-1.5 py-2.5 text-[13px] leading-5 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1fr)_auto] sm:items-start 2xl:text-sm">
                   <div>
                     <p className="font-bold text-[#d8dee8]">{recommendation.text}</p>
@@ -7947,7 +7883,7 @@ function ApplicationAiInfoDialog({
                   <p className="text-muted">{recommendation.why}</p>
                   <p className="font-bold text-success sm:text-right">{recommendation.gain}</p>
                 </div>
-              ))}
+              )) : <p className="py-2.5 text-[13px] leading-5 text-muted 2xl:text-sm">No source-backed recommendations are available.</p>}
             </div>
           </section>
 
@@ -11338,15 +11274,15 @@ function JobMainPanel({
             </p>
           </section>
           <section>
-            <h4 className="text-[13px] font-bold 2xl:text-sm">Improve profile to raise match</h4>
-            <ul className="mt-2.5 space-y-1.5 text-[13px] leading-5 text-muted 2xl:space-y-2 2xl:text-sm">
+            <h4 className="text-[13px] font-bold 2xl:text-sm">Source-backed application advice</h4>
+            {profileImprovements.length ? <ul className="mt-2.5 space-y-1.5 text-[13px] leading-5 text-muted 2xl:space-y-2 2xl:text-sm">
               {profileImprovements.map((item) => (
                 <li key={item} className="flex gap-2">
                   <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
                   {item}
                 </li>
               ))}
-            </ul>
+            </ul> : <p className="mt-2.5 text-[13px] leading-5 text-muted 2xl:text-sm">No source-backed profile improvements are available.</p>}
           </section>
         </div>
 
@@ -11359,7 +11295,7 @@ function JobMainPanel({
             <p className="text-[12px] font-bold text-success 2xl:text-[13px]">{recommendationPlan.length} actions</p>
           </div>
           <div className="mt-3 divide-y divide-border">
-            {recommendationPlan.map((recommendation) => (
+            {recommendationPlan.length ? recommendationPlan.map((recommendation) => (
               <div key={`${recommendation.text}-${recommendation.gain}`} className="grid gap-2 py-3 text-[13px] leading-5 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_auto] md:items-start 2xl:text-sm">
                 <div>
                   <p className="font-bold text-[#d8dee8]">{recommendation.text}</p>
@@ -11371,7 +11307,7 @@ function JobMainPanel({
                   <p className="mt-1 max-w-[220px] text-[12px] font-semibold text-muted md:ml-auto">{recommendation.impact}</p>
                 </div>
               </div>
-            ))}
+            )) : <p className="py-3 text-[13px] leading-5 text-muted 2xl:text-sm">No source-backed recommendations are available. Refresh AI Match after adding profile evidence.</p>}
           </div>
         </section>
       </article>
@@ -11540,14 +11476,17 @@ function RecommendationsPanel({ job, onViewAllRecommendations }: { job: Job; onV
 
   return (
     <article className="panel p-4 2xl:p-5">
-      <h3 className="text-base font-bold 2xl:text-lg">AI Recommendations</h3>
+      <h3 className="text-base font-bold 2xl:text-lg">Evidence-backed recommendations</h3>
       <div className="mt-3 divide-y divide-border">
-        {recommendationPlan.map((recommendation) => (
+        {recommendationPlan.length ? recommendationPlan.map((recommendation) => (
           <div key={recommendation.text} className="flex items-center justify-between gap-4 py-2 text-[13px] 2xl:py-2.5 2xl:text-sm">
-            <p className="text-muted">{recommendation.text}</p>
+            <div>
+              <p className="text-muted">{recommendation.text}</p>
+              <p className="mt-1 text-[11px] font-semibold text-[#aeb8c5]">{recommendation.action}</p>
+            </div>
             <p className="shrink-0 font-bold text-success">{recommendation.gain}</p>
           </div>
-        ))}
+        )) : <p className="py-3 text-[13px] leading-5 text-muted 2xl:text-sm">No source-backed recommendations are available.</p>}
       </div>
       <button
         type="button"

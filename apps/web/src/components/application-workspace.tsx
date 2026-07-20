@@ -95,6 +95,8 @@ type ApplicationGuide = {
     status: "verified" | "transferable" | "needs_confirmation" | "missing";
     evidence: string;
     action: string;
+    sourceIds?: string[];
+    sources?: Array<{ id: string; label: string; excerpt: string }>;
   }>;
   clarificationQuestions?: Array<{
     id: string;
@@ -359,7 +361,7 @@ type SourcePreflightState = {
   error?: string;
 };
 
-type PendingAiGeneration = GeneratedDocument["type"] | "pack" | "advice" | null;
+type PendingAiGeneration = GeneratedDocument["type"] | "pack" | null;
 
 type ApplicationWorkspaceProps = {
   application: WorkspaceApplication | null;
@@ -591,6 +593,29 @@ function evidenceStatusMeta(status: NonNullable<ApplicationGuide["evidenceMatrix
   if (status === "transferable") return { label: "Transferable", className: "border-[#2f80ed]/35 bg-[#2f80ed]/10 text-[#8cc7ff]" };
   if (status === "missing") return { label: "Missing", className: "border-red-400/35 bg-red-500/10 text-red-200" };
   return { label: "Confirm", className: "border-amber-400/35 bg-amber-400/10 text-amber-200" };
+}
+
+function buildGroundedAdvice(prompt: string, guide?: ApplicationGuide) {
+  const groundedEvidence = (guide?.evidenceMatrix ?? []).filter(
+    (item) => ["verified", "transferable"].includes(item.status) && item.sources?.length,
+  );
+  if (!groundedEvidence.length) {
+    return "No source-backed advice is available. Refresh AI Match after adding evidence to your profile.";
+  }
+  const heading = prompt === "What are the biggest risks?"
+    ? "Only source-backed strengths are shown; unresolved risks require confirmation."
+    : prompt === "Help with application questions"
+      ? "Use these source-backed facts in application answers:"
+      : "Emphasize these source-backed facts:";
+  return [
+    heading,
+    ...groundedEvidence.map((item) => {
+      const sources = item.sources
+        ?.map((source) => `${source.label}: “${source.excerpt}”`)
+        .join("; ");
+      return `• ${item.requirement}: ${item.evidence}\n  Action: ${item.action}\n  Sources: ${sources}`;
+    }),
+  ].join("\n");
 }
 
 export function ApplicationWorkspace({
@@ -1234,8 +1259,7 @@ export function ApplicationWorkspace({
       setAiDisclosureAccepted(privacy.hasCurrentConsent);
       setAiRetentionDays(privacy.retentionDays);
       setPendingAiGeneration(null);
-      if (action === "advice") void requestAdvice(advicePrompt, true);
-      else if (action === "pack") void generatePack();
+      if (action === "pack") void generatePack();
       else void generateDocument(action);
     } catch (error) {
       setDocumentError(error instanceof Error ? error.message : "AI consent could not be saved");
@@ -1596,22 +1620,10 @@ export function ApplicationWorkspace({
     }
   }
 
-  async function requestAdvice(prompt: string, consentGranted = false) {
-    if (!aiDisclosureAccepted && !consentGranted) {
-      setAdvicePrompt(prompt);
-      setAiDisclosureConfirmed(false);
-      setPendingAiGeneration("advice");
-      return;
-    }
+  function requestAdvice(prompt: string) {
     setAdvicePrompt(prompt);
-    setIsLoadingAdvice(true);
-    try {
-      setAdvice((await askAssistant(prompt)).message);
-    } catch (error) {
-      setAdvice(error instanceof Error ? error.message : "Advice request failed");
-    } finally {
-      setIsLoadingAdvice(false);
-    }
+    setIsLoadingAdvice(false);
+    setAdvice(buildGroundedAdvice(prompt, applicationGuide));
   }
 
   return (
@@ -1723,7 +1735,24 @@ export function ApplicationWorkspace({
 
                   {analysisTab === "evidence" ? (
                     <div className="mt-4 overflow-hidden rounded-xl border border-white/[0.07] bg-black/15">
-                      {applicationGuide.evidenceMatrix?.length ? <div className="divide-y divide-white/[0.07]">{applicationGuide.evidenceMatrix.map((item) => { const meta = evidenceStatusMeta(item.status); return <article key={`${item.requirement}-${item.status}`} className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(150px,0.7fr)_minmax(0,1.3fr)_auto] md:items-start"><div><p className="text-xs font-bold text-white">{item.requirement}</p><p className="mt-1 text-[8px] font-black uppercase tracking-wider text-muted">{item.importance}</p></div><div><p className="text-[11px] leading-5 text-[#c7cfda]">{item.evidence || "No verified evidence found in the profile."}</p>{item.action ? <p className="mt-1 text-[10px] leading-4 text-muted"><span className="font-bold text-[#dfe4ec]">Next:</span> {item.action}</p> : null}</div><span className={cn("w-fit rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-wide", meta.className)}>{meta.label}</span></article>; })}</div> : <p className="p-6 text-center text-xs text-muted">No evidence map is available for this vacancy.</p>}
+                      {applicationGuide.evidenceMatrix?.length ? (
+                        <div className="divide-y divide-white/[0.07]">
+                          {applicationGuide.evidenceMatrix.map((item) => {
+                            const meta = evidenceStatusMeta(item.status);
+                            return (
+                              <article key={`${item.requirement}-${item.status}`} className="grid gap-3 px-4 py-4 md:grid-cols-[minmax(150px,0.7fr)_minmax(0,1.3fr)_auto] md:items-start">
+                                <div><p className="text-xs font-bold text-white">{item.requirement}</p><p className="mt-1 text-[8px] font-black uppercase tracking-wider text-muted">{item.importance}</p></div>
+                                <div>
+                                  <p className="text-[11px] leading-5 text-[#c7cfda]">{item.evidence || "No verified evidence found in the profile."}</p>
+                                  {item.action ? <p className="mt-1 text-[10px] leading-4 text-muted"><span className="font-bold text-[#dfe4ec]">Next:</span> {item.action}</p> : null}
+                                  {item.sources?.length ? <div className="mt-2 space-y-1">{item.sources.map((source) => <p key={source.id} className="rounded-md border border-success/15 bg-success/[0.035] px-2 py-1.5 text-[9px] leading-4 text-[#aeb8c5]"><span className="font-bold text-success">{source.label}:</span> “{source.excerpt}”</p>)}</div> : null}
+                                </div>
+                                <span className={cn("w-fit rounded-full border px-2 py-1 text-[8px] font-black uppercase tracking-wide", meta.className)}>{meta.label}</span>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      ) : <p className="p-6 text-center text-xs text-muted">No evidence map is available for this vacancy.</p>}
                     </div>
                   ) : null}
 

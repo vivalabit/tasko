@@ -12,6 +12,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
 
 from app.models.profile import ProfilePayload
+from app.services.experience_evidence import build_atomic_experience_evidence
 from app.services.resume_import import (
     extract_json_object,
     extract_json_objects,
@@ -20,7 +21,7 @@ from app.services.resume_import import (
 )
 
 MATCHER_VERSION = "ai-match-v3"
-MATCH_PROMPT_VERSION = "ai-match-prompt-v2"
+MATCH_PROMPT_VERSION = "ai-match-prompt-v3"
 DEFAULT_AI_MATCH_MODEL = "openai/gpt-5.6-terra"
 DEFAULT_AI_MATCH_MAX_ATTEMPTS = 2
 MAX_REASON_COUNT = 3
@@ -117,11 +118,18 @@ class AiMatchEvidence(StrictAiMatchModel):
     status: Literal["verified", "transferable", "needs_confirmation", "missing"]
     evidence: OptionalEvidenceText
     action: StrictText
+    source_ids: list[StrictText] = Field(alias="sourceIds", max_length=8)
 
     @model_validator(mode="after")
     def require_evidence_for_supported_status(self) -> "AiMatchEvidence":
         if self.status in {"verified", "transferable"} and not self.evidence:
             raise ValueError(f"evidence is required when status is {self.status}")
+        if self.status in {"verified", "transferable"} and not self.source_ids:
+            raise ValueError(f"sourceIds are required when status is {self.status}")
+        if self.status in {"needs_confirmation", "missing"} and self.source_ids:
+            raise ValueError(f"sourceIds must be empty when status is {self.status}")
+        if len(self.source_ids) != len(set(self.source_ids)):
+            raise ValueError("sourceIds must not contain duplicates")
         return self
 
 
@@ -242,6 +250,7 @@ def calculate_ai_matches(
         raise OpenClawAiMatchError("OpenClaw AI match requires a positive job batch size")
 
     profile_snapshot = candidate_snapshot or build_candidate_snapshot(profile)
+    evidence_catalog = build_ai_match_evidence_catalog(profile)
     ordered_jobs: list[dict[str, Any] | tuple[dict[str, Any], dict[str, Any], str]] = []
     now = datetime.now(UTC).isoformat()
     jobs_to_score: list[tuple[dict[str, Any], dict[str, Any], str]] = []
@@ -256,6 +265,7 @@ def calculate_ai_matches(
             job_snapshot,
             model=model,
             prompt_version=MATCH_PROMPT_VERSION,
+            evidence_sources=list(evidence_catalog.values()),
         )
         cached_match = job.get("aiMatch")
         if not force and is_cached_match_valid(cached_match, cache_key) and cached_match.get("source") == "openclaw":
@@ -283,10 +293,12 @@ def calculate_ai_matches(
                     thinking=thinking,
                     timeout_seconds=timeout_seconds,
                     model=model,
+                    evidence_sources=list(evidence_catalog.values()),
                 )
                 openclaw_results = validate_openclaw_batch(
                     openclaw_results,
                     expected_job_ids=[job["id"] for job in chunk_snapshots],
+                    evidence_catalog=evidence_catalog,
                 )
                 break
             except OpenClawAiMatchError:
@@ -310,7 +322,11 @@ def calculate_ai_matches(
         if isinstance(item, dict)
         else apply_match_result(
             item[0],
-            normalize_openclaw_result(by_id[item[1]["id"]], item[0]),
+            normalize_openclaw_result(
+                by_id[item[1]["id"]],
+                item[0],
+                evidence_catalog=evidence_catalog,
+            ),
             item[2],
             now,
             profile_hash=build_candidate_snapshot_hash(profile_snapshot),
@@ -386,6 +402,39 @@ def build_candidate_snapshot(profile: ProfilePayload) -> dict[str, Any]:
     }
 
 
+def build_ai_match_evidence_catalog(profile: ProfilePayload) -> dict[str, dict[str, str]]:
+    field_labels = {
+        "current_role": "Profile · current role",
+        "desired_role": "Profile · desired role",
+        "location": "Profile · location",
+        "work_format": "Profile · work format",
+        "headline": "Profile · headline",
+        "skills": "Profile · skills",
+        "education": "Profile · education",
+        "job_preferences": "Profile · job preferences",
+        "dealbreakers": "Profile · dealbreakers",
+        "additional_notes": "Profile · additional notes",
+    }
+    catalog = {
+        f"profile:{field}": {
+            "id": f"profile:{field}",
+            "label": label,
+            "excerpt": str(getattr(profile, field) or "").strip()[:2_000],
+        }
+        for field, label in field_labels.items()
+        if str(getattr(profile, field) or "").strip()
+    }
+    for claim in build_atomic_experience_evidence(profile.experience):
+        claim_type = str(claim.get("claimType") or "experience").replace("_", " ")
+        source_id = claim["id"]
+        catalog[source_id] = {
+            "id": source_id,
+            "label": f"Experience · {claim_type}",
+            "excerpt": claim["text"][:2_000],
+        }
+    return catalog
+
+
 def build_job_snapshot(job: dict[str, Any]) -> dict[str, Any]:
     requirements = normalize_list(job.get("requirements", []))
     responsibilities = normalize_list(job.get("responsibilities", []))
@@ -427,12 +476,17 @@ def score_with_openclaw(
     thinking: str,
     timeout_seconds: int,
     model: str = DEFAULT_AI_MATCH_MODEL,
+    evidence_sources: list[dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     if not jobs:
         return []
 
     executable = shutil.which(command) or command
-    prompt = build_openclaw_ai_match_prompt(profile_snapshot, jobs)
+    prompt = build_openclaw_ai_match_prompt(
+        profile_snapshot,
+        jobs,
+        evidence_sources=evidence_sources or [],
+    )
     try:
         result = subprocess.run(
             [
@@ -473,7 +527,12 @@ def score_with_openclaw(
     return [match.model_dump(by_alias=True) for match in validated.matches]
 
 
-def build_openclaw_ai_match_prompt(profile_snapshot: dict[str, Any], jobs: list[dict[str, Any]]) -> str:
+def build_openclaw_ai_match_prompt(
+    profile_snapshot: dict[str, Any],
+    jobs: list[dict[str, Any]],
+    *,
+    evidence_sources: list[dict[str, str]] | None = None,
+) -> str:
     compact_jobs = [
         {
             "id": job["id"],
@@ -494,7 +553,12 @@ def build_openclaw_ai_match_prompt(profile_snapshot: dict[str, Any], jobs: list[
         for job in jobs
     ]
     payload = json.dumps(
-        {"candidate": profile_snapshot, "jobs": compact_jobs, "breakdownMaxScores": WEIGHTS},
+        {
+            "candidate": profile_snapshot,
+            "candidateEvidenceSources": evidence_sources or [],
+            "jobs": compact_jobs,
+            "breakdownMaxScores": WEIGHTS,
+        },
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -525,7 +589,8 @@ def build_openclaw_ai_match_prompt(profile_snapshot: dict[str, Any], jobs: list[
         '"hardConstraints":["max 4 location, language, authorization, education or schedule constraints"],'
         '"evidenceMatrix":[{"requirement":"short requirement","importance":"required|preferred",'
         '"status":"verified|transferable|needs_confirmation|missing",'
-        '"evidence":"exact candidate evidence or empty string","action":"honest application action"}],'
+        '"evidence":"exact source excerpt or empty string","action":"honest application action",'
+        '"sourceIds":["exact candidateEvidenceSources id"]}],'
         '"clarificationQuestions":[{"id":"stable short id","requirement":"skill or requirement",'
         '"question":"specific question asking for a real example","why":"why the answer changes the application",'
         '"claimIfConfirmed":"exact claim that may be used only after confirmation","blocking":true}],'
@@ -549,6 +614,9 @@ def build_openclaw_ai_match_prompt(profile_snapshot: dict[str, Any], jobs: list[
         "cover letter. Creativity is allowed in positioning and wording, never in facts. Never suggest an "
         "unsupported claim, metric, skill, certification, title, or experience. Keywords must either be "
         "supported or explicitly marked needs_confirmation in evidenceMatrix.\n"
+        "For verified or transferable evidence, copy an exact excerpt from candidateEvidenceSources "
+        "into evidence and cite its exact id in sourceIds. Use an empty sourceIds list for "
+        "needs_confirmation and missing. Never mark evidence verified from the vacancy text alone.\n"
         "Set readiness=ready only when every evidenceMatrix item is verified or transferable and "
         "clarificationQuestions is empty. Set readiness=needs_confirmation only when unresolved "
         "evidence and at least one clarification question are both present. Set readiness=weak_fit "
@@ -590,10 +658,22 @@ def extract_openclaw_ai_match_payload(value: str) -> dict[str, object]:
     return {}
 
 
-def normalize_openclaw_result(result: dict[str, Any], current_job: dict[str, Any]) -> dict[str, Any]:
+def normalize_openclaw_result(
+    result: dict[str, Any],
+    current_job: dict[str, Any],
+    *,
+    evidence_catalog: dict[str, dict[str, str]] | None = None,
+) -> dict[str, Any]:
     fallback = current_job.get("aiMatch", {}) if isinstance(current_job.get("aiMatch"), dict) else {}
     validated = validate_openclaw_result(result, current_job)
     normalized = validated.model_dump(by_alias=True)
+    guide = normalized["applicationGuide"]
+    for item in guide["evidenceMatrix"]:
+        item["sources"] = [
+            evidence_catalog[source_id]
+            for source_id in item["sourceIds"]
+            if evidence_catalog and source_id in evidence_catalog
+        ]
     return {
         "score": normalized["score"],
         "source": "openclaw",
@@ -601,7 +681,7 @@ def normalize_openclaw_result(result: dict[str, Any], current_job: dict[str, Any
         "breakdown": normalized["breakdown"],
         "reasons": normalized["reasons"],
         "gaps": normalized["gaps"],
-        "applicationGuide": normalized["applicationGuide"],
+        "applicationGuide": guide,
         "heuristicScore": clamp_round(fallback.get("heuristicScore", current_job.get("match", 0))),
     }
 
@@ -626,6 +706,7 @@ def validate_openclaw_batch(
     results: list[dict[str, Any]],
     *,
     expected_job_ids: list[str],
+    evidence_catalog: dict[str, dict[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     if not isinstance(results, list) or any(not isinstance(result, dict) for result in results):
         raise OpenClawAiMatchError("OpenClaw returned an invalid matches array")
@@ -633,6 +714,8 @@ def validate_openclaw_batch(
         validate_openclaw_result(result, {"id": result.get("id")})
         for result in results
     ]
+    if evidence_catalog is not None:
+        validate_ai_match_evidence_sources(validated, evidence_catalog)
     result_ids = [result.id for result in validated]
     if len(result_ids) != len(set(result_ids)):
         raise OpenClawAiMatchError("OpenClaw returned duplicate match IDs")
@@ -649,6 +732,31 @@ def validate_openclaw_batch(
             + (f" ({'; '.join(details)})" if details else "")
         )
     return [result.model_dump(by_alias=True) for result in validated]
+
+
+def validate_ai_match_evidence_sources(
+    results: list[OpenClawAiMatchResult],
+    evidence_catalog: dict[str, dict[str, str]],
+) -> None:
+    for result in results:
+        for evidence in result.application_guide.evidence_matrix:
+            if evidence.status not in {"verified", "transferable"}:
+                continue
+            unknown_ids = [source_id for source_id in evidence.source_ids if source_id not in evidence_catalog]
+            if unknown_ids:
+                raise OpenClawAiMatchError(
+                    f"OpenClaw returned unknown evidence source IDs for {result.id}: "
+                    f"{', '.join(unknown_ids)}"
+                )
+            normalized_excerpt = " ".join(evidence.evidence.casefold().split())
+            source_texts = [
+                " ".join(evidence_catalog[source_id]["excerpt"].casefold().split())
+                for source_id in evidence.source_ids
+            ]
+            if not any(normalized_excerpt in source_text for source_text in source_texts):
+                raise OpenClawAiMatchError(
+                    f"OpenClaw evidence excerpt for {result.id} is not present in its cited sources"
+                )
 
 
 def invalid_openclaw_response(
@@ -754,6 +862,7 @@ def build_cache_key(
     *,
     model: str = DEFAULT_AI_MATCH_MODEL,
     prompt_version: str = MATCH_PROMPT_VERSION,
+    evidence_sources: list[dict[str, str]] | None = None,
 ) -> str:
     payload = json.dumps(
         {
@@ -761,6 +870,7 @@ def build_cache_key(
             "promptVersion": prompt_version,
             "model": model,
             "candidate": profile_snapshot,
+            "candidateEvidenceSources": evidence_sources or [],
             "job": job_snapshot,
         },
         sort_keys=True,

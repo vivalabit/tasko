@@ -80,6 +80,20 @@ describe("ApplicationWorkspace", () => {
     });
   });
 
+  it("builds quick advice only from visible verified evidence sources", async () => {
+    const fetchMock = installApplicationWorkspaceApiMock();
+    renderApplicationWorkspace(createV3WorkspaceApplication());
+
+    fireEvent.click(screen.getByRole("button", { name: "What should I emphasize?" }));
+
+    expect(await screen.findByText(/Emphasize these source-backed facts/)).toBeInTheDocument();
+    expect(screen.getByText(/Experience · achievement/)).toBeInTheDocument();
+    expect(screen.getByText(/Six years designing B2B software products/)).toBeInTheDocument();
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes("/assistant/chat")),
+    ).toBe(false);
+  });
+
   it("stops hung loaders, reports API unavailable, and retries", async () => {
     vi.useFakeTimers();
     let apiUnavailable = true;

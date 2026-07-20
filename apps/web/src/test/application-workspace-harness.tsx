@@ -127,6 +127,14 @@ export function createV3WorkspaceApplication(
               status: "verified",
               evidence: "Six years designing B2B software products.",
               action: "Lead with recent product outcomes.",
+              sourceIds: ["profile:experience:designer:achievement-product-delivery"],
+              sources: [
+                {
+                  id: "profile:experience:designer:achievement-product-delivery",
+                  label: "Experience · achievement",
+                  excerpt: "Six years designing B2B software products.",
+                },
+              ],
             },
           ],
           clarificationQuestions: [],

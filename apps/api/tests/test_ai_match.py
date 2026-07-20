@@ -51,8 +51,9 @@ def valid_application_guide() -> dict[str, object]:
                 "requirement": "Python",
                 "importance": "required",
                 "status": "verified",
-                "evidence": "Python is listed in the candidate profile.",
+                "evidence": "Python",
                 "action": "Lead with the strongest verified Python example.",
+                "sourceIds": ["profile:skills"],
             }
         ],
         "clarificationQuestions": [],
@@ -144,8 +145,9 @@ def install_openclaw_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
                                 "requirement": "Python",
                                 "importance": "required",
                                 "status": "verified",
-                                "evidence": "Python is listed in the candidate profile.",
+                                "evidence": "Python",
                                 "action": "Lead with the strongest Python project.",
+                                "sourceIds": ["profile:skills"],
                             },
                             {
                                 "requirement": "Production ML",
@@ -153,6 +155,7 @@ def install_openclaw_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
                                 "status": "needs_confirmation",
                                 "evidence": "",
                                 "action": "Confirm a concrete production deployment example.",
+                                "sourceIds": [],
                             },
                         ],
                         "clarificationQuestions": [
@@ -386,7 +389,13 @@ def test_openclaw_prompt_treats_score_as_expert_judgment() -> None:
         }
     )
 
-    prompt = build_openclaw_ai_match_prompt(profile_snapshot, [job_snapshot])
+    prompt = build_openclaw_ai_match_prompt(
+        profile_snapshot,
+        [job_snapshot],
+        evidence_sources=[
+            {"id": "profile:skills", "label": "Profile · skills", "excerpt": "Python, PyTorch"}
+        ],
+    )
 
     assert "score as your expert judgment from 0 to 100" in prompt
     assert "not an arithmetic sum of breakdown values" in prompt
@@ -395,6 +404,8 @@ def test_openclaw_prompt_treats_score_as_expert_judgment() -> None:
     assert '"language":"English|German"' in prompt
     assert '"evidenceMatrix"' in prompt
     assert '"clarificationQuestions"' in prompt
+    assert '"candidateEvidenceSources"' in prompt
+    assert '"sourceIds"' in prompt
     assert "if a data role requires Excel" in prompt
     assert "reuse directly when tailoring the candidate's CV and cover letter" in prompt
     assert '"weights"' not in prompt
@@ -447,11 +458,50 @@ def test_strict_ai_match_schema_forbids_extra_fields_and_inconsistent_ready_stat
         **evidence[0],
         "status": "missing",
         "evidence": "",
+        "sourceIds": [],
     }
     with pytest.raises(OpenClawAiMatchError, match="ready analysis cannot contain unresolved"):
         ai_match_service.validate_openclaw_result(
             inconsistent_result,
             {"id": "job-strict"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("source_ids", "excerpt", "error"),
+    [
+        (["profile:unknown"], "Python", "unknown evidence source IDs"),
+        (["profile:skills"], "Invented Kubernetes delivery", "not present in its cited sources"),
+    ],
+)
+def test_verified_ai_match_evidence_requires_real_source_excerpt(
+    source_ids: list[str],
+    excerpt: str,
+    error: str,
+) -> None:
+    result = valid_match_result()
+    guide = result["applicationGuide"]
+    assert isinstance(guide, dict)
+    evidence_matrix = guide["evidenceMatrix"]
+    assert isinstance(evidence_matrix, list)
+    assert isinstance(evidence_matrix[0], dict)
+    evidence_matrix[0] = {
+        **evidence_matrix[0],
+        "sourceIds": source_ids,
+        "evidence": excerpt,
+    }
+    validated = ai_match_service.validate_openclaw_result(result, {"id": "job-strict"})
+
+    with pytest.raises(OpenClawAiMatchError, match=error):
+        ai_match_service.validate_ai_match_evidence_sources(
+            [validated],
+            {
+                "profile:skills": {
+                    "id": "profile:skills",
+                    "label": "Profile · skills",
+                    "excerpt": "Python, FastAPI",
+                }
+            },
         )
 
 
@@ -490,7 +540,15 @@ def test_incomplete_ai_match_is_retried_and_never_synthetically_completed(
     )
 
     assert attempts == 2
-    assert matched[0]["aiMatch"]["applicationGuide"] == valid_application_guide()
+    guide = matched[0]["aiMatch"]["applicationGuide"]
+    assert guide["positioning"] == valid_application_guide()["positioning"]
+    assert guide["evidenceMatrix"][0]["sources"] == [
+        {
+            "id": "profile:skills",
+            "label": "Profile · skills",
+            "excerpt": "Python",
+        }
+    ]
 
 
 def test_openclaw_candidate_snapshot_reads_top_level_payloads_text() -> None:
