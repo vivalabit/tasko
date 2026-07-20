@@ -216,12 +216,15 @@ type TrackedApplication = {
   documents: ApplicationDocument[];
 };
 
-type ManualApplicationDraft = {
+type ManualJobDraft = {
   title: string;
   company: string;
   location: string;
   applyUrl: string;
   overview: string;
+};
+
+type ManualApplicationDraft = ManualJobDraft & {
   status: ApplicationStatus;
   documents: ApplicationDocument[];
 };
@@ -738,6 +741,14 @@ const defaultManualApplicationDraft: ManualApplicationDraft = {
   overview: "",
   status: "applied",
   documents: [],
+};
+
+const defaultManualJobDraft: ManualJobDraft = {
+  title: "",
+  company: "",
+  location: "",
+  applyUrl: "",
+  overview: "",
 };
 
 const documentCategories = [
@@ -1814,7 +1825,7 @@ function extractManualJobResponsibilities(description: string) {
     : ["Track application progress", "Keep next steps and events up to date"];
 }
 
-function analyzeManualJobDescription(draft: ManualApplicationDraft) {
+function analyzeManualJobDescription(draft: ManualJobDraft) {
   const title = draft.title.trim();
   const description = draft.overview.trim();
   const analysisText = [title, draft.company, draft.location, description].filter(Boolean).join("\n");
@@ -1831,7 +1842,7 @@ function analyzeManualJobDescription(draft: ManualApplicationDraft) {
   };
 }
 
-function createManualJobFromDraft(draft: ManualApplicationDraft): Job {
+function createManualJobFromDraft(draft: ManualJobDraft): Job {
   const title = draft.title.trim();
   const company = draft.company.trim();
   const location = draft.location.trim() || "Not specified";
@@ -1849,7 +1860,7 @@ function createManualJobFromDraft(draft: ManualApplicationDraft): Job {
     experience: analysis.experience,
     department: analysis.department,
     match: 50,
-    logo: "linkedin",
+    logo: "manual",
     overview: draft.overview.trim() || "Manually added vacancy. Add notes, events, and next steps from the application tracker.",
     responsibilities: analysis.responsibilities,
     requirements: analysis.requirements,
@@ -2045,6 +2056,10 @@ function isImportedJob(job: Job) {
 
 function isManualJob(job: Job) {
   return job.id.startsWith("manual-job-");
+}
+
+function isUserManagedJob(job: Job) {
+  return isImportedJob(job) || isManualJob(job);
 }
 
 function hasOpenclawMatch(job: Job) {
@@ -2405,6 +2420,14 @@ function keepFreshestImportedJobs(jobs: Job[]) {
     .slice(0, maxActiveImportedJobs);
 }
 
+function keepStoredUserJobs(jobs: Job[]) {
+  const freshestImportedJobIds = new Set(
+    keepFreshestImportedJobs(jobs.filter(isImportedJob)).map((job) => job.id),
+  );
+
+  return jobs.filter((job) => isManualJob(job) || freshestImportedJobIds.has(job.id));
+}
+
 function hasActiveJobFilters(filters: JobFilters) {
   return Object.values(filters).some((value) => value !== "Any");
 }
@@ -2601,6 +2624,8 @@ export default function HomePage() {
   const [jobFilters, setJobFilters] = useState<JobFilters>(defaultJobFilters);
   const [sortBy, setSortBy] = useState<JobSortBy>("AI Match");
   const [alertsEnabled, setAlertsEnabled] = useState(false);
+  const [isManualJobDialogOpen, setIsManualJobDialogOpen] = useState(false);
+  const [manualJobDraft, setManualJobDraft] = useState<ManualJobDraft>(defaultManualJobDraft);
   const [isParserDialogOpen, setIsParserDialogOpen] = useState(false);
   const [parserSearchStatus, setParserSearchStatus] = useState<ParserSearchStatus>("idle");
   const [parserSearchMessage, setParserSearchMessage] = useState("");
@@ -3003,11 +3028,11 @@ export default function HomePage() {
 
     try {
       const rawImportedJobs = window.localStorage.getItem(importedJobsStorageKey);
-      const importedJobs = keepFreshestImportedJobs(normalizeStoredJobs(rawImportedJobs ? JSON.parse(rawImportedJobs) : []));
-      if (importedJobs.length > 0) {
-        window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(importedJobs));
-        setJobList((currentJobs) => [...importedJobs, ...currentJobs.filter((job) => !isImportedJob(job))]);
-        setSelectedJobId((currentId) => currentId || importedJobs[0].id);
+      const storedUserJobs = keepStoredUserJobs(normalizeStoredJobs(rawImportedJobs ? JSON.parse(rawImportedJobs) : []));
+      if (storedUserJobs.length > 0) {
+        window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(storedUserJobs));
+        setJobList((currentJobs) => [...storedUserJobs, ...currentJobs.filter((job) => !isUserManagedJob(job))]);
+        setSelectedJobId((currentId) => currentId || storedUserJobs[0].id);
       }
     } catch {
       window.localStorage.removeItem(importedJobsStorageKey);
@@ -3023,11 +3048,9 @@ export default function HomePage() {
         if (!response.ok) return;
 
         const storedJobs = (await response.json()) as Array<{ id: string; data: unknown }>;
-        const importedJobs = keepFreshestImportedJobs(
-          normalizeStoredJobs(storedJobs.map((job) => job.data)).filter(isImportedJob),
-        );
-        setJobList((currentJobs) => [...importedJobs, ...currentJobs.filter((job) => !isImportedJob(job))]);
-        window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(importedJobs));
+        const storedUserJobs = keepStoredUserJobs(normalizeStoredJobs(storedJobs.map((job) => job.data)));
+        setJobList((currentJobs) => [...storedUserJobs, ...currentJobs.filter((job) => !isUserManagedJob(job))]);
+        window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(storedUserJobs));
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
       }
@@ -3245,6 +3268,59 @@ export default function HomePage() {
     setSelectedApplicationId(application.id);
     void analyzeApplicationWithAi(application);
     changeView("Applications");
+  }
+
+  function openManualJobDialog() {
+    setManualJobDraft(defaultManualJobDraft);
+    setIsManualJobDialogOpen(true);
+  }
+
+  function updateManualJobDraft<Field extends keyof ManualJobDraft>(
+    field: Field,
+    value: ManualJobDraft[Field],
+  ) {
+    setManualJobDraft((currentDraft) => ({ ...currentDraft, [field]: value }));
+  }
+
+  async function addManualJob() {
+    if (!manualJobDraft.title.trim() || !manualJobDraft.company.trim() || !manualJobDraft.overview.trim()) {
+      return;
+    }
+
+    const job = createManualJobFromDraft(manualJobDraft);
+    setAiMatchErrorMessage("");
+    setQuery("");
+    setJobFilters(defaultJobFilters);
+    setShowSavedJobs(false);
+    setShowArchivedJobs(false);
+    setSelectedJobId(job.id);
+    setActiveTab("AI Match");
+    setJobList((currentJobs) => {
+      const nextJobs = mergeJobs([job], currentJobs);
+      void persistUserJobs(nextJobs.filter(isUserManagedJob));
+      return nextJobs;
+    });
+    setIsManualJobDialogOpen(false);
+    setManualJobDraft(defaultManualJobDraft);
+    setForceMatchingJobId(job.id);
+    appendAppLog({
+      level: "info",
+      area: "AI Match",
+      message: `Manual vacancy added; analysis started for ${job.title} at ${job.company}`,
+    });
+
+    try {
+      const completed = await refreshAiMatch(job, true);
+      if (completed) {
+        appendAppLog({
+          level: "success",
+          area: "AI Match",
+          message: `AI analysis completed for ${job.title} at ${job.company}`,
+        });
+      }
+    } finally {
+      setForceMatchingJobId((currentId) => (currentId === job.id ? "" : currentId));
+    }
   }
 
   function updateApplicationJob(applicationId: string, job: Job) {
@@ -3532,7 +3608,7 @@ export default function HomePage() {
             }
           : item,
       );
-      void persistImportedJobs(nextJobs.filter(isImportedJob));
+      void persistUserJobs(nextJobs.filter(isUserManagedJob));
       return nextJobs;
     });
 
@@ -3563,7 +3639,7 @@ export default function HomePage() {
 
     setJobList((currentJobs) => {
       const nextJobs = currentJobs.filter((item) => item.id !== job.id);
-      void persistImportedJobs(nextJobs.filter(isImportedJob));
+      void persistUserJobs(nextJobs.filter(isUserManagedJob));
       return nextJobs;
     });
     setSelectedJobId("");
@@ -4682,19 +4758,20 @@ export default function HomePage() {
     reader.readAsDataURL(file);
   }
 
-  async function persistImportedJobs(importedJobs: Job[]) {
-    window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(importedJobs));
+  async function persistUserJobs(userJobs: Job[]) {
+    const storedUserJobs = keepStoredUserJobs(userJobs);
+    window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(storedUserJobs));
 
     try {
       await fetch(`${apiBaseUrl}/jobs`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          jobs: importedJobs.map((job) => ({ id: job.id, data: job })),
+          jobs: storedUserJobs.map((job) => ({ id: job.id, data: job })),
         }),
       });
     } catch {
-      // localStorage keeps imported jobs available even when the API is offline.
+      // localStorage keeps imported and manually added jobs available when the API is offline.
     }
   }
 
@@ -4710,7 +4787,7 @@ export default function HomePage() {
 
     setJobList((currentJobs) => {
       const nextJobs = mergeJobs(matchedJobs, currentJobs);
-      window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(nextJobs.filter(isImportedJob)));
+      window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(keepStoredUserJobs(nextJobs.filter(isUserManagedJob))));
       return nextJobs;
     });
   }
@@ -4785,7 +4862,7 @@ export default function HomePage() {
 
       setJobList((currentJobs) => {
         const nextJobs = mergeJobs(updatedJobs, currentJobs);
-        window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(nextJobs.filter(isImportedJob)));
+        window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(keepStoredUserJobs(nextJobs.filter(isUserManagedJob))));
         return nextJobs;
       });
     } catch {
@@ -4837,8 +4914,8 @@ export default function HomePage() {
       const newJobs = importedJobs.filter((job) => !existingJobIds.has(job.id));
       setJobList((currentJobs) => {
         const nextJobs = mergeJobs(importedJobs, currentJobs);
-        const nextImportedJobs = nextJobs.filter(isImportedJob);
-        void persistImportedJobs(nextImportedJobs);
+        const nextUserJobs = nextJobs.filter(isUserManagedJob);
+        void persistUserJobs(nextUserJobs);
         return nextJobs;
       });
       setSelectedJobId(importedJobs[0].id);
@@ -5113,6 +5190,13 @@ export default function HomePage() {
           </label>
 
           <div className="flex flex-wrap gap-1.5 xl:justify-end 2xl:gap-2">
+            <Button
+              className="h-9 rounded-md border border-[#ff6a14] bg-accent px-3 text-xs text-white shadow-[0_10px_24px_rgba(255,90,0,0.22)] hover:bg-[#ff6a14] 2xl:h-12 2xl:px-5 2xl:text-sm"
+              onClick={openManualJobDialog}
+            >
+              <Plus className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
+              Add vacancy
+            </Button>
             <Button
               className="h-9 rounded-md border border-[#9f7aea]/60 bg-[#7c3aed] px-3 text-xs text-white shadow-[0_12px_28px_rgba(124,58,237,0.28)] hover:bg-[#8b5cf6] 2xl:h-12 2xl:px-5 2xl:text-sm"
               onClick={() => {
@@ -5537,6 +5621,15 @@ export default function HomePage() {
             )}
           </section>
         </div>
+
+        {isManualJobDialogOpen && (
+          <ManualJobDialog
+            draft={manualJobDraft}
+            onChange={updateManualJobDraft}
+            onClose={() => setIsManualJobDialogOpen(false)}
+            onSave={() => void addManualJob()}
+          />
+        )}
 
         {isParserDialogOpen && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
@@ -6400,6 +6493,129 @@ function CalendarView({
         </div>
       ) : null}
     </section>
+  );
+}
+
+function ManualJobDialog({
+  draft,
+  onChange,
+  onClose,
+  onSave,
+}: {
+  draft: ManualJobDraft;
+  onChange: <Field extends keyof ManualJobDraft>(field: Field, value: ManualJobDraft[Field]) => void;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const canSave = Boolean(draft.title.trim() && draft.company.trim() && draft.overview.trim());
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/72 px-3 py-4 backdrop-blur-sm">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="manual-job-dialog-title"
+        className="panel flex max-h-[calc(100vh-32px)] w-full max-w-[780px] flex-col overflow-hidden border-white/[0.11] bg-[#111820]/96 p-4 shadow-[0_24px_70px_rgba(0,0,0,0.52)] 2xl:p-5"
+      >
+        <div className="flex shrink-0 items-start justify-between gap-4">
+          <div>
+            <h2 id="manual-job-dialog-title" className="text-[22px] font-bold leading-tight text-white">
+              Add vacancy
+            </h2>
+            <p className="mt-1 text-sm font-medium text-muted">
+              Paste a vacancy to save it in Jobs and analyze it against your profile.
+            </p>
+          </div>
+          <button
+            type="button"
+            aria-label="Close manual vacancy"
+            onClick={onClose}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <div className="job-scroll mt-5 grid min-h-0 flex-1 gap-4 overflow-y-auto pr-1 md:grid-cols-2">
+          <label className="grid gap-2">
+            <span className="text-xs font-bold text-[#d8dee8]">Role title *</span>
+            <input
+              autoFocus
+              value={draft.title}
+              onChange={(event) => onChange("title", event.target.value)}
+              className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              placeholder="Senior Product Designer"
+            />
+          </label>
+
+          <label className="grid gap-2">
+            <span className="text-xs font-bold text-[#d8dee8]">Company *</span>
+            <input
+              value={draft.company}
+              onChange={(event) => onChange("company", event.target.value)}
+              className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              placeholder="Company name"
+            />
+          </label>
+
+          <label className="grid gap-2">
+            <span className="text-xs font-bold text-[#d8dee8]">Location</span>
+            <input
+              value={draft.location}
+              onChange={(event) => onChange("location", event.target.value)}
+              className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              placeholder="Zurich, Remote, Europe"
+            />
+          </label>
+
+          <label className="grid gap-2">
+            <span className="text-xs font-bold text-[#d8dee8]">Job posting URL</span>
+            <input
+              type="url"
+              value={draft.applyUrl}
+              onChange={(event) => onChange("applyUrl", event.target.value)}
+              className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              placeholder="https://company.com/careers/role"
+            />
+          </label>
+
+          <label className="grid gap-2 md:col-span-2">
+            <span className="text-xs font-bold text-[#d8dee8]">Vacancy description *</span>
+            <textarea
+              value={draft.overview}
+              onChange={(event) => onChange("overview", event.target.value)}
+              className="min-h-[260px] resize-y rounded-md border border-border bg-[#0d131a] px-3 py-2 text-sm font-semibold leading-5 text-white outline-none placeholder:text-muted/70 focus:border-accent/70"
+              placeholder="Paste the full vacancy description, including responsibilities and requirements..."
+            />
+          </label>
+        </div>
+
+        <div className="mt-5 flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-xs font-semibold text-muted">
+            Role, company, and description are required. Analysis starts automatically.
+          </p>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              className="h-10 rounded-md border border-border bg-transparent px-5 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+              onClick={onClose}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-5 text-[13px] text-white"
+              disabled={!canSave}
+              onClick={onSave}
+            >
+              <Sparkles className="h-4 w-4" />
+              Add and analyze
+            </Button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
