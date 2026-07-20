@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, LargeBinary, String, Text, UniqueConstraint, event, inspect
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base, OwnerScoped
@@ -196,6 +196,12 @@ class DocumentValidationArtifactRecord(OwnerScoped, Base):
         nullable=False,
         index=True,
     )
+    generation_artifact_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("document_generation_artifacts.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     template_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     result_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -209,6 +215,67 @@ class DocumentValidationArtifactRecord(OwnerScoped, Base):
         index=True,
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class DocumentGenerationArtifactRecord(OwnerScoped, Base):
+    __tablename__ = "document_generation_artifacts"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    application_id: Mapped[str] = mapped_column(
+        String(160),
+        ForeignKey("stored_applications.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    job_id: Mapped[str] = mapped_column(String(160), nullable=False, index=True)
+    document_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    template_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("document_templates.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    template_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    input_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    generation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    input_versions: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    validation_evidence: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    result_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    generation_model: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+@event.listens_for(DocumentGenerationArtifactRecord, "before_update")
+def prevent_generation_artifact_input_mutation(
+    _mapper: Any,
+    _connection: Any,
+    artifact: DocumentGenerationArtifactRecord,
+) -> None:
+    immutable_fields = (
+        "owner_id",
+        "application_id",
+        "job_id",
+        "document_type",
+        "template_id",
+        "template_content",
+        "input_snapshot",
+        "generation_fingerprint",
+        "input_versions",
+        "validation_evidence",
+        "expires_at",
+        "created_at",
+    )
+    state = inspect(artifact)
+    if any(state.attrs[field].history.has_changes() for field in immutable_fields):
+        raise ValueError("Generation artifact input snapshot is immutable")
 
 
 class DocumentTemplateRecord(OwnerScoped, Base):
@@ -352,17 +419,17 @@ class DocumentVersionPagePayload(BaseModel):
 class DocumentCreateRequest(BaseModel):
     type: DocumentType
     title: str = Field(min_length=1, max_length=240)
-    content: str = Field(min_length=1, max_length=200_000)
+    content: str | None = Field(default=None, min_length=1, max_length=200_000)
     job_id: str | None = Field(default=None, max_length=160, alias="jobId")
     application_id: str | None = Field(default=None, max_length=160, alias="applicationId")
     template_id: str | None = Field(default=None, max_length=36, alias="templateId")
-    generation_model: str | None = Field(
+    generation_artifact_id: str | None = Field(
         default=None,
         min_length=1,
-        max_length=160,
-        alias="generationModel",
+        max_length=36,
+        alias="generationArtifactId",
     )
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class DocumentUpdateRequest(BaseModel):
@@ -371,24 +438,22 @@ class DocumentUpdateRequest(BaseModel):
     job_id: str | None = Field(default=None, max_length=160, alias="jobId")
     application_id: str | None = Field(default=None, max_length=160, alias="applicationId")
     template_id: str | None = Field(default=None, max_length=36, alias="templateId")
-    generation_model: str | None = Field(
+    generation_artifact_id: str | None = Field(
         default=None,
         min_length=1,
-        max_length=160,
-        alias="generationModel",
+        max_length=36,
+        alias="generationArtifactId",
     )
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class DocumentPackItemRequest(BaseModel):
     document_id: str | None = Field(default=None, max_length=36, alias="documentId")
     title: str = Field(min_length=1, max_length=240)
-    content: str = Field(min_length=1, max_length=200_000)
-    template_id: str = Field(min_length=1, max_length=36, alias="templateId")
-    generation_model: str = Field(
+    generation_artifact_id: str = Field(
         min_length=1,
-        max_length=160,
-        alias="generationModel",
+        max_length=36,
+        alias="generationArtifactId",
     )
     validation_artifact_id: str | None = Field(
         default=None,
@@ -396,7 +461,7 @@ class DocumentPackItemRequest(BaseModel):
         max_length=36,
         alias="validationArtifactId",
     )
-    model_config = {"populate_by_name": True}
+    model_config = {"populate_by_name": True, "extra": "forbid"}
 
 
 class DocumentPackValidationRequest(BaseModel):

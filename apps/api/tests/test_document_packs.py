@@ -3,6 +3,7 @@ import base64
 from datetime import UTC, datetime, timedelta
 from io import BytesIO
 import json
+from uuid import uuid4
 
 import pytest
 from docx import Document
@@ -18,6 +19,7 @@ from app.main import app
 from app.models.applications import StoredApplicationRecord
 from app.models.documents import (
     DocumentFileRecord,
+    DocumentGenerationArtifactRecord,
     DocumentPackJobRecord,
     DocumentRecord,
     DocumentTemplateRecord,
@@ -36,6 +38,7 @@ from app.services.ai_match import (
 )
 from app.services.document_validation import DocumentValidationError
 from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
+from app.services.generation_context import load_authoritative_generation_context
 from app.services.storage_cleanup import cleanup_expired_document_storage
 
 
@@ -174,25 +177,30 @@ def upload_pack_templates(client: TestClient) -> tuple[str, str]:
 def pack_request(
     resume_template_id: str,
     cover_template_id: str,
+    testing_session_local: sessionmaker[Session],
     *,
     persistence_mode: str = "atomic",
     include_cover: bool = True,
 ) -> dict[str, object]:
+    resume_artifact_id = create_generation_artifact(
+        testing_session_local,
+        template_id=resume_template_id,
+        document_type="tailored_resume",
+        content=json.dumps({"replacements": []}),
+    )
+    cover_artifact_id = create_generation_artifact(
+        testing_session_local,
+        template_id=cover_template_id,
+        document_type="cover_letter",
+        content="Dear Hiring Team,\n\nPython delivery at Acme in 2023.\n\nKind regards,",
+    )
     resume = {
         "title": "Tailored CV",
-        "content": json.dumps({"replacements": []}),
-        "templateId": resume_template_id,
-        "generationFingerprint": "a" * 64,
-        "generationModel": "test-model",
-        "inputVersions": {"profile": "profile-v1"},
+        "generationArtifactId": resume_artifact_id,
     }
     cover = {
         "title": "Cover letter",
-        "content": "Dear Hiring Team,\n\nPython delivery at Acme in 2023.\n\nKind regards,",
-        "templateId": cover_template_id,
-        "generationFingerprint": "b" * 64,
-        "generationModel": "test-model",
-        "inputVersions": {"profile": "profile-v1"},
+        "generationArtifactId": cover_artifact_id,
     }
     return {
         "packJobId": "pack-job-1",
@@ -203,6 +211,50 @@ def pack_request(
         "coverLetter": cover if include_cover else None,
         "partialReason": None if include_cover else "Cover generation exhausted retries",
     }
+
+
+def create_generation_artifact(
+    testing_session_local: sessionmaker[Session],
+    *,
+    template_id: str,
+    document_type: str,
+    content: str,
+) -> str:
+    artifact_id = str(uuid4())
+    with testing_session_local() as db:
+        template = db.get(DocumentTemplateRecord, template_id)
+        assert template is not None
+        context = load_authoritative_generation_context(
+            db,
+            application_id="application-pack",
+            template_id=template_id,
+            document_type=document_type,
+        )
+        provenance = context.provenance()
+        now = datetime.now(UTC)
+        db.add(
+            DocumentGenerationArtifactRecord(
+                id=artifact_id,
+                application_id="application-pack",
+                job_id="vacancy-1",
+                document_type=document_type,
+                template_id=template_id,
+                template_content=template.content,
+                input_snapshot=context.input_snapshot(prompt=f"Generate {document_type}"),
+                generation_fingerprint=provenance.generation_fingerprint,
+                input_versions=provenance.input_versions,
+                validation_evidence=context.validation_evidence(),
+                status="completed",
+                result_content=content,
+                generation_model="test-model",
+                consumed_at=None,
+                expires_at=now + timedelta(minutes=30),
+                created_at=now,
+                completed_at=now,
+            )
+        )
+        db.commit()
+    return artifact_id
 
 
 def validation_report(document_type: str) -> dict[str, object]:
@@ -233,12 +285,10 @@ def test_atomic_pack_commits_both_documents_and_retry_is_idempotent(
         return validation_report(kwargs["document_type"])
 
     monkeypatch.setattr("app.api.documents.validate_generated_document", validate)
-    request = pack_request(resume_template_id, cover_template_id)
+    request = pack_request(resume_template_id, cover_template_id, testing_session_local)
 
     created = client.post("/documents/packs", json=request)
     retry_request = json.loads(json.dumps(request))
-    retry_request["resume"]["generationFingerprint"] = "c" * 64
-    retry_request["resume"]["inputVersions"] = {"profile": "client-retry-value"}
     retried = client.post("/documents/packs", json=retry_request)
 
     with testing_session_local() as db:
@@ -249,8 +299,6 @@ def test_atomic_pack_commits_both_documents_and_retry_is_idempotent(
     assert created.status_code == 201
     assert created.json()["status"] == "completed"
     assert len(created.json()["documents"]) == 2
-    assert created.json()["documents"][0]["generationFingerprint"] != "a" * 64
-    assert created.json()["documents"][1]["generationFingerprint"] != "b" * 64
     assert all(
         document["generationFingerprint"] == document["currentGenerationFingerprint"]
         for document in created.json()["documents"]
@@ -284,7 +332,7 @@ def test_initial_document_list_paginates_relations_and_batches_freshness_context
     )
     created = client.post(
         "/documents/packs",
-        json=pack_request(resume_template_id, cover_template_id),
+        json=pack_request(resume_template_id, cover_template_id, testing_session_local),
     )
     assert created.status_code == 201
 
@@ -381,13 +429,13 @@ def test_initial_document_list_paginates_relations_and_batches_freshness_context
 
 
 def test_pack_status_can_be_recovered_after_response_loss(pack_client, monkeypatch) -> None:
-    client, _ = pack_client
+    client, testing_session_local = pack_client
     resume_template_id, cover_template_id = upload_pack_templates(client)
     monkeypatch.setattr(
         "app.api.documents.validate_generated_document",
         lambda **kwargs: validation_report(kwargs["document_type"]),
     )
-    request = pack_request(resume_template_id, cover_template_id)
+    request = pack_request(resume_template_id, cover_template_id, testing_session_local)
     created = client.post("/documents/packs", json=request)
 
     recovered = client.get(
@@ -596,7 +644,7 @@ def test_resume_preflight_validates_without_saving(pack_client, monkeypatch) -> 
         "app.api.documents.validate_generated_document",
         lambda **kwargs: validation_report(kwargs["document_type"]),
     )
-    request = pack_request(resume_template_id, cover_template_id)
+    request = pack_request(resume_template_id, cover_template_id, testing_session_local)
 
     response = client.post(
         "/documents/packs/validate-resume",
@@ -636,7 +684,7 @@ def test_pack_reuses_and_consumes_resume_validation_artifact(
         return validation_report(kwargs["document_type"])
 
     monkeypatch.setattr("app.api.documents.validate_generated_document", validate)
-    request = pack_request(resume_template_id, cover_template_id)
+    request = pack_request(resume_template_id, cover_template_id, testing_session_local)
     preflight = client.post(
         "/documents/packs/validate-resume",
         json={
@@ -663,8 +711,8 @@ def test_pack_reuses_and_consumes_resume_validation_artifact(
     reused_request = json.loads(json.dumps(request))
     reused_request["packJobId"] = "pack-job-artifact-reuse"
     reused = client.post("/documents/packs", json=reused_request)
-    assert reused.status_code == 422
-    assert "already been used" in reused.json()["detail"]["message"]
+    assert reused.status_code == 409
+    assert "already been used" in reused.json()["detail"]
 
 
 def test_validation_artifact_is_not_consumed_when_atomic_pack_rolls_back(
@@ -680,7 +728,7 @@ def test_validation_artifact_is_not_consumed_when_atomic_pack_rolls_back(
         return validation_report(kwargs["document_type"])
 
     monkeypatch.setattr("app.api.documents.validate_generated_document", validate)
-    request = pack_request(resume_template_id, cover_template_id)
+    request = pack_request(resume_template_id, cover_template_id, testing_session_local)
     preflight = client.post(
         "/documents/packs/validate-resume",
         json={"applicationId": request["applicationId"], "resume": request["resume"]},
@@ -704,11 +752,9 @@ def test_validation_artifact_is_not_consumed_when_atomic_pack_rolls_back(
     assert saved.status_code == 201
 
 
-@pytest.mark.parametrize("changed_input", ["template", "result", "evidence"])
-def test_pack_rejects_validation_artifact_hash_mismatch(
+def test_pack_validation_artifact_is_bound_to_generation_artifact(
     pack_client,
     monkeypatch,
-    changed_input: str,
 ) -> None:
     client, testing_session_local = pack_client
     resume_template_id, cover_template_id = upload_pack_templates(client)
@@ -716,45 +762,19 @@ def test_pack_rejects_validation_artifact_hash_mismatch(
         "app.api.documents.validate_generated_document",
         lambda **kwargs: validation_report(kwargs["document_type"]),
     )
-    request = pack_request(resume_template_id, cover_template_id)
+    request = pack_request(resume_template_id, cover_template_id, testing_session_local)
     preflight = client.post(
         "/documents/packs/validate-resume",
         json={"applicationId": request["applicationId"], "resume": request["resume"]},
     )
     artifact_id = preflight.json()["validationArtifactId"]
     request["resume"]["validationArtifactId"] = artifact_id
-
-    if changed_input == "result":
-        request["resume"]["content"] = json.dumps(
-            {
-                "replacements": [
-                    {
-                        "blockId": "block-0001",
-                        "spanId": "block-0001-span-0001",
-                        "original": "Original resume summary.",
-                        "replacement": "Changed result",
-                        "reason": "Hash mismatch fixture",
-                        "evidenceIds": ["source:block-0001-span-0001"],
-                    }
-                ]
-            }
-        )
-    elif changed_input == "evidence":
-        with testing_session_local() as db:
-            profile = db.get(ProfileRecord, "default")
-            assert profile is not None
-            profile.data = {**profile.data, "skills": "Python, FastAPI"}
-            db.commit()
-    else:
-        changed_template = Document()
-        changed_template.add_paragraph("Changed resume template.")
-        changed_output = BytesIO()
-        changed_template.save(changed_output)
-        with testing_session_local() as db:
-            template = db.get(DocumentTemplateRecord, resume_template_id)
-            assert template is not None
-            template.content = changed_output.getvalue()
-            db.commit()
+    request["resume"]["generationArtifactId"] = create_generation_artifact(
+        testing_session_local,
+        template_id=resume_template_id,
+        document_type="tailored_resume",
+        content=json.dumps({"replacements": []}),
+    )
 
     response = client.post("/documents/packs", json=request)
 
@@ -762,12 +782,53 @@ def test_pack_rejects_validation_artifact_hash_mismatch(
         artifact = db.get(DocumentValidationArtifactRecord, artifact_id)
         assert artifact is not None
         assert artifact.consumed_at is None
-    if changed_input == "evidence":
-        assert response.status_code == 409
-        assert response.json()["detail"] == "analysis_stale"
-    else:
-        assert response.status_code == 422
-        assert "hashes do not match" in response.json()["detail"]["message"]
+    assert response.status_code == 422
+    assert "does not match the application or template" in response.json()["detail"]["message"]
+
+
+def test_pack_uses_immutable_generation_snapshot_after_inputs_change(
+    pack_client,
+    monkeypatch,
+) -> None:
+    client, testing_session_local = pack_client
+    resume_template_id, cover_template_id = upload_pack_templates(client)
+    monkeypatch.setattr(
+        "app.api.documents.validate_generated_document",
+        lambda **kwargs: validation_report(kwargs["document_type"]),
+    )
+    request = pack_request(resume_template_id, cover_template_id, testing_session_local)
+    with testing_session_local() as db:
+        generation_artifacts = [
+            db.get(DocumentGenerationArtifactRecord, item["generationArtifactId"])
+            for item in (request["resume"], request["coverLetter"])
+        ]
+        assert all(artifact is not None for artifact in generation_artifacts)
+        expected_fingerprints = {
+            artifact.generation_fingerprint
+            for artifact in generation_artifacts
+            if artifact is not None
+        }
+    preflight = client.post(
+        "/documents/packs/validate-resume",
+        json={"applicationId": request["applicationId"], "resume": request["resume"]},
+    )
+    request["resume"]["validationArtifactId"] = preflight.json()["validationArtifactId"]
+
+    with testing_session_local() as db:
+        profile = db.get(ProfileRecord, "default")
+        template = db.get(DocumentTemplateRecord, resume_template_id)
+        assert profile is not None
+        assert template is not None
+        profile.data = {**profile.data, "skills": "Changed after generation"}
+        template.content = b"changed after generation"
+        db.commit()
+
+    response = client.post("/documents/packs", json=request)
+
+    assert response.status_code == 201
+    assert {
+        document["generationFingerprint"] for document in response.json()["documents"]
+    } == expected_fingerprints
 
 
 def test_atomic_pack_updates_both_documents_as_one_idempotent_version_batch(
@@ -780,12 +841,12 @@ def test_atomic_pack_updates_both_documents_as_one_idempotent_version_batch(
         "app.api.documents.validate_generated_document",
         lambda **kwargs: validation_report(kwargs["document_type"]),
     )
-    initial_request = pack_request(resume_template_id, cover_template_id)
+    initial_request = pack_request(resume_template_id, cover_template_id, testing_session_local)
     initial = client.post("/documents/packs", json=initial_request)
     documents_by_type = {
         document["type"]: document for document in initial.json()["documents"]
     }
-    update_request = pack_request(resume_template_id, cover_template_id)
+    update_request = pack_request(resume_template_id, cover_template_id, testing_session_local)
     update_request["packJobId"] = "pack-job-2"
     update_request["resume"]["documentId"] = documents_by_type["tailored_resume"]["id"]
     update_request["coverLetter"]["documentId"] = documents_by_type["cover_letter"]["id"]
@@ -815,19 +876,19 @@ def test_pack_rejects_document_from_another_application_or_wrong_type(
     )
     initial = client.post(
         "/documents/packs",
-        json=pack_request(resume_template_id, cover_template_id),
+        json=pack_request(resume_template_id, cover_template_id, testing_session_local),
     )
     documents_by_type = {
         document["type"]: document for document in initial.json()["documents"]
     }
 
-    foreign_request = pack_request(resume_template_id, cover_template_id)
+    foreign_request = pack_request(resume_template_id, cover_template_id, testing_session_local)
     foreign_request["packJobId"] = "foreign-pack"
     foreign_request["applicationId"] = "application-other"
     foreign_request["resume"]["documentId"] = documents_by_type["tailored_resume"]["id"]
     foreign = client.post("/documents/packs", json=foreign_request)
 
-    wrong_type_request = pack_request(resume_template_id, cover_template_id)
+    wrong_type_request = pack_request(resume_template_id, cover_template_id, testing_session_local)
     wrong_type_request["packJobId"] = "wrong-type-pack"
     wrong_type_request["resume"]["documentId"] = documents_by_type["cover_letter"]["id"]
     wrong_type = client.post("/documents/packs", json=wrong_type_request)
@@ -860,7 +921,7 @@ def test_atomic_pack_stops_after_failed_cv_validation(pack_client, monkeypatch) 
 
     response = client.post(
         "/documents/packs",
-        json=pack_request(resume_template_id, cover_template_id),
+        json=pack_request(resume_template_id, cover_template_id, testing_session_local),
     )
 
     with testing_session_local() as db:
@@ -891,7 +952,7 @@ def test_atomic_pack_rolls_back_when_cover_letter_validation_fails(
 
     response = client.post(
         "/documents/packs",
-        json=pack_request(resume_template_id, cover_template_id),
+        json=pack_request(resume_template_id, cover_template_id, testing_session_local),
     )
 
     with testing_session_local() as db:
@@ -926,7 +987,7 @@ def test_atomic_pack_rolls_back_database_mutations_when_commit_stage_fails(
 
     response = client.post(
         "/documents/packs",
-        json=pack_request(resume_template_id, cover_template_id),
+        json=pack_request(resume_template_id, cover_template_id, testing_session_local),
     )
 
     with testing_session_local() as db:
@@ -958,6 +1019,7 @@ def test_explicit_partial_pack_saves_only_validated_cv(
     request = pack_request(
         resume_template_id,
         cover_template_id,
+        testing_session_local,
         persistence_mode="partial",
         include_cover=include_cover,
     )

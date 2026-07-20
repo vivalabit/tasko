@@ -148,6 +148,32 @@ class AuthoritativeApplicationGenerationContext:
 class AuthoritativeGenerationContext(AuthoritativeApplicationGenerationContext):
     template: DocumentTemplateRecord
 
+    def input_snapshot(self, *, prompt: str) -> dict[str, Any]:
+        return canonical_value(
+            {
+                "applicationId": self.application_id,
+                "jobId": self.job_id,
+                "documentType": self.template.type,
+                "application": self.application,
+                "vacancy": self.vacancy,
+                "profile": self.profile,
+                "applicationGuide": self.application_guide,
+                "analysisRevision": self.analysis_revision,
+                "analysisFingerprint": self.analysis_fingerprint,
+                "confirmations": [asdict(confirmation) for confirmation in self.confirmations],
+                "language": self.language,
+                "sourceDocument": {
+                    "id": self.template.id,
+                    "name": self.template.name,
+                    "fileName": self.template.file_name,
+                    "contentType": self.template.content_type,
+                    "updatedAt": self.template.updated_at,
+                    "contentSha256": self.template.content_sha256,
+                },
+                "prompt": prompt,
+            }
+        )
+
     def provenance(self) -> AuthoritativeGenerationProvenance:
         source_document = {
             "id": self.template.id,

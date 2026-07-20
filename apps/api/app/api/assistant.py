@@ -5,7 +5,7 @@ import json
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal
 from uuid import uuid4
 
@@ -45,6 +45,7 @@ from app.models.assistant import (
 from app.models.conversations import ConversationRecord, MessageRecord, utc_now
 from app.models.documents import (
     DocumentAttachmentRecord,
+    DocumentGenerationArtifactRecord,
     DocumentRecord,
     DocumentVersionRecord,
 )
@@ -101,9 +102,117 @@ class AuthoritativeAssistantInputs:
     application: AssistantApplicationContext | None
     source_documents: tuple[AssistantSourceDocument, ...] = ()
     confirmations: tuple[AssistantCandidateConfirmation, ...] = ()
+    generation_context: AuthoritativeGenerationContext | None = None
 
 
 assistant_streams: dict[str, AssistantStreamState] = {}
+GENERATION_ARTIFACT_TTL = timedelta(minutes=30)
+
+
+def begin_generation_artifact(
+    db: Session,
+    *,
+    context: AuthoritativeGenerationContext,
+    prompt: str,
+    history: dict[str, object],
+    settings: Settings,
+) -> DocumentGenerationArtifactRecord:
+    provenance = context.provenance()
+    now = utc_now()
+    artifact_id = str(uuid4())
+    snapshot = context.input_snapshot(prompt=prompt)
+    snapshot["assistant"] = {
+        "model": settings.openclaw_assistant_model,
+        "thinking": settings.openclaw_assistant_thinking,
+        "agentId": settings.openclaw_assistant_agent_id,
+        "history": history,
+    }
+    snapshot_hash = hashlib.sha256(
+        json.dumps(
+            snapshot,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    input_versions = {
+        **provenance.input_versions,
+        "generationArtifact": {
+            "id": artifact_id,
+            "inputSnapshotSha256": snapshot_hash,
+            "model": settings.openclaw_assistant_model,
+        },
+    }
+    artifact = DocumentGenerationArtifactRecord(
+        id=artifact_id,
+        application_id=context.application_id,
+        job_id=context.job_id,
+        document_type=context.template.type,
+        template_id=context.template.id,
+        template_content=context.template.content,
+        input_snapshot=snapshot,
+        generation_fingerprint=provenance.generation_fingerprint,
+        input_versions=input_versions,
+        validation_evidence=context.validation_evidence(),
+        status="generating",
+        result_content=None,
+        generation_model=None,
+        consumed_at=None,
+        expires_at=now + GENERATION_ARTIFACT_TTL,
+        created_at=now,
+        completed_at=None,
+    )
+    db.add(artifact)
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Generation artifact could not be created",
+        ) from exc
+    return artifact
+
+
+def complete_generation_artifact(
+    db: Session,
+    artifact: DocumentGenerationArtifactRecord,
+    *,
+    content: str,
+    model: str,
+) -> None:
+    if not content.strip():
+        fail_generation_artifact(db, artifact)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI returned an empty generated document",
+        )
+    artifact.status = "completed"
+    artifact.result_content = content
+    artifact.generation_model = model.strip() or "unknown"
+    artifact.completed_at = utc_now()
+    try:
+        db.commit()
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Generation artifact could not be completed",
+        ) from exc
+
+
+def fail_generation_artifact(
+    db: Session,
+    artifact: DocumentGenerationArtifactRecord | None,
+) -> None:
+    if artifact is None:
+        return
+    artifact.status = "failed"
+    artifact.completed_at = utc_now()
+    try:
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
 
 
 @router.get("/config")
@@ -132,6 +241,15 @@ async def chat_with_assistant(
 
     inputs = load_authoritative_assistant_inputs(db, request)
     history = load_compact_conversation_history(db, request.thread_id, settings)
+    generation_artifact = None
+    if inputs.generation_context is not None:
+        generation_artifact = begin_generation_artifact(
+            db,
+            context=inputs.generation_context,
+            prompt=request.message,
+            history=history,
+            settings=settings,
+        )
 
     try:
         run = await run_openclaw_assistant(
@@ -156,25 +274,42 @@ async def chat_with_assistant(
         )
         message, session_id, metrics = unpack_assistant_run(run)
     except OpenClawAssistantTimeoutError as exc:
+        fail_generation_artifact(db, generation_artifact)
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail=str(exc),
         ) from exc
     except OpenClawAssistantError as exc:
+        fail_generation_artifact(db, generation_artifact)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),
         ) from exc
 
-    visible_message, actions = extract_assistant_action_previews(
-        message,
-        request_id=request.thread_id,
-        context_kind=request.context_kind,
-        context_id=request.context_id,
-        profile=inputs.profile,
-        job=inputs.job,
-        application=inputs.application,
-    )
+    try:
+        visible_message, actions = extract_assistant_action_previews(
+            message,
+            request_id=request.thread_id,
+            context_kind=request.context_kind,
+            context_id=request.context_id,
+            profile=inputs.profile,
+            job=inputs.job,
+            application=inputs.application,
+        )
+        if generation_artifact is not None:
+            complete_generation_artifact(
+                db,
+                generation_artifact,
+                content=visible_message,
+                model=str(metrics.get("model") or settings.openclaw_assistant_model),
+            )
+    except HTTPException:
+        if generation_artifact is not None and generation_artifact.status != "failed":
+            fail_generation_artifact(db, generation_artifact)
+        raise
+    except Exception:
+        fail_generation_artifact(db, generation_artifact)
+        raise
     return AssistantChatResponse(
         message=visible_message,
         metadata={
@@ -183,6 +318,11 @@ async def chat_with_assistant(
             "contextId": request.context_id,
             "providerName": settings.ai_provider_name,
             "metrics": metrics,
+            **(
+                {"generationArtifactId": generation_artifact.id}
+                if generation_artifact is not None
+                else {}
+            ),
             "actions": [action.model_dump(by_alias=True, mode="json") for action in actions],
         },
     )
@@ -200,6 +340,11 @@ async def stream_chat_with_assistant(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="The assistant is temporarily disabled. Check the server configuration.",
+        )
+    if request.generation_context is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Document generation must use the artifact-producing chat endpoint",
         )
     validate_assistant_message_length(request.message, settings)
     if request.generation_context is None:
@@ -838,9 +983,10 @@ def assistant_inputs_from_generation_context(
         profile=profile,
         job=job,
         application=application,
-        source_documents=(source_document,),
-        confirmations=confirmations,
-    )
+            source_documents=(source_document,),
+            confirmations=confirmations,
+            generation_context=context,
+        )
 
 
 def load_server_job_context(

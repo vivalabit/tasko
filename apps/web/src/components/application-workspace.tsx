@@ -284,9 +284,7 @@ type PackProgressStatus = "active" | "retrying" | "failed" | "completed" | "part
 type GeneratedDocumentDraft = {
   documentId?: string;
   title: string;
-  content: string;
-  templateId: string;
-  generationModel: string;
+  generationArtifactId: string;
   validationArtifactId?: string;
 };
 
@@ -1029,7 +1027,11 @@ export function ApplicationWorkspace({
     && coverPreflight.report?.supported === true;
   const jobUrl = activeApplication.job.applyUrl || activeApplication.job.sourceUrl || "";
   const profileReady = Boolean(profile.name && (profile.experience || profile.resume_file_name));
-  const confirmationsReady = hasCurrentAnalysis && unansweredBlockingQuestions.length === 0 && !hasOversizedConfirmation;
+  const confirmationsReady = hasCurrentAnalysis
+    && unansweredBlockingQuestions.length === 0
+    && !hasOversizedConfirmation
+    && !confirmationsDirty
+    && confirmationSyncStatus === "saved";
   const analysisRequiredLabel = isAnalysisOutdated ? "Refresh analysis first" : "AI Match required";
   const isResumeOutdated = Boolean(latestResume && isGeneratedDocumentOutdated(
     latestResume.generationFingerprint,
@@ -1087,7 +1089,7 @@ export function ApplicationWorkspace({
       documentType: GeneratedDocument["type"];
     },
   ) {
-    if (!message.trim()) return { message: "", model: "unknown" };
+    if (!message.trim()) return { message: "", generationArtifactId: "" };
     const response = await fetch(`${apiBaseUrl}/assistant/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1111,11 +1113,11 @@ export function ApplicationWorkspace({
     }
     const payload = await response.json() as {
       message?: string;
-      metadata?: { metrics?: { model?: string } };
+      metadata?: { generationArtifactId?: string };
     };
     return {
       message: payload.message?.trim() ?? "",
-      model: payload.metadata?.metrics?.model?.trim() || "unknown",
+      generationArtifactId: payload.metadata?.generationArtifactId?.trim() ?? "",
     };
   }
 
@@ -1135,6 +1137,9 @@ export function ApplicationWorkspace({
     }
     if (unansweredBlockingQuestions.length > 0) {
       throw new Error("Answer the required confirmation questions before generating documents");
+    }
+    if (confirmationsDirty || confirmationSyncStatus !== "saved") {
+      throw new Error("Wait until candidate confirmations are saved before generating documents");
     }
     const oversizedConfirmation = clarificationQuestions.find(
       (question) => (candidateConfirmations[question.id]?.exampleText.trim().length ?? 0) > confirmationAnswerMaxChars,
@@ -1161,13 +1166,14 @@ export function ApplicationWorkspace({
       ? await retryPackOperation(generate, onRetry)
       : await generate();
     if (!assistantResult.message) throw new Error("AI returned an empty document");
+    if (!assistantResult.generationArtifactId) {
+      throw new Error("AI generation did not return a server artifact");
+    }
     const existingDocument = isCoverLetter ? latestCoverLetter : latestResume;
     return {
       ...(existingDocument ? { documentId: existingDocument.id } : {}),
       title: `${isCoverLetter ? "Cover letter" : "Tailored CV"} · ${activeApplication.job.title} · ${activeApplication.job.company}`,
-      content: assistantResult.message,
-      templateId,
-      generationModel: assistantResult.model,
+      generationArtifactId: assistantResult.generationArtifactId,
     };
   }
 
@@ -1800,7 +1806,7 @@ export function ApplicationWorkspace({
                 <div className="flex flex-col gap-2 sm:items-end">
                   <div className="flex items-center gap-2 text-[9px] text-muted"><span>AI provider: <strong className="text-white">{aiConfiguration.providerName}</strong></span>{aiDisclosureAccepted ? <button type="button" onClick={revokeAiConsent} className="font-bold text-amber-200 hover:text-white">Revoke consent</button> : <span className="font-bold text-amber-200">Consent required</span>}</div>
                   <label className="flex items-center gap-2 text-[9px] font-bold text-muted"><span>On cover failure</span><select value={packPersistenceMode} disabled={isGeneratingPack} onChange={(event) => setPackPersistenceMode(event.target.value as PackPersistenceMode)} className="h-8 rounded-lg border border-white/[0.08] bg-[#151c24] px-2 text-[10px] font-bold text-white outline-none focus:border-accent/60 disabled:opacity-50"><option value="atomic">Roll back pack</option><option value="partial">Keep validated CV</option></select></label>
-                  <Button onClick={() => requestAiGeneration("pack")} disabled={isGeneratingPack || Boolean(generationType) || !documentsLoaded || !selectedResumeSourceId || !selectedCoverSourceId || !resumePreflightReady || !coverPreflightReady || !applicationReview || unansweredBlockingQuestions.length > 0 || hasOversizedConfirmation} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? packStageDefinitions.find((stage) => stage.id === packProgress?.stage)?.label ?? "Generating pack…" : "Generate both documents"}</Button>
+                  <Button onClick={() => requestAiGeneration("pack")} disabled={isGeneratingPack || Boolean(generationType) || !documentsLoaded || !selectedResumeSourceId || !selectedCoverSourceId || !resumePreflightReady || !coverPreflightReady || !applicationReview || !confirmationsReady} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? packStageDefinitions.find((stage) => stage.id === packProgress?.stage)?.label ?? "Generating pack…" : "Generate both documents"}</Button>
                 </div>
               </div>
               <div className="p-5 sm:p-6">

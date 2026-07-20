@@ -189,6 +189,84 @@ describe("ApplicationWorkspace", () => {
     });
   });
 
+  it("blocks generation until edited confirmations are saved", async () => {
+    const application = createV3WorkspaceApplication();
+    application.job.aiMatch?.applicationGuide?.clarificationQuestions?.push({
+      id: "production-research",
+      requirement: "Production research",
+      question: "Have you run research for a production product?",
+      why: "The role requires production evidence.",
+      claimIfConfirmed: "Led production product research.",
+      blocking: true,
+    });
+    const uploadedAt = "2026-07-18T10:00:00.000Z";
+    const sources = [
+      {
+        id: "resume-source",
+        category: "CV / Resume",
+        title: "Main CV",
+        language: "English",
+        file_name: "resume.docx",
+        file_size: "24 KB",
+        file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        uploaded_at: uploadedAt,
+        data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,resume",
+      },
+      {
+        id: "cover-source",
+        category: "Cover Letter",
+        title: "Main cover",
+        language: "English",
+        file_name: "cover.docx",
+        file_size: "16 KB",
+        file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        uploaded_at: uploadedAt,
+        data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cover",
+      },
+    ];
+    const templates = [
+      { id: "resume-template", type: "tailored_resume", name: `Main CV · ${uploadedAt}`, fileName: "resume.docx", createdAt: uploadedAt, updatedAt: uploadedAt },
+      { id: "cover-template", type: "cover_letter", name: `Main cover · ${uploadedAt}`, fileName: "cover.docx", createdAt: uploadedAt, updatedAt: uploadedAt },
+    ];
+    const savedConfirmation = {
+      questionId: "production-research",
+      requirement: "Production research",
+      response: "yes",
+      exampleText: "Led interviews before a production launch.",
+      blocking: true,
+      updatedAt: uploadedAt,
+    };
+    const fetchMock = installApplicationWorkspaceApiMock({
+      confirmations: [savedConfirmation],
+      confirmationPutResponse: [{
+        ...savedConfirmation,
+        exampleText: "Led interviews before two production launches.",
+      }],
+      templates,
+      aiPrivacySettings: {
+        consentVersion: "2026-07-18.v2",
+        consentedAt: uploadedAt,
+        hasCurrentConsent: true,
+      },
+    });
+    renderApplicationWorkspace(application, {
+      profile: createWorkspaceProfile({ documents: JSON.stringify(sources) }),
+    });
+
+    const generatePack = await screen.findByRole("button", { name: "Generate both documents" });
+    await waitFor(() => expect(generatePack).toBeEnabled());
+    fireEvent.change(screen.getByPlaceholderText("Add a true, concrete example"), {
+      target: { value: "Led interviews before two production launches." },
+    });
+
+    expect(generatePack).toBeDisabled();
+    fireEvent.click(generatePack);
+    expect(
+      fetchMock.mock.calls.some(([input]) => String(input).includes("/assistant/chat")),
+    ).toBe(false);
+    await waitFor(() => expect(generatePack).toBeEnabled(), { timeout: 2_000 });
+  });
+
   it("persists an incomplete required confirmation as a draft", async () => {
     const application = createV3WorkspaceApplication();
     application.job.aiMatch?.applicationGuide?.clarificationQuestions?.push({
@@ -515,7 +593,7 @@ describe("ApplicationWorkspace", () => {
             message: assistantCalls === 1
               ? JSON.stringify({ replacements: [] })
               : "Dear Hiring Team,\n\nVerified experience.\n\nKind regards,",
-            metadata: { metrics: { model: "test-model" } },
+            metadata: { generationArtifactId: `generation-artifact-${assistantCalls}` },
           });
         }
         if (url.pathname === "/documents/packs/validate-resume" && method === "POST") {
@@ -552,6 +630,10 @@ describe("ApplicationWorkspace", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/No pack documents were saved/)).not.toBeInTheDocument();
     expect(submittedResume?.validationArtifactId).toBe("artifact-1");
+    expect(submittedResume?.generationArtifactId).toBe("generation-artifact-1");
+    expect(submittedResume).not.toHaveProperty("content");
+    expect(submittedResume).not.toHaveProperty("generationModel");
+    expect(submittedResume).not.toHaveProperty("templateId");
     expect(packPostCalls).toBe(3);
     expect(props.onDocumentAttached).toHaveBeenCalledTimes(2);
   });

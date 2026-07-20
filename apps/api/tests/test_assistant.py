@@ -12,7 +12,7 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -27,7 +27,7 @@ from app.models.assistant import (
     AssistantSourceDocument,
 )
 from app.models.conversations import ConversationRecord, MessageRecord
-from app.models.documents import DocumentTemplateRecord
+from app.models.documents import DocumentGenerationArtifactRecord, DocumentTemplateRecord
 from app.models.jobs import JobMatchRecord, StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.assistant import (
@@ -855,6 +855,14 @@ def test_document_generation_uses_only_authoritative_server_context(
 
     async def fake_run_openclaw_assistant(**kwargs: object) -> tuple[str, str]:
         captured.update(kwargs)
+        with testing_session_local() as db:
+            artifact = db.scalar(select(DocumentGenerationArtifactRecord))
+            assert artifact is not None
+            assert artifact.status == "generating"
+            profile = db.get(ProfileRecord, "default")
+            assert profile is not None
+            profile.data = {**profile.data, "name": "Changed during generation"}
+            db.commit()
         return "Generated", "session-authoritative"
 
     monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
@@ -905,6 +913,26 @@ def test_document_generation_uses_only_authoritative_server_context(
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
+    generation_artifact_id = response.json()["metadata"]["generationArtifactId"]
+    with testing_session_local() as db:
+        artifact = db.get(DocumentGenerationArtifactRecord, generation_artifact_id)
+        assert artifact is not None
+        assert artifact.status == "completed"
+        assert artifact.result_content == "Generated"
+        assert artifact.generation_model == Settings().openclaw_assistant_model
+        assert artifact.input_versions["generationArtifact"]["id"] == artifact.id
+        assert len(
+            artifact.input_versions["generationArtifact"]["inputSnapshotSha256"]
+        ) == 64
+        assert artifact.input_snapshot["profile"]["name"] == "Server Candidate"
+        assert artifact.input_snapshot["confirmations"][0]["example_text"] == (
+            "Built production Python services."
+        )
+        assert "Injected" not in json.dumps(artifact.input_snapshot)
+        artifact.input_snapshot = {"profile": {"name": "Tampered"}}
+        with pytest.raises(ValueError, match="input snapshot is immutable"):
+            db.commit()
+        db.rollback()
     profile = captured["profile"]
     job = captured["job"]
     confirmations = captured["candidate_confirmations"]

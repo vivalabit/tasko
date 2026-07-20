@@ -59,10 +59,16 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
                 foreign_key["options"].get("ondelete"),
             )
             for foreign_key in artifact_foreign_keys
-        } == {
-            (("application_id",), "stored_applications", ("id",), "CASCADE"),
-            (("template_id",), "document_templates", ("id",), "CASCADE"),
-        }
+            } == {
+                (("application_id",), "stored_applications", ("id",), "CASCADE"),
+                (
+                    ("generation_artifact_id",),
+                    "document_generation_artifacts",
+                    ("id",),
+                    "CASCADE",
+                ),
+                (("template_id",), "document_templates", ("id",), "CASCADE"),
+            }
         artifact_indexes = inspect(engine).get_indexes("document_validation_artifacts")
         assert {tuple(index["column_names"]) for index in artifact_indexes} >= {
             ("expires_at",),
@@ -98,7 +104,7 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260720_0008"
+            assert revision == "20260720_0009"
     finally:
         engine.dispose()
 
@@ -233,7 +239,7 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260720_0008"
+        assert revision == "20260720_0009"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))

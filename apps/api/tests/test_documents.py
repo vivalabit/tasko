@@ -1,9 +1,10 @@
 from collections.abc import Generator
 import base64
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 import json
 import zipfile
+from uuid import uuid4
 
 from docx import Document
 from docx.oxml import OxmlElement
@@ -18,6 +19,7 @@ from app.models.applications import CandidateConfirmationRecord, StoredApplicati
 from app.models.documents import (
     DocumentAttachmentRecord,
     DocumentFileRecord,
+    DocumentGenerationArtifactRecord,
     DocumentGenerationProvenanceRecord,
     DocumentRecord,
     DocumentTemplateRecord,
@@ -36,6 +38,7 @@ from app.services.ai_match import (
     build_profile_hash,
 )
 from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
+from app.services.generation_context import load_authoritative_generation_context
 
 
 def test_template_preflight_reports_capabilities_and_rejections() -> None:
@@ -473,9 +476,10 @@ def test_document_attachment_requires_existing_application() -> None:
         app.dependency_overrides.clear()
 
     assert incomplete_provenance.status_code == 422
-    assert incomplete_provenance.json()["detail"] == (
-        "Application ID is required for generated documents"
-    )
+    assert incomplete_provenance.json()["detail"][0]["loc"] == [
+        "body",
+        "generationModel",
+    ]
     assert response.status_code == 404
     assert response.json()["detail"] == "Application not found"
 
@@ -825,23 +829,68 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
                 "dataUrl": data_url,
             },
         )
+        generation_artifact_id = str(uuid4())
+        generated_content = (
+            "Dear Hiring Team,\n\n"
+            "Built a Python service at Acme in 2023.\n\n"
+            "Kind regards,"
+        )
+        with testing_session_local() as db:
+            context = load_authoritative_generation_context(
+                db,
+                application_id="application-validated",
+                template_id=uploaded.json()["id"],
+                document_type="cover_letter",
+            )
+            provenance = context.provenance()
+            now = datetime.now(UTC)
+            db.add(
+                DocumentGenerationArtifactRecord(
+                    id=generation_artifact_id,
+                    application_id=context.application_id,
+                    job_id=context.job_id,
+                    document_type="cover_letter",
+                    template_id=context.template.id,
+                    template_content=context.template.content,
+                    input_snapshot=context.input_snapshot(prompt="Generate cover letter"),
+                    generation_fingerprint=provenance.generation_fingerprint,
+                    input_versions=provenance.input_versions,
+                    validation_evidence=context.validation_evidence(),
+                    status="completed",
+                    result_content=generated_content,
+                    generation_model="test-model",
+                    consumed_at=None,
+                    expires_at=now + timedelta(minutes=30),
+                    created_at=now,
+                    completed_at=now,
+                )
+            )
+            db.commit()
+        tampered = client.post(
+            "/documents",
+            json={
+                "type": "cover_letter",
+                "title": "Tampered letter",
+                "content": "Client-controlled generated content",
+                "generationArtifactId": generation_artifact_id,
+            },
+        )
         created = client.post(
             "/documents",
             json={
                 "type": "cover_letter",
                 "title": "Validated letter",
-                "content": (
-                    "Dear Hiring Team,\n\n"
-                    "Built a Python service at Acme in 2023.\n\n"
-                    "Kind regards,"
-                ),
                 "applicationId": "application-validated",
                 "jobId": "job-validated",
-                "templateId": uploaded.json()["id"],
-                "generationFingerprint": "f" * 64,
-                "generationModel": "test-model",
-                "inputVersions": {"profile": "profile-v1"},
-                "validationEvidence": {"profile": "Client-controlled evidence"},
+                "generationArtifactId": generation_artifact_id,
+            },
+        )
+        replayed = client.post(
+            "/documents",
+            json={
+                "type": "cover_letter",
+                "title": "Replayed letter",
+                "generationArtifactId": generation_artifact_id,
             },
         )
         listed = client.get("/documents")
@@ -885,8 +934,13 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
         app.dependency_overrides.clear()
 
     assert uploaded.status_code == 201
+    assert tampered.status_code == 422
+    assert tampered.json()["detail"] == (
+        "Generated documents accept generationArtifactId instead of client content or template"
+    )
     assert created.status_code == 201
-    assert created.json()["generationFingerprint"] != "f" * 64
+    assert replayed.status_code == 409
+    assert replayed.json()["detail"] == "Generation artifact has already been used"
     assert created.json()["generationFingerprint"] == created.json()[
         "currentGenerationFingerprint"
     ]

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.documents import (
+    DocumentGenerationArtifactRecord,
     DocumentPackJobRecord,
     DocumentValidationArtifactRecord,
     utc_now,
@@ -29,13 +30,21 @@ def cleanup_expired_document_storage(
                 DocumentValidationArtifactRecord.expires_at <= cutoff
             )
         )
+        generation_artifact_result = db.execute(
+            delete(DocumentGenerationArtifactRecord).where(
+                DocumentGenerationArtifactRecord.expires_at <= cutoff
+            )
+        )
         job_result = db.execute(
             delete(DocumentPackJobRecord).where(
                 DocumentPackJobRecord.expires_at <= cutoff
             )
         )
         db.commit()
-        return artifact_result.rowcount or 0, job_result.rowcount or 0
+        deleted_artifacts = (artifact_result.rowcount or 0) + (
+            generation_artifact_result.rowcount or 0
+        )
+        return deleted_artifacts, job_result.rowcount or 0
 
 
 async def run_expiration_cleanup(interval_seconds: int) -> None:
