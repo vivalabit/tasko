@@ -71,6 +71,7 @@ def document_bytes(document: Document) -> bytes:
     ("greeting", "closing"),
     [
         ("Sehr geehrte Damen und Herren,", "Mit freundlichen Grüßen,"),
+        ("Liebes pom+ Team,", "Freundliche Grüsse"),
         ("Bonjour Madame, Monsieur,", "Cordialement,"),
         ("Gentile Responsabile delle assunzioni,", "Cordiali saluti,"),
         ("Estimada responsable de selección,", "Saludos cordiales,"),
@@ -93,6 +94,49 @@ def test_multilingual_greetings_and_closings_protect_surrounding_paragraphs(
 
     assert [(paragraph["type"], paragraph["editable"]) for paragraph in paragraphs] == [
         ("greeting", False),
+        ("body", True),
+        ("closing", False),
+        ("signature", False),
+    ]
+
+
+def test_signature_drawing_before_closing_text_keeps_body_editable() -> None:
+    document = Document()
+    document.add_paragraph("Eduard Ishchenko")
+    document.add_paragraph("Sehr geehrter Herr Duss")
+    document.add_paragraph("Reusable body paragraph.")
+    closing = document.add_paragraph()
+    closing.add_run()._r.append(OxmlElement("w:drawing"))
+    closing.add_run("Freundliche Grüsse")
+    document.add_paragraph("Eduard Ishchenko")
+
+    paragraphs = extract_cover_letter_blocks_from_docx(document_bytes(document))
+
+    assert [(paragraph["type"], paragraph["editable"]) for paragraph in paragraphs] == [
+        ("protected", False),
+        ("greeting", False),
+        ("body", True),
+        ("closing", False),
+        ("signature", False),
+    ]
+
+
+def test_signature_drawing_without_closing_text_ends_editable_body() -> None:
+    document = Document()
+    document.add_paragraph("Motivationsschreiben Application Developer")
+    document.add_paragraph("Sehr geehrte Damen und Herren")
+    document.add_paragraph("First reusable body paragraph.")
+    document.add_paragraph("Second reusable body paragraph.")
+    signature = document.add_paragraph()
+    signature.add_run()._r.append(OxmlElement("w:drawing"))
+    document.add_paragraph("Eduard Ishchenko")
+
+    paragraphs = extract_cover_letter_blocks_from_docx(document_bytes(document))
+
+    assert [(paragraph["type"], paragraph["editable"]) for paragraph in paragraphs] == [
+        ("protected", False),
+        ("greeting", False),
+        ("body", True),
         ("body", True),
         ("closing", False),
         ("signature", False),
@@ -400,7 +444,7 @@ def test_cover_letter_renderer_updates_only_editable_spans_and_preserves_package
     assert len(body_paragraph.findall(".//" + qn("w:br"))) == 1
 
 
-def test_cover_letter_renderer_rejects_protected_or_stale_replacements() -> None:
+def test_cover_letter_renderer_uses_canonical_original_for_known_editable_span() -> None:
     template, _ = cover_letter_template()
     protected = json.dumps(
         {
@@ -439,12 +483,21 @@ def test_cover_letter_renderer_rejects_protected_or_stale_replacements() -> None
             content=protected,
             document_type="cover_letter",
         )
-    with pytest.raises(ValueError, match="original does not match template"):
-        build_document_from_template(
-            template_content=template,
-            content=stale,
-            document_type="cover_letter",
-        )
+    rendered = build_document_from_template(
+        template_content=template,
+        content=stale,
+        document_type="cover_letter",
+    )
+    diff = build_document_diff(
+        template,
+        stale,
+        "cover_letter",
+        rendered_content=rendered,
+    )
+
+    assert Document(BytesIO(rendered)).paragraphs[2].text.startswith("Targeted introduction")
+    assert diff[0]["original"] == "Original body"
+    assert diff[0]["replacement"] == "Targeted introduction"
     with pytest.raises(ValueError, match="must contain a replacements array"):
         build_document_from_template(
             template_content=template,

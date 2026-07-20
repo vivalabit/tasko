@@ -137,8 +137,6 @@ def replace_cover_letter_spans(body, content: str) -> None:
         )
         if span is None:
             raise ValueError(f"Unknown cover-letter span for {paragraph_id}: {span_id}")
-        if replacement["original"] != span.original:
-            raise ValueError(f"Cover-letter span original does not match template: {span_id}")
         replace_cover_letter_text_span(span, replacement["replacement"])
 
 

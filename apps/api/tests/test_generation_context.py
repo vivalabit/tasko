@@ -22,6 +22,7 @@ from app.services.ai_match import (
 from app.services.candidate_snapshot import get_candidate_match_snapshot
 from app.services.generation_context import (
     GenerationContextError,
+    clarification_questions,
     load_authoritative_generation_context,
 )
 from app.services.job_match_store import APPLICATION_GUIDE_STORAGE_KEY
@@ -185,6 +186,32 @@ def test_loads_complete_authoritative_generation_context() -> None:
             "achievement",
         }
         assert "profile:experience" not in evidence_by_id
+
+
+def test_cover_letter_context_questions_are_always_authoritative() -> None:
+    question_by_id = {
+        question.question_id: question
+        for question in clarification_questions(
+            {
+                "clarificationQuestions": [
+                    {
+                        "id": "cover-letter-company-contact",
+                        "requirement": "Untrusted replacement",
+                        "question": "Untrusted replacement?",
+                        "blocking": True,
+                    }
+                ]
+            }
+        )
+    }
+
+    assert question_by_id["cover-letter-personal-motivation"].blocking is False
+    assert question_by_id["cover-letter-company-contact"].blocking is False
+    assert question_by_id["cover-letter-company-contact"].requirement == (
+        "Personal contact at the hiring company"
+    )
+    assert "full name" in question_by_id["cover-letter-company-contact"].question.lower()
+    assert len(clarification_questions({})) == 2
 
 
 def test_rejects_generation_when_required_confirmation_is_missing() -> None:

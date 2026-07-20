@@ -61,6 +61,22 @@ class ClarificationQuestion:
     blocking: bool
 
 
+SYSTEM_DOCUMENT_QUESTIONS = (
+    ClarificationQuestion(
+        question_id="cover-letter-personal-motivation",
+        requirement="Personal motivation for this company and role",
+        question="What personally attracts you to this company and position?",
+        blocking=False,
+    ),
+    ClarificationQuestion(
+        question_id="cover-letter-company-contact",
+        requirement="Personal contact at the hiring company",
+        question="Do you know or have you spoken with someone who works at this company? If yes, provide their full name.",
+        blocking=False,
+    ),
+)
+
+
 @dataclass(frozen=True)
 class AuthoritativeConfirmation:
     question_id: str
@@ -419,9 +435,12 @@ def clarification_questions(
 ) -> tuple[ClarificationQuestion, ...]:
     raw_questions = application_guide.get("clarificationQuestions")
     if not isinstance(raw_questions, list):
-        return ()
+        raw_questions = []
     questions: list[ClarificationQuestion] = []
     seen_ids: set[str] = set()
+    system_question_ids = {
+        question.question_id for question in SYSTEM_DOCUMENT_QUESTIONS
+    }
     for raw_question in raw_questions:
         if not isinstance(raw_question, dict):
             continue
@@ -429,6 +448,8 @@ def clarification_questions(
         question_text = str(raw_question.get("question") or "").strip()
         requirement = str(raw_question.get("requirement") or question_text).strip()[:500]
         if not question_id or not requirement:
+            continue
+        if question_id in system_question_ids:
             continue
         if question_id in seen_ids:
             raise GenerationContextError(
@@ -443,6 +464,7 @@ def clarification_questions(
                 blocking=bool(raw_question.get("blocking")),
             )
         )
+    questions.extend(SYSTEM_DOCUMENT_QUESTIONS)
     return tuple(questions)
 
 

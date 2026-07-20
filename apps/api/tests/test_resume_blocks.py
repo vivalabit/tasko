@@ -622,7 +622,7 @@ def test_v2_spans_preserve_runs_hyperlinks_controls_and_structural_cells() -> No
     assert rendered_document.tables[0].cell(0, 0).text == "Original table achievement"
 
 
-def test_v2_rejects_protected_spans_ambiguous_formatting_and_word_fields() -> None:
+def test_v2_rejects_protected_spans_and_word_fields() -> None:
     template, _ = complex_resume_template()
     for block_id, span_id, original in (
         ("block-0002", "block-0002-span-0002", " site"),
@@ -672,16 +672,6 @@ def test_v2_rejects_protected_spans_ambiguous_formatting_and_word_fields() -> No
             document_type="tailored_resume",
         )
 
-    mixed = Document()
-    mixed.add_paragraph("SUMMARY", style="Heading 1")
-    mixed_paragraph = mixed.add_paragraph()
-    mixed_paragraph.add_run("Bold fragment").bold = True
-    mixed_paragraph.add_run(" and italic fragment").italic = True
-    mixed_output = BytesIO()
-    mixed.save(mixed_output)
-    with pytest.raises(ValueError, match="ambiguous mixed formatting"):
-        extract_resume_blocks_from_docx(mixed_output.getvalue())
-
     unsupported = Document()
     paragraph = unsupported.add_paragraph("Total ")
     field = OxmlElement("w:fldSimple")
@@ -692,3 +682,65 @@ def test_v2_rejects_protected_spans_ambiguous_formatting_and_word_fields() -> No
 
     with pytest.raises(ValueError, match=r"unsupported Word field INCLUDETEXT"):
         extract_resume_blocks_from_docx(output.getvalue())
+
+
+def test_v2_splits_visual_formatting_and_ignores_proofing_metadata() -> None:
+    template = Document()
+    template.add_paragraph("SUMMARY", style="Heading 1")
+    mixed_paragraph = template.add_paragraph()
+    mixed_paragraph.add_run("Bold fragment").bold = True
+    mixed_paragraph.add_run(" and italic fragment").italic = True
+    proofing_paragraph = template.add_paragraph()
+    english_run = proofing_paragraph.add_run("English ")
+    english_language = OxmlElement("w:lang")
+    english_language.set(qn("w:val"), "en-US")
+    english_run._r.get_or_add_rPr().append(english_language)
+    russian_run = proofing_paragraph.add_run("metadata")
+    russian_language = OxmlElement("w:lang")
+    russian_language.set(qn("w:val"), "ru-RU")
+    russian_run._r.get_or_add_rPr().append(russian_language)
+    output = BytesIO()
+    template.save(output)
+
+    source_blocks = extract_resume_blocks_from_docx(output.getvalue())
+
+    assert [span["original"] for span in source_blocks[1]["spans"]] == [
+        "Bold fragment",
+        " and italic fragment",
+    ]
+    assert all(span["editable"] for span in source_blocks[1]["spans"])
+    assert [span["original"] for span in source_blocks[2]["spans"]] == [
+        "English metadata"
+    ]
+
+    rendered = build_document_from_template(
+        template_content=output.getvalue(),
+        content=json.dumps(
+            {
+                "replacements": [
+                    {
+                        "blockId": "block-0002",
+                        "spanId": "block-0002-span-0001",
+                        "original": "Bold fragment",
+                        "replacement": "Focused heading",
+                        "reason": "Keep the emphasized lead concise",
+                        "evidenceIds": ["source:block-0002-span-0001"],
+                    },
+                    {
+                        "blockId": "block-0002",
+                        "spanId": "block-0002-span-0002",
+                        "original": " and italic fragment",
+                        "replacement": " with supporting detail",
+                        "reason": "Preserve the secondary emphasis",
+                        "evidenceIds": ["source:block-0002-span-0002"],
+                    },
+                ]
+            }
+        ),
+        document_type="tailored_resume",
+    )
+    rendered_runs = Document(BytesIO(rendered)).paragraphs[1].runs
+    assert rendered_runs[0].text == "Focused heading"
+    assert rendered_runs[0].bold is True
+    assert rendered_runs[1].text == " with supporting detail"
+    assert rendered_runs[1].italic is True

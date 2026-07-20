@@ -388,6 +388,30 @@ def test_candidate_confirmations_are_structured_validated_and_persisted() -> Non
         assert unknown_response.status_code == 422
         assert "Unknown candidate confirmation" in unknown_response.json()["detail"]
 
+        cover_context_response = client.put(
+            f"/applications/{application_id}/confirmations",
+            json={
+                "confirmations": [
+                    {
+                        "questionId": "cover-letter-personal-motivation",
+                        "response": "yes",
+                        "exampleText": "The product serves Swiss SMEs and the backend role matches my goals.",
+                    },
+                    {
+                        "questionId": "cover-letter-company-contact",
+                        "response": "yes",
+                        "exampleText": "Anna Müller",
+                    },
+                ]
+            },
+        )
+        assert cover_context_response.status_code == 200
+        cover_context_by_id = {
+            item["questionId"]: item for item in cover_context_response.json()
+        }
+        assert cover_context_by_id["cover-letter-company-contact"]["exampleText"] == "Anna Müller"
+        assert cover_context_by_id["cover-letter-company-contact"]["blocking"] is False
+
         client_metadata_response = client.put(
             f"/applications/{application_id}/confirmations",
             json={

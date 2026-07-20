@@ -33,7 +33,6 @@ from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.assistant import (
     OpenClawAssistantError,
     OpenClawAssistantTimeoutError,
-    SourceDocumentPreflightError,
     analyze_openclaw_assistant_context,
     build_openclaw_assistant_prompt,
     compact_conversation_history,
@@ -303,7 +302,7 @@ def test_assistant_prompt_reports_unsupported_resume_construction() -> None:
         )
 
 
-def test_source_docx_preflight_rejects_ambiguous_mixed_format_blocks() -> None:
+def test_source_docx_preflight_accepts_mixed_format_blocks() -> None:
     document = Document()
     document.add_paragraph("SUMMARY", style="Heading 1")
     paragraph = document.add_paragraph()
@@ -316,27 +315,23 @@ def test_source_docx_preflight_rejects_ambiguous_mixed_format_blocks() -> None:
         "base64," + base64.b64encode(output.getvalue()).decode()
     )
 
-    with pytest.raises(SourceDocumentPreflightError) as raised:
-        preflight_source_documents(
-            [
-                AssistantSourceDocument(
-                    id="mixed-cv",
-                    title="Mixed CV",
-                    category="CV / Resume",
-                    fileName="mixed.docx",
-                    dataUrl=data_url,
-                )
-            ]
-        )
+    analyses = preflight_source_documents(
+        [
+            AssistantSourceDocument(
+                id="mixed-cv",
+                title="Mixed CV",
+                category="CV / Resume",
+                fileName="mixed.docx",
+                dataUrl=data_url,
+            )
+        ]
+    )
 
-    assert raised.value.code == "unsupported_document"
-    assert raised.value.unsupported_elements == [
-        {
-            "documentId": "mixed-cv",
-            "fileName": "mixed.docx",
-            "element": "mixedFormat",
-            "description": "ambiguous mixed formatting in editable resume block (block-0002)",
-        }
+    assert analyses[0] is not None
+    assert analyses[0].structure_error == ""
+    assert [span["original"] for span in analyses[0].structured_elements()[1]["spans"]] == [
+        "Bold fragment",
+        " and italic fragment",
     ]
 
 

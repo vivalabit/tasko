@@ -58,6 +58,7 @@ GREETING_PREFIXES = (
     "hola ",
     "liebe ",
     "lieber ",
+    "liebes ",
     "madame",
     "monsieur",
     "olá ",
@@ -218,6 +219,15 @@ def parse_cover_letter_blocks(
         ),
         None,
     )
+    if greeting_index is not None and closing_index is None:
+        closing_index = next(
+            (
+                index
+                for index, (element, text) in enumerate(zip(elements, originals, strict=True))
+                if index > greeting_index and is_signature_drawing_boundary(element, text)
+            ),
+            None,
+        )
     marker_indexes = {
         index
         for index, text in enumerate(originals)
@@ -290,8 +300,23 @@ def is_greeting(text: str) -> bool:
 
 
 def is_closing(text: str) -> bool:
-    normalized = " ".join(text.strip().casefold().split())
+    normalized = normalized_marker_free_text(text)
     return any(normalized.startswith(prefix) for prefix in CLOSING_PREFIXES)
+
+
+def normalized_marker_free_text(text: str) -> str:
+    normalized = " ".join(text.strip().casefold().split())
+    for marker in ("[drawing]", "[symbol]", "[field]"):
+        while normalized.startswith(marker):
+            normalized = normalized.removeprefix(marker).lstrip()
+    return normalized
+
+
+def is_signature_drawing_boundary(paragraph: Any, text: str) -> bool:
+    return (
+        paragraph.find(".//" + qn("w:drawing")) is not None
+        and not normalized_marker_free_text(text)
+    )
 
 
 def build_spans(

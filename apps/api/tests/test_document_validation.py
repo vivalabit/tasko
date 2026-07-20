@@ -430,6 +430,44 @@ def test_referenced_validation_rejects_unknown_profile_assertion_fail_closed() -
     assert any("not supported by referenced evidence" in issue for issue in issues)
 
 
+def test_referenced_validation_accepts_translated_current_period_marker() -> None:
+    catalog = {
+        "source:period": {
+            "type": "source",
+            "text": "06/2026 – Present",
+        }
+    }
+    change = {
+        "blockId": "block-0013",
+        "spanId": "block-0013-span-0005",
+        "original": "06/2026 – Present",
+        "replacement": "06/2026 – heute",
+        "evidenceIds": ["source:period"],
+    }
+
+    assert validate_referenced_factual_changes([change], catalog) == []
+
+
+def test_referenced_validation_still_rejects_unsupported_job_title_specialization() -> None:
+    catalog = {
+        "source:title": {
+            "type": "source",
+            "text": "Web Engineer",
+        }
+    }
+    change = {
+        "blockId": "block-0015",
+        "spanId": "block-0015-span-0003",
+        "original": "Web Engineer",
+        "replacement": "Web Engineer (Python, Backend & Automatisierung)",
+        "evidenceIds": ["source:title"],
+    }
+
+    issues = validate_referenced_factual_changes([change], catalog)
+
+    assert any("not supported by referenced evidence" in issue for issue in issues)
+
+
 def test_period_does_not_authorize_a_same_number_of_clients() -> None:
     catalog = dict(
         [
@@ -686,6 +724,51 @@ def test_geometry_comparison_allows_changed_text_but_rejects_unexpected_disappea
     assert report["disappearedSourceTextCount"] == 2
     assert report["disappearedSourceTextSamples"] == ["protected", "header"]
     assert any("source text tokens disappeared unexpectedly" in issue for issue in issues)
+
+
+def test_geometry_comparison_allows_box_reflow_for_valid_text_replacements() -> None:
+    source = pdf_geometry(text="Original body Stable footer")
+    source["imageBoxes"] = [
+        {
+            "page": 1,
+            "x": 40.0,
+            "y": 100.0,
+            "width": 80.0,
+            "height": 60.0,
+            "digest": "signature-image",
+        }
+    ]
+    rendered = pdf_geometry(text="Short body Stable footer")
+    source["textBoxes"][0]["text"] = "Stable footer"
+    rendered["textBoxes"][0]["text"] = "Stable footer"
+    rendered["textBoxes"][0]["x"] = 300.0
+    rendered["imageBoxes"] = [
+        {
+            "page": 1,
+            "x": 300.0,
+            "y": 100.0,
+            "width": 80.0,
+            "height": 60.0,
+            "digest": "signature-image",
+        }
+    ]
+    rendered["linkBoxes"][0]["x"] = 300.0
+
+    report, issues = compare_rendered_geometry(
+        source,
+        rendered,
+        expected_rendered_text="Short body Stable footer",
+        allowed_removed_text="Original body",
+        source_image_digests=Counter({"signature-image": 1}),
+        rendered_image_digests=Counter({"signature-image": 1}),
+    )
+
+    assert report["expectedTextReflow"] is True
+    assert report["textGeometryChangedCount"] == 1
+    assert report["imageGeometryChangedCount"] == 1
+    assert report["linkLocationChangedCount"] == 1
+    assert not any("moved or resized" in issue for issue in issues)
+    assert not any("bounding boxes moved" in issue for issue in issues)
 
 
 def test_source_pdf_and_geometry_are_cached_by_content_hash(

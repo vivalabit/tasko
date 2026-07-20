@@ -80,6 +80,46 @@ describe("ApplicationWorkspace", () => {
     });
   });
 
+  it("saves personal motivation and a company contact as verified cover-letter context", async () => {
+    const savedPayloads: Array<{ confirmations: Array<{ questionId: string; response: string; exampleText: string }> }> = [];
+    installApplicationWorkspaceApiMock({
+      requestHandler: async (url, method, init) => {
+        if (/^\/applications\/[^/]+\/confirmations$/.test(url.pathname) && method === "PUT") {
+          const payload = JSON.parse(String(init?.body)) as { confirmations: Array<{ questionId: string; response: string; exampleText: string }> };
+          savedPayloads.push(payload);
+          return Response.json(payload.confirmations.map((confirmation) => ({
+            ...confirmation,
+            requirement: confirmation.questionId === "cover-letter-company-contact"
+              ? "Personal contact at the hiring company"
+              : "Personal motivation for this company and role",
+            blocking: false,
+            updatedAt: "2026-07-20T10:00:00.000Z",
+          })));
+        }
+        return undefined;
+      },
+    });
+    renderApplicationWorkspace(createV3WorkspaceApplication());
+
+    fireEvent.change(await screen.findByLabelText("Personal motivation for cover letter"), {
+      target: { value: "I want to build useful products for Swiss SMEs and grow in backend automation." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Yes, I know someone" }));
+    fireEvent.change(screen.getByLabelText("Employee full name"), {
+      target: { value: "Anna Müller" },
+    });
+
+    await waitFor(() => expect(savedPayloads.length).toBeGreaterThan(0), { timeout: 2_000 });
+    const savedById = Object.fromEntries(
+      savedPayloads.at(-1)!.confirmations.map((confirmation) => [confirmation.questionId, confirmation]),
+    );
+    expect(savedById["cover-letter-personal-motivation"].exampleText).toContain("Swiss SMEs");
+    expect(savedById["cover-letter-company-contact"]).toMatchObject({
+      response: "yes",
+      exampleText: "Anna Müller",
+    });
+  });
+
   it("builds quick advice only from visible verified evidence sources", async () => {
     const fetchMock = installApplicationWorkspaceApiMock();
     renderApplicationWorkspace(createV3WorkspaceApplication());
@@ -591,8 +631,8 @@ describe("ApplicationWorkspace", () => {
           assistantCalls += 1;
           return Response.json({
             message: assistantCalls === 1
-              ? JSON.stringify({ replacements: [] })
-              : "Dear Hiring Team,\n\nVerified experience.\n\nKind regards,",
+              ? JSON.stringify({ replacements: [{ blockId: "block-0001", spanId: "block-0001-span-0001", original: "Summary", replacement: "Tailored summary", reason: "Matches the role", evidenceIds: ["source:block-0001-span-0001"] }] })
+              : JSON.stringify({ replacements: [{ paragraphId: "paragraph-0002", spanId: "paragraph-0002-span-0001", original: "Reusable body", replacement: "Role-specific body", reason: "Matches the role", evidenceIds: ["source:paragraph-0002-span-0001"] }] }),
             metadata: { generationArtifactId: `generation-artifact-${assistantCalls}` },
           });
         }
@@ -636,6 +676,447 @@ describe("ApplicationWorkspace", () => {
     expect(submittedResume).not.toHaveProperty("templateId");
     expect(packPostCalls).toBe(3);
     expect(props.onDocumentAttached).toHaveBeenCalledTimes(2);
+  });
+
+  it("automatically regenerates a CV after factual validation rejects the first draft", async () => {
+    const uploadedAt = "2026-07-18T10:00:00.000Z";
+    const source = {
+      id: "resume-source",
+      title: "Main CV",
+      category: "CV / Resume",
+      language: "English",
+      file_name: "resume.docx",
+      file_size: "20 KB",
+      file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      uploaded_at: uploadedAt,
+      data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cv",
+    };
+    const templates = [
+      { id: "resume-template", type: "tailored_resume", name: `Main CV · ${uploadedAt}`, fileName: "resume.docx", createdAt: uploadedAt, updatedAt: uploadedAt },
+    ];
+    const savedDocument = {
+      id: "saved-resume",
+      type: "tailored_resume",
+      title: "Tailored CV",
+      jobId: "job-product-designer",
+      applicationIds: ["application-v3"],
+      currentVersion: 1,
+      createdAt: uploadedAt,
+      updatedAt: uploadedAt,
+      generationFingerprint: "a".repeat(64),
+      currentGenerationFingerprint: "a".repeat(64),
+      generationModel: "test-model",
+      inputVersions: {},
+      versions: [],
+    };
+    const validationMessage = "Document validation failed: block-0015-span-0003 adds a claim not supported by referenced evidence";
+    const assistantPrompts: string[] = [];
+    let assistantCalls = 0;
+    let saveCalls = 0;
+    let finalArtifactId = "";
+    installApplicationWorkspaceApiMock({
+      templates,
+      aiPrivacySettings: {
+        consentVersion: "2026-07-18.v2",
+        consentedAt: uploadedAt,
+        hasCurrentConsent: true,
+      },
+      requestHandler: async (url, method, init) => {
+        if (url.pathname === "/assistant/chat" && method === "POST") {
+          assistantCalls += 1;
+          const request = JSON.parse(String(init?.body)) as { message: string };
+          assistantPrompts.push(request.message);
+          return Response.json({
+            message: JSON.stringify({ replacements: [{ blockId: "block-0001", spanId: "block-0001-span-0001", original: "Summary", replacement: "Tailored summary", reason: "Matches the role", evidenceIds: ["source:block-0001-span-0001"] }] }),
+            metadata: { generationArtifactId: `generation-artifact-${assistantCalls}` },
+          });
+        }
+        if (url.pathname === "/documents" && method === "POST") {
+          saveCalls += 1;
+          const request = JSON.parse(String(init?.body)) as { generationArtifactId: string };
+          if (saveCalls === 1) {
+            return Response.json({ detail: validationMessage }, { status: 422 });
+          }
+          finalArtifactId = request.generationArtifactId;
+          return Response.json(savedDocument, { status: 201 });
+        }
+        return undefined;
+      },
+    });
+
+    const { props } = renderApplicationWorkspace(
+      createV3WorkspaceApplication(),
+      { profile: createWorkspaceProfile({ documents: JSON.stringify([source]) }) },
+    );
+
+    const generateResume = await screen.findByRole("button", { name: "Generate Tailored CV" });
+    await waitFor(() => expect(generateResume).toBeEnabled());
+    fireEvent.click(generateResume);
+
+    await waitFor(() => expect(props.onDocumentAttached).toHaveBeenCalledTimes(1), { timeout: 4_000 });
+    expect(assistantCalls).toBe(2);
+    expect(saveCalls).toBe(2);
+    expect(finalArtifactId).toBe("generation-artifact-2");
+    expect(assistantPrompts[1]).toContain("SAFETY CORRECTION");
+    expect(assistantPrompts[1]).toContain("block-0015-span-0003");
+    expect(assistantPrompts[1]).toContain("PREVIOUS_DRAFT_JSON");
+    expect(assistantPrompts[1]).toContain("Tailored summary");
+    expect(screen.queryByText(validationMessage)).not.toBeInTheDocument();
+  });
+
+  it("applies a document-chat instruction and saves a validated new CV version", async () => {
+    const uploadedAt = "2026-07-18T10:00:00.000Z";
+    const source = {
+      id: "resume-source",
+      title: "Main CV",
+      category: "CV / Resume",
+      language: "English",
+      file_name: "resume.docx",
+      file_size: "20 KB",
+      file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      uploaded_at: uploadedAt,
+      data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cv",
+    };
+    const assistantPrompts: string[] = [];
+    const savedDocument = {
+      id: "revised-resume",
+      type: "tailored_resume",
+      title: "Tailored CV",
+      jobId: "job-product-designer",
+      applicationIds: ["application-v3"],
+      currentVersion: 2,
+      createdAt: uploadedAt,
+      updatedAt: "2026-07-20T10:00:00.000Z",
+      generationFingerprint: "c".repeat(64),
+      currentGenerationFingerprint: "c".repeat(64),
+      generationModel: "test-model",
+      inputVersions: {},
+      versions: [],
+    };
+    installApplicationWorkspaceApiMock({
+      templates: [
+        { id: "resume-template", type: "tailored_resume", name: `Main CV · ${uploadedAt}`, fileName: "resume.docx", createdAt: uploadedAt, updatedAt: uploadedAt },
+      ],
+      aiPrivacySettings: {
+        consentVersion: "2026-07-18.v2",
+        consentedAt: uploadedAt,
+        hasCurrentConsent: true,
+      },
+      requestHandler: async (url, method, init) => {
+        if (url.pathname === "/assistant/chat" && method === "POST") {
+          const request = JSON.parse(String(init?.body)) as { message: string };
+          assistantPrompts.push(request.message);
+          return Response.json({
+            message: JSON.stringify({ replacements: [{ blockId: "block-0001", spanId: "block-0001-span-0001", original: "Summary", replacement: "Python automation summary", reason: "Requested emphasis", evidenceIds: ["source:block-0001-span-0001"] }] }),
+            metadata: { generationArtifactId: "chat-revision-artifact" },
+          });
+        }
+        if (url.pathname === "/documents" && method === "POST") {
+          return Response.json(savedDocument, { status: 201 });
+        }
+        return undefined;
+      },
+    });
+    const { props } = renderApplicationWorkspace(
+      createV3WorkspaceApplication(),
+      { profile: createWorkspaceProfile({ documents: JSON.stringify([source]) }) },
+    );
+
+    const instruction = await screen.findByLabelText("Document revision instruction");
+    fireEvent.change(instruction, { target: { value: "Emphasize my Python automation experience." } });
+    const applyInstruction = screen.getByRole("button", { name: "Apply instruction" });
+    await waitFor(() => expect(applyInstruction).toBeEnabled());
+    fireEvent.click(applyInstruction);
+
+    await waitFor(() => expect(props.onDocumentAttached).toHaveBeenCalledTimes(1));
+    expect(assistantPrompts).toHaveLength(1);
+    expect(assistantPrompts[0]).toContain("USER REVISION REQUEST");
+    expect(assistantPrompts[0]).toContain("Emphasize my Python automation experience.");
+    expect(await screen.findByText(/saved a new CV version/)).toBeInTheDocument();
+  });
+
+  it("does not save an unchanged CV when both AI drafts contain no replacements", async () => {
+    const uploadedAt = "2026-07-18T10:00:00.000Z";
+    const source = {
+      id: "resume-source",
+      title: "Main CV",
+      category: "CV / Resume",
+      language: "English",
+      file_name: "resume.docx",
+      file_size: "20 KB",
+      file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      uploaded_at: uploadedAt,
+      data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cv",
+    };
+    const assistantPrompts: string[] = [];
+    let assistantCalls = 0;
+    let saveCalls = 0;
+    installApplicationWorkspaceApiMock({
+      templates: [
+        { id: "resume-template", type: "tailored_resume", name: `Main CV · ${uploadedAt}`, fileName: "resume.docx", createdAt: uploadedAt, updatedAt: uploadedAt },
+      ],
+      aiPrivacySettings: {
+        consentVersion: "2026-07-18.v2",
+        consentedAt: uploadedAt,
+        hasCurrentConsent: true,
+      },
+      requestHandler: async (url, method, init) => {
+        if (url.pathname === "/assistant/chat" && method === "POST") {
+          assistantCalls += 1;
+          const request = JSON.parse(String(init?.body)) as { message: string };
+          assistantPrompts.push(request.message);
+          return Response.json({
+            message: JSON.stringify({ replacements: [] }),
+            metadata: { generationArtifactId: `empty-artifact-${assistantCalls}` },
+          });
+        }
+        if (url.pathname === "/documents" && method === "POST") {
+          saveCalls += 1;
+        }
+        return undefined;
+      },
+    });
+
+    const { props } = renderApplicationWorkspace(
+      createV3WorkspaceApplication(),
+      { profile: createWorkspaceProfile({ documents: JSON.stringify([source]) }) },
+    );
+
+    const generateResume = await screen.findByRole("button", { name: "Generate Tailored CV" });
+    await waitFor(() => expect(generateResume).toBeEnabled());
+    fireEvent.click(generateResume);
+
+    expect(await screen.findByText(/did not find any evidence-backed changes for the CV/)).toBeInTheDocument();
+    expect(assistantCalls).toBe(2);
+    expect(saveCalls).toBe(0);
+    expect(props.onDocumentAttached).not.toHaveBeenCalled();
+    expect(assistantPrompts[1]).toContain("zero replacements");
+    expect(assistantPrompts[1]).toContain("PREVIOUS_DRAFT_JSON");
+  });
+
+  it("repairs a rejected cover letter without saving an unchanged fallback", async () => {
+    const uploadedAt = "2026-07-18T10:00:00.000Z";
+    const source = {
+      id: "cover-source",
+      title: "Main cover",
+      category: "Cover Letter",
+      language: "English",
+      file_name: "cover.docx",
+      file_size: "16 KB",
+      file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      uploaded_at: uploadedAt,
+      data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cover",
+    };
+    const savedDocument = {
+      id: "saved-cover",
+      type: "cover_letter",
+      title: "Cover letter",
+      jobId: "job-product-designer",
+      applicationIds: ["application-v3"],
+      currentVersion: 1,
+      createdAt: uploadedAt,
+      updatedAt: uploadedAt,
+      generationFingerprint: "b".repeat(64),
+      currentGenerationFingerprint: "b".repeat(64),
+      generationModel: "test-model",
+      inputVersions: {},
+      versions: [],
+    };
+    const validationMessage = "Document validation failed: paragraph-0002-span-0001 adds a claim not supported by referenced evidence";
+    const assistantPrompts: string[] = [];
+    let assistantCalls = 0;
+    let saveCalls = 0;
+    let finalArtifactId = "";
+    installApplicationWorkspaceApiMock({
+      templates: [
+        { id: "cover-template", type: "cover_letter", name: `Main cover · ${uploadedAt}`, fileName: "cover.docx", createdAt: uploadedAt, updatedAt: uploadedAt },
+      ],
+      aiPrivacySettings: {
+        consentVersion: "2026-07-18.v2",
+        consentedAt: uploadedAt,
+        hasCurrentConsent: true,
+      },
+      requestHandler: async (url, method, init) => {
+        if (url.pathname === "/assistant/chat" && method === "POST") {
+          assistantCalls += 1;
+          const request = JSON.parse(String(init?.body)) as { message: string };
+          assistantPrompts.push(request.message);
+          const message = assistantCalls === 1
+            ? JSON.stringify({ replacements: [{ paragraphId: "paragraph-0002", spanId: "paragraph-0002-span-0001", original: "Reusable body", replacement: "Unsupported role-specific opening", reason: "Matches the role", evidenceIds: ["source:paragraph-0002-span-0001"] }] })
+            : assistantCalls === 2
+              ? JSON.stringify({ replacements: [] })
+              : JSON.stringify({ replacements: [{ paragraphId: "paragraph-0002", spanId: "paragraph-0002-span-0001", original: "Reusable body", replacement: "Evidence-backed role-specific opening", reason: "Uses verified experience", evidenceIds: ["source:paragraph-0002-span-0001"] }] });
+          return Response.json({
+            message,
+            metadata: { generationArtifactId: `cover-artifact-${assistantCalls}` },
+          });
+        }
+        if (url.pathname === "/documents" && method === "POST") {
+          saveCalls += 1;
+          const request = JSON.parse(String(init?.body)) as { generationArtifactId: string };
+          if (saveCalls === 1) {
+            return Response.json({ detail: validationMessage }, { status: 422 });
+          }
+          finalArtifactId = request.generationArtifactId;
+          return Response.json(savedDocument, { status: 201 });
+        }
+        return undefined;
+      },
+    });
+
+    const { props } = renderApplicationWorkspace(
+      createV3WorkspaceApplication(),
+      { profile: createWorkspaceProfile({ documents: JSON.stringify([source]) }) },
+    );
+
+    const generateCover = await screen.findByRole("button", { name: "Generate Cover letter" });
+    await waitFor(() => expect(generateCover).toBeEnabled());
+    fireEvent.click(generateCover);
+
+    await waitFor(() => expect(props.onDocumentAttached).toHaveBeenCalledTimes(1), { timeout: 4_000 });
+    expect(assistantCalls).toBe(3);
+    expect(saveCalls).toBe(2);
+    expect(finalArtifactId).toBe("cover-artifact-3");
+    expect(assistantPrompts[0]).toContain("why this company and position");
+    expect(assistantPrompts[0]).toContain("confirmation:cover-letter-company-contact");
+    expect(assistantPrompts[0]).toContain("Do not target a rigid number of lines");
+    expect(assistantPrompts[1]).toContain(validationMessage);
+    expect(assistantPrompts[1]).toContain("Unsupported role-specific opening");
+    expect(assistantPrompts[2]).toContain("zero replacements");
+    expect(assistantPrompts[2]).toContain("PREVIOUS_DRAFT_JSON");
+    expect(screen.queryByText(validationMessage)).not.toBeInTheDocument();
+  });
+
+  it("automatically repairs the CV before generating and saving an application pack", async () => {
+    const uploadedAt = "2026-07-18T10:00:00.000Z";
+    const sources = [
+      {
+        id: "resume-source",
+        title: "Main CV",
+        category: "CV / Resume",
+        language: "English",
+        file_name: "resume.docx",
+        file_size: "20 KB",
+        file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        uploaded_at: uploadedAt,
+        data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cv",
+      },
+      {
+        id: "cover-source",
+        title: "Main cover",
+        category: "Cover Letter",
+        language: "English",
+        file_name: "cover.docx",
+        file_size: "16 KB",
+        file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        uploaded_at: uploadedAt,
+        data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cover",
+      },
+    ];
+    const templates = [
+      { id: "resume-template", type: "tailored_resume", name: `Main CV · ${uploadedAt}`, fileName: "resume.docx", createdAt: uploadedAt, updatedAt: uploadedAt },
+      { id: "cover-template", type: "cover_letter", name: `Main cover · ${uploadedAt}`, fileName: "cover.docx", createdAt: uploadedAt, updatedAt: uploadedAt },
+    ];
+    const savedDocuments = [
+      {
+        id: "saved-resume",
+        type: "tailored_resume",
+        title: "Tailored CV",
+        jobId: "job-product-designer",
+        applicationIds: ["application-v3"],
+        currentVersion: 1,
+        createdAt: uploadedAt,
+        updatedAt: uploadedAt,
+        generationFingerprint: "a".repeat(64),
+        currentGenerationFingerprint: "a".repeat(64),
+        generationModel: "test-model",
+        inputVersions: {},
+        versions: [],
+      },
+      {
+        id: "saved-cover",
+        type: "cover_letter",
+        title: "Cover letter",
+        jobId: "job-product-designer",
+        applicationIds: ["application-v3"],
+        currentVersion: 1,
+        createdAt: uploadedAt,
+        updatedAt: uploadedAt,
+        generationFingerprint: "b".repeat(64),
+        currentGenerationFingerprint: "b".repeat(64),
+        generationModel: "test-model",
+        inputVersions: {},
+        versions: [],
+      },
+    ];
+    const validationMessage = "Document validation failed: block-0015-span-0003 adds a claim not supported by referenced evidence";
+    const assistantPrompts: string[] = [];
+    let assistantCalls = 0;
+    let validationCalls = 0;
+    let submittedResumeArtifactId = "";
+    installApplicationWorkspaceApiMock({
+      templates,
+      aiPrivacySettings: {
+        consentVersion: "2026-07-18.v2",
+        consentedAt: uploadedAt,
+        hasCurrentConsent: true,
+      },
+      requestHandler: async (url, method, init) => {
+        if (url.pathname === "/assistant/chat" && method === "POST") {
+          assistantCalls += 1;
+          const request = JSON.parse(String(init?.body)) as { message: string };
+          assistantPrompts.push(request.message);
+          return Response.json({
+            message: assistantCalls <= 2
+              ? JSON.stringify({ replacements: [{ blockId: "block-0001", spanId: "block-0001-span-0001", original: "Summary", replacement: "Tailored summary", reason: "Matches the role", evidenceIds: ["source:block-0001-span-0001"] }] })
+              : JSON.stringify({ replacements: [{ paragraphId: "paragraph-0002", spanId: "paragraph-0002-span-0001", original: "Reusable body", replacement: "Role-specific body", reason: "Matches the role", evidenceIds: ["source:paragraph-0002-span-0001"] }] }),
+            metadata: { generationArtifactId: `generation-artifact-${assistantCalls}` },
+          });
+        }
+        if (url.pathname === "/documents/packs/validate-resume" && method === "POST") {
+          validationCalls += 1;
+          if (validationCalls === 1) {
+            return Response.json({ detail: validationMessage }, { status: 422 });
+          }
+          return Response.json({
+            status: "passed",
+            validation: {},
+            validationArtifactId: "validation-artifact-2",
+            expiresAt: "2026-07-18T10:30:00.000Z",
+          });
+        }
+        if (url.pathname === "/documents/packs" && method === "POST") {
+          const request = JSON.parse(String(init?.body)) as { resume: { generationArtifactId: string } };
+          submittedResumeArtifactId = request.resume.generationArtifactId;
+          return Response.json({
+            packJobId: "application-pack-repaired",
+            status: "completed",
+            persistenceMode: "atomic",
+            documents: savedDocuments,
+            stages: [],
+            message: "Application pack saved atomically",
+          });
+        }
+        return undefined;
+      },
+    });
+
+    const { props } = renderApplicationWorkspace(
+      createV3WorkspaceApplication(),
+      { profile: createWorkspaceProfile({ documents: JSON.stringify(sources) }) },
+    );
+
+    const generatePack = await screen.findByRole("button", { name: "Generate both documents" });
+    await waitFor(() => expect(generatePack).toBeEnabled());
+    fireEvent.click(generatePack);
+
+    await waitFor(() => expect(props.onDocumentAttached).toHaveBeenCalledTimes(2), { timeout: 4_000 });
+    expect(assistantCalls).toBe(3);
+    expect(validationCalls).toBe(2);
+    expect(assistantPrompts[1]).toContain("SAFETY CORRECTION");
+    expect(assistantPrompts[1]).toContain("block-0015-span-0003");
+    expect(submittedResumeArtifactId).toBe("generation-artifact-2");
+    expect(screen.queryByText(validationMessage)).not.toBeInTheDocument();
   });
 
   it("reports template capabilities and AI context truncation before generation", async () => {

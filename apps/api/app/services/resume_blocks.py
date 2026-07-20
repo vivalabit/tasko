@@ -1,4 +1,5 @@
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -100,6 +101,10 @@ UNSUPPORTED_CONTENT_CONTROL_PROPERTIES = {
     "repeatingSection": "repeating-section content controls",
 }
 XML_SPACE = "{http://www.w3.org/XML/1998/namespace}space"
+NON_VISUAL_RUN_PROPERTIES = {
+    qn("w:lang"),
+    qn("w:noProof"),
+}
 
 
 class UnsupportedResumeStructureError(ValueError):
@@ -398,24 +403,16 @@ def build_resume_spans(
             cursor += 1
             continue
 
+        signature = token.formatting_signature
         end = cursor + 1
         while (
             end < len(tokens)
             and tokens[end].hyperlink is None
             and tokens[end].token_type == "text"
+            and tokens[end].formatting_signature == signature
         ):
             end += 1
         group = tokens[cursor:end]
-        signatures = {
-            item.formatting_signature
-            for item in group
-            if item.original
-        }
-        if block_editable and len(signatures) > 1:
-            raise UnsupportedResumeStructureError(
-                "Unsupported DOCX construction: ambiguous mixed formatting in "
-                f"editable resume block ({block_id})"
-            )
         original = "".join(item.original for item in group)
         append_resume_span(
             spans,
@@ -455,7 +452,15 @@ def append_resume_span(
 def run_formatting_signature(text_node: Any) -> bytes:
     run = nearest_ancestor(text_node, qn("w:r"))
     properties = run.find(qn("w:rPr")) if run is not None else None
-    return etree.tostring(properties) if properties is not None else b""
+    if properties is None:
+        return b""
+    visual_properties = deepcopy(properties)
+    for property_element in list(visual_properties):
+        if property_element.tag in NON_VISUAL_RUN_PROPERTIES:
+            visual_properties.remove(property_element)
+    if len(visual_properties) == 0 and not visual_properties.attrib:
+        return b""
+    return etree.tostring(visual_properties)
 
 
 def replace_resume_text_span(span: ResumeSpan, replacement: str) -> None:

@@ -114,6 +114,7 @@ STOP_WORDS = {
     "about",
     "across",
     "and",
+    "bis",
     "for",
     "from",
     "für",
@@ -365,20 +366,33 @@ def build_document_diff(
             paragraph["paragraphId"]: paragraph
             for paragraph in extract_cover_letter_blocks_from_docx(template_content)
         }
-        return [
-            {
-                "blockId": replacement["paragraphId"],
-                "paragraphId": replacement["paragraphId"],
-                "spanId": replacement["spanId"],
-                "type": paragraphs.get(replacement["paragraphId"], {}).get("type", "paragraph"),
-                "original": replacement["original"],
-                "replacement": replacement["replacement"],
-                "reason": replacement["reason"],
-                "evidenceIds": replacement["evidenceIds"],
-            }
-            for replacement in parse_cover_letter_replacements(generated_content)
-            if replacement["replacement"] != replacement["original"]
-        ]
+        diff: list[dict[str, Any]] = []
+        for replacement in parse_cover_letter_replacements(generated_content):
+            paragraph = paragraphs.get(replacement["paragraphId"], {})
+            source_span = next(
+                (
+                    span
+                    for span in paragraph.get("spans", [])
+                    if span.get("spanId") == replacement["spanId"]
+                ),
+                {},
+            )
+            canonical_original = str(source_span.get("original") or replacement["original"])
+            if replacement["replacement"] == canonical_original:
+                continue
+            diff.append(
+                {
+                    "blockId": replacement["paragraphId"],
+                    "paragraphId": replacement["paragraphId"],
+                    "spanId": replacement["spanId"],
+                    "type": paragraph.get("type", "paragraph"),
+                    "original": canonical_original,
+                    "replacement": replacement["replacement"],
+                    "reason": replacement["reason"],
+                    "evidenceIds": replacement["evidenceIds"],
+                }
+            )
+        return diff
 
     original_paragraphs = extract_docx_paragraphs(template_content)
     if rendered_content is not None:
@@ -1371,6 +1385,7 @@ def compare_rendered_geometry(
     rendered_image_digests: Counter[str],
 ) -> tuple[dict[str, Any], list[str]]:
     issues: list[str] = []
+    expected_text_reflow = bool(allowed_removed_text and allowed_removed_text.strip())
     source_pages = int(source["pageCount"])
     rendered_pages = int(rendered["pageCount"])
     page_count_changed = source_pages != rendered_pages
@@ -1409,7 +1424,7 @@ def compare_rendered_geometry(
         rendered.get("textBoxes", []),
         key="text",
     )
-    if text_geometry_changed:
+    if text_geometry_changed and not expected_text_reflow:
         issues.append(
             f"{text_geometry_changed} unchanged text boxes moved or resized significantly"
         )
@@ -1451,7 +1466,7 @@ def compare_rendered_geometry(
         rendered.get("imageBoxes", []),
         key="digest",
     )
-    if image_geometry_changed:
+    if image_geometry_changed and not expected_text_reflow:
         issues.append(
             f"{image_geometry_changed} image boxes moved or resized significantly"
         )
@@ -1484,7 +1499,7 @@ def compare_rendered_geometry(
         rendered.get("linkBoxes", []),
         key="target",
     )
-    if link_location_changed:
+    if link_location_changed and not expected_text_reflow:
         issues.append(
             f"{link_location_changed} hyperlink bounding boxes moved significantly"
         )
@@ -1494,6 +1509,7 @@ def compare_rendered_geometry(
             "sourcePageCount": source_pages,
             "renderedPageCount": rendered_pages,
             "pageCountChanged": page_count_changed,
+            "expectedTextReflow": expected_text_reflow,
             "sourceTextBoxCount": len(source.get("textBoxes", [])),
             "renderedTextBoxCount": len(rendered.get("textBoxes", [])),
             "missingTextCount": missing_text_count,
@@ -1867,7 +1883,9 @@ def significant_tokens(text: str) -> set[str]:
 def semantic_tokens(text: str) -> set[str]:
     tokens: set[str] = set()
     for token in significant_tokens(text):
-        if len(token) > 5 and token.endswith("ing"):
+        if CURRENT_PERIOD_PATTERN.fullmatch(token):
+            token = "current-period"
+        elif len(token) > 5 and token.endswith("ing"):
             token = token[:-3]
         elif len(token) > 4 and token.endswith("ed"):
             token = token[:-2]
