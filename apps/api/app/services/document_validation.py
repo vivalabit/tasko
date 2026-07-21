@@ -457,7 +457,7 @@ def build_authoritative_evidence_catalog(
         text = item.get("text")
         if (
             isinstance(evidence_id, str)
-            and evidence_type in {"profile", "confirmation"}
+            and evidence_type in {"profile", "confirmation", "vacancy", "generation"}
             and isinstance(text, str)
             and text.strip()
             and evidence_id.startswith(f"{evidence_type}:")

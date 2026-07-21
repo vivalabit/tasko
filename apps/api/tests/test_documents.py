@@ -675,7 +675,7 @@ def test_resume_template_rewrites_blocks_without_rebuilding_design() -> None:
     assert rendered.tables[0].cell(0, 1).text == "Original achievement"
 
 
-def test_generated_template_document_exposes_validation_and_diff(monkeypatch) -> None:
+def test_generated_cover_letter_skips_blocking_validation(monkeypatch) -> None:
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -688,31 +688,13 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
         with testing_session_local() as db:
             yield db
 
-    expected_diff = [{
-        "blockId": "paragraph-change-0001",
-        "type": "paragraph",
-        "original": "Original body.",
-        "replacement": "Built a Python service at Acme in 2023.",
-        "reason": "Generated cover-letter paragraph update",
-    }]
+    def reject_validation(**_kwargs):
+        raise AssertionError("Cover letters must not invoke blocking document validation")
 
-    captured_evidence = {}
-
-    def fake_validation(**kwargs):
-        captured_evidence.update(kwargs["evidence"])
-        return {
-            "factual": {"status": "passed", "checkedChanges": 1},
-            "visual": {
-                "status": "passed",
-                "sourcePageCount": 1,
-                "renderedPageCount": 1,
-                "linksPreserved": True,
-                "tableOverflow": False,
-            },
-            "diff": expected_diff,
-        }
-
-    monkeypatch.setattr("app.api.documents.validate_generated_document", fake_validation)
+    monkeypatch.setattr(
+        "app.api.documents.validate_generated_document",
+        reject_validation,
+    )
 
     with testing_session_local() as db:
         db.add_all(
@@ -950,10 +932,10 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
     assert created.json()["inputVersions"]["sourceDocument"]["id"] == uploaded.json()["id"]
     assert created.json()["inputVersions"]["profile"] != "profile-v1"
     assert created.json()["versions"][0]["hasRenderedDocx"] is True
-    assert created.json()["versions"][0]["factualValidation"]["status"] == "passed"
-    assert created.json()["versions"][0]["visualValidation"]["renderedPageCount"] == 1
-    assert created.json()["versions"][0]["diff"] == expected_diff
-    assert listed.json()[0]["versions"][0]["diff"] == expected_diff
+    assert created.json()["versions"][0]["factualValidation"] == {}
+    assert created.json()["versions"][0]["visualValidation"] == {}
+    assert created.json()["versions"][0]["diff"] == []
+    assert listed.json()[0]["versions"][0]["diff"] == []
     assert refreshed.status_code == 200
     assert refreshed.json()[0]["generationFingerprint"] == created.json()[
         "generationFingerprint"
@@ -969,37 +951,9 @@ def test_generated_template_document_exposes_validation_and_diff(monkeypatch) ->
     assert manually_updated.json()["currentVersion"] == 2
     assert manually_updated.json()["generationFingerprint"] is None
     assert manually_updated.json()["currentGenerationFingerprint"] is None
-    assert manually_updated.json()["versions"][0]["factualValidation"]["status"] == "passed"
+    assert manually_updated.json()["versions"][0]["factualValidation"] == {}
     assert manually_updated.json()["versions"][1]["factualValidation"] == {}
     assert manually_updated.json()["versions"][1]["visualValidation"] == {}
-    assert validation_count == 1
+    assert validation_count == 0
     assert current_provenance_count == 0
     assert version_provenance_count == 1
-    assert captured_evidence["language"] == "German"
-    assert captured_evidence["profile"]["experience"].startswith("Built a Python service")
-    assert captured_evidence["confirmations"] == [
-        {
-            "requirement": "Production Python",
-            "response": "yes",
-            "exampleText": "Built a Python service at Acme in 2023.",
-        }
-    ]
-    evidence_catalog = {
-        item["id"]: item for item in captured_evidence["evidenceCatalog"]
-    }
-    experience_evidence = [
-        item
-        for item in evidence_catalog.values()
-        if item["id"].startswith("profile:experience:")
-    ]
-    assert "profile:experience" not in evidence_catalog
-    assert any(
-        item["claimType"] == "achievement"
-        and item["text"].startswith("Built a Python service")
-        for item in experience_evidence
-    )
-    assert any(
-        item["claimType"] == "technology" and item["text"] == "Python"
-        for item in experience_evidence
-    )
-    assert evidence_catalog["confirmation:production-python"]["type"] == "confirmation"

@@ -68,6 +68,7 @@ from app.services.generation_context import (
     clarification_questions,
     load_authoritative_generation_context,
 )
+from app.services.document_export import ensure_cover_letter_date_replacement
 from app.services.job_match_store import (
     latest_job_match_record,
     match_record_to_ai_match,
@@ -107,6 +108,7 @@ class AuthoritativeAssistantInputs:
 
 assistant_streams: dict[str, AssistantStreamState] = {}
 GENERATION_ARTIFACT_TTL = timedelta(minutes=30)
+GENERATION_MESSAGE_MAX_CHARS = 12_000
 
 
 def begin_generation_artifact(
@@ -235,7 +237,11 @@ async def chat_with_assistant(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="The assistant is temporarily disabled. Check the server configuration.",
         )
-    validate_assistant_message_length(request.message, settings)
+    validate_assistant_message_length(
+        request.message,
+        settings,
+        is_document_generation=request.generation_context is not None,
+    )
     if request.generation_context is None:
         await preflight_assistant_source_documents(request)
 
@@ -296,6 +302,16 @@ async def chat_with_assistant(
             job=inputs.job,
             application=inputs.application,
         )
+        if (
+            inputs.generation_context is not None
+            and inputs.generation_context.template.type == "cover_letter"
+        ):
+            visible_message = ensure_cover_letter_date_replacement(
+                template_content=inputs.generation_context.template.content,
+                content=visible_message,
+                generation_date=inputs.generation_context.generation_date,
+                language=inputs.generation_context.language,
+            )
         if generation_artifact is not None:
             complete_generation_artifact(
                 db,
@@ -827,8 +843,17 @@ def create_conversation_title(message: str) -> str:
     return f"{normalized[:42].rstrip()}…" if len(normalized) > 42 else normalized
 
 
-def validate_assistant_message_length(message: str, settings: Settings) -> None:
-    limit = settings.openclaw_assistant_max_user_message_chars
+def validate_assistant_message_length(
+    message: str,
+    settings: Settings,
+    *,
+    is_document_generation: bool = False,
+) -> None:
+    limit = (
+        GENERATION_MESSAGE_MAX_CHARS
+        if is_document_generation
+        else settings.openclaw_assistant_max_user_message_chars
+    )
     if len(message) > limit:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
@@ -950,10 +975,16 @@ def assistant_inputs_from_generation_context(
 ) -> AuthoritativeAssistantInputs:
     profile = ProfilePayload.model_validate(context.profile)
     job_data = dict(context.vacancy)
-    job_data["aiMatch"] = {"applicationGuide": context.application_guide}
+    if context.template.type != "cover_letter":
+        job_data["aiMatch"] = {"applicationGuide": context.application_guide}
     job = AssistantJobContext.model_validate(job_data)
-    application_data = dict(context.application)
+    application_data = (
+        {"id": context.application_id}
+        if context.template.type == "cover_letter"
+        else dict(context.application)
+    )
     application_data["job"] = job.model_dump(by_alias=True)
+    application_data["generationDate"] = context.generation_date
     application = AssistantApplicationContext.model_validate(application_data)
     confirmations = tuple(
         AssistantCandidateConfirmation(
@@ -966,6 +997,13 @@ def assistant_inputs_from_generation_context(
             ),
         )
         for confirmation in context.confirmations
+        if context.template.type != "cover_letter"
+        or confirmation.question_id
+        in {
+            "cover-letter-recipient-name",
+            "cover-letter-company-contact",
+            "cover-letter-additional-context",
+        }
     )
     encoded_template = base64.b64encode(context.template.content).decode("ascii")
     source_document = AssistantSourceDocument(

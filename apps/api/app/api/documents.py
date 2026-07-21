@@ -211,7 +211,7 @@ def create_document(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=str(exc),
                 ) from exc
-            if generation_artifact:
+            if generation_artifact and request.type != "cover_letter":
                 validation = validate_document_or_422(
                     template_content=generation_artifact.template_content,
                     rendered_content=rendered_content,
@@ -451,7 +451,7 @@ def create_document_pack(
                 {
                     "id": "cover_letter_validation",
                     "status": "completed",
-                    "message": "Cover letter passed factual and visual validation",
+                    "message": "Cover letter generated and saved without blocking validation",
                 }
             )
         else:
@@ -719,7 +719,7 @@ def update_document(
                             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                             detail=str(exc),
                         ) from exc
-                    if has_provenance:
+                    if has_provenance and record.type != "cover_letter":
                         assert generation_artifact is not None
                         validation = validate_document_or_422(
                             template_content=generation_artifact.template_content,
@@ -1504,12 +1504,16 @@ def prepare_pack_document(
         content=generation_artifact.result_content,
         document_type=document_type,
     )
-    validation = validate_generated_document(
-        template_content=generation_artifact.template_content,
-        rendered_content=rendered_content,
-        generated_content=generation_artifact.result_content,
-        document_type=document_type,
-        evidence=generation_artifact.validation_evidence,
+    validation = (
+        validate_generated_document(
+            template_content=generation_artifact.template_content,
+            rendered_content=rendered_content,
+            generated_content=generation_artifact.result_content,
+            document_type=document_type,
+            evidence=generation_artifact.validation_evidence,
+        )
+        if document_type != "cover_letter"
+        else {}
     )
     return rendered_content, validation
 
@@ -1669,7 +1673,8 @@ def persist_pack_document(
         generation_artifact.input_versions,
         created_at,
     )
-    append_document_validation(record, next_version, validation, created_at)
+    if validation:
+        append_document_validation(record, next_version, validation, created_at)
     db.add(
         DocumentFileRecord(
             id=str(uuid4()),

@@ -314,7 +314,7 @@ def test_atomic_pack_commits_both_documents_and_retry_is_idempotent(
     ]
     assert retried.status_code == 201
     assert retried.json()["documents"] == created.json()["documents"]
-    assert calls == ["tailored_resume", "cover_letter"]
+    assert calls == ["tailored_resume"]
     assert document_count == 2
     assert version_count == 2
     assert job_count == 1
@@ -706,7 +706,7 @@ def test_pack_reuses_and_consumes_resume_validation_artifact(
     assert saved.status_code == 201
     assert retry.status_code == 201
     assert retry.json() == saved.json()
-    assert calls == ["tailored_resume", "cover_letter"]
+    assert calls == ["tailored_resume"]
 
     reused_request = json.loads(json.dumps(request))
     reused_request["packJobId"] = "pack-job-artifact-reuse"
@@ -715,7 +715,7 @@ def test_pack_reuses_and_consumes_resume_validation_artifact(
     assert "already been used" in reused.json()["detail"]
 
 
-def test_validation_artifact_is_not_consumed_when_atomic_pack_rolls_back(
+def test_resume_validation_artifact_is_consumed_without_cover_validation(
     pack_client,
     monkeypatch,
 ) -> None:
@@ -724,7 +724,7 @@ def test_validation_artifact_is_not_consumed_when_atomic_pack_rolls_back(
 
     def validate(**kwargs):
         if kwargs["document_type"] == "cover_letter":
-            raise DocumentValidationError("Cover validation failed")
+            raise AssertionError("Cover letters must not invoke blocking validation")
         return validation_report(kwargs["document_type"])
 
     monkeypatch.setattr("app.api.documents.validate_generated_document", validate)
@@ -736,20 +736,15 @@ def test_validation_artifact_is_not_consumed_when_atomic_pack_rolls_back(
     artifact_id = preflight.json()["validationArtifactId"]
     request["resume"]["validationArtifactId"] = artifact_id
 
-    failed = client.post("/documents/packs", json=request)
+    saved = client.post("/documents/packs", json=request)
     with testing_session_local() as db:
         artifact = db.get(DocumentValidationArtifactRecord, artifact_id)
         assert artifact is not None
-        assert artifact.consumed_at is None
+        assert artifact.consumed_at is not None
 
-    monkeypatch.setattr(
-        "app.api.documents.validate_generated_document",
-        lambda **kwargs: validation_report(kwargs["document_type"]),
-    )
-    saved = client.post("/documents/packs", json=request)
-
-    assert failed.status_code == 422
     assert saved.status_code == 201
+    assert saved.json()["status"] == "completed"
+    assert len(saved.json()["documents"]) == 2
 
 
 def test_pack_validation_artifact_is_bound_to_generation_artifact(
@@ -936,16 +931,19 @@ def test_atomic_pack_stops_after_failed_cv_validation(pack_client, monkeypatch) 
     assert job_count == 0
 
 
-def test_atomic_pack_rolls_back_when_cover_letter_validation_fails(
+def test_atomic_pack_skips_cover_letter_validation(
     pack_client,
     monkeypatch,
 ) -> None:
     client, testing_session_local = pack_client
     resume_template_id, cover_template_id = upload_pack_templates(client)
 
+    calls: list[str] = []
+
     def validate(**kwargs):
+        calls.append(kwargs["document_type"])
         if kwargs["document_type"] == "cover_letter":
-            raise DocumentValidationError("Cover letter adds an unsupported company")
+            raise AssertionError("Cover letters must not invoke blocking validation")
         return validation_report(kwargs["document_type"])
 
     monkeypatch.setattr("app.api.documents.validate_generated_document", validate)
@@ -959,11 +957,11 @@ def test_atomic_pack_rolls_back_when_cover_letter_validation_fails(
         document_count = db.scalar(select(func.count()).select_from(DocumentRecord))
         version_count = db.scalar(select(func.count()).select_from(DocumentVersionRecord))
 
-    assert response.status_code == 422
-    assert response.json()["detail"]["stage"] == "cover_letter_validation"
-    assert response.json()["detail"]["status"] == "rolled_back"
-    assert document_count == 0
-    assert version_count == 0
+    assert response.status_code == 201
+    assert response.json()["status"] == "completed"
+    assert calls == ["tailored_resume"]
+    assert document_count == 2
+    assert version_count == 2
 
 
 def test_atomic_pack_rolls_back_database_mutations_when_commit_stage_fails(
@@ -1002,7 +1000,7 @@ def test_atomic_pack_rolls_back_database_mutations_when_commit_stage_fails(
 
 
 @pytest.mark.parametrize("include_cover", [True, False])
-def test_explicit_partial_pack_saves_only_validated_cv(
+def test_partial_pack_saves_generated_cover_without_validating_it(
     pack_client,
     monkeypatch,
     include_cover: bool,
@@ -1012,7 +1010,7 @@ def test_explicit_partial_pack_saves_only_validated_cv(
 
     def validate(**kwargs):
         if kwargs["document_type"] == "cover_letter":
-            raise DocumentValidationError("Cover letter validation failed")
+            raise AssertionError("Cover letters must not invoke blocking validation")
         return validation_report(kwargs["document_type"])
 
     monkeypatch.setattr("app.api.documents.validate_generated_document", validate)
@@ -1031,9 +1029,13 @@ def test_explicit_partial_pack_saves_only_validated_cv(
         job = db.get(DocumentPackJobRecord, "pack-job-1")
 
     assert response.status_code == 201
-    assert response.json()["status"] == "partial"
-    assert len(response.json()["documents"]) == 1
-    assert response.json()["documents"][0]["type"] == "tailored_resume"
-    assert [record.type for record in records] == ["tailored_resume"]
+    expected_types = (
+        ["tailored_resume", "cover_letter"]
+        if include_cover
+        else ["tailored_resume"]
+    )
+    assert response.json()["status"] == ("completed" if include_cover else "partial")
+    assert [document["type"] for document in response.json()["documents"]] == expected_types
+    assert [record.type for record in records] == expected_types
     assert job is not None
-    assert job.status == "partial"
+    assert job.status == ("completed" if include_cover else "partial")

@@ -147,7 +147,7 @@ def test_factual_validation_uses_fact_boundaries_and_checks_job_titles() -> None
     )
 
 
-def test_authoritative_evidence_catalog_contains_source_profile_and_confirmation() -> None:
+def test_authoritative_evidence_catalog_contains_source_profile_confirmation_and_vacancy() -> None:
     source = Document()
     source.add_paragraph("SUMMARY", style="Heading 1")
     source.add_paragraph("Built a Python service at Acme.")
@@ -161,9 +161,10 @@ def test_authoritative_evidence_catalog_contains_source_profile_and_confirmation
                     "id": "confirmation:production",
                     "type": "confirmation",
                     "text": "Deployed Kubernetes in 2025.",
-                },
-                {"id": "vacancy:title", "type": "vacancy", "text": "Backend Engineer"},
-            ]
+                    },
+                    {"id": "vacancy:title", "type": "vacancy", "text": "Backend Engineer"},
+                    {"id": "generation:date", "type": "generation", "text": "2026-07-21"},
+                ]
         },
     )
 
@@ -173,7 +174,14 @@ def test_authoritative_evidence_catalog_contains_source_profile_and_confirmation
     }
     assert catalog["profile:skills"]["text"] == "FastAPI"
     assert catalog["confirmation:production"]["text"] == "Deployed Kubernetes in 2025."
-    assert "vacancy:title" not in catalog
+    assert catalog["vacancy:title"] == {
+        "type": "vacancy",
+        "text": "Backend Engineer",
+    }
+    assert catalog["generation:date"] == {
+        "type": "generation",
+        "text": "2026-07-21",
+    }
 
 
 def test_authoritative_evidence_catalog_preserves_atomic_claim_metadata() -> None:

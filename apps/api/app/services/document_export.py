@@ -2,6 +2,7 @@ import json
 import re
 import zipfile
 from copy import deepcopy
+from datetime import date
 from io import BytesIO
 
 from docx import Document
@@ -13,7 +14,10 @@ from docx.shared import Inches, Pt, RGBColor
 from lxml import etree
 
 from app.services.cover_letter_blocks import (
+    extract_cover_letter_blocks_from_docx,
+    is_date_line,
     parse_cover_letter_blocks,
+    replace_date_in_line,
     replace_cover_letter_text_span,
 )
 from app.services.resume_blocks import (
@@ -92,6 +96,93 @@ def build_cover_letter_from_template_package(template_content: bytes, content: s
     return output.getvalue()
 
 
+def ensure_cover_letter_date_replacement(
+    *,
+    template_content: bytes,
+    content: str,
+    generation_date: str,
+    language: str,
+) -> str:
+    """Make the source letter date deterministic while leaving contact data untouched."""
+    generated_date = date.fromisoformat(generation_date)
+    localized_date = format_cover_letter_date(generated_date, language)
+    paragraphs = extract_cover_letter_blocks_from_docx(template_content)
+    replacements = parse_cover_letter_replacements(content)
+    replacements_by_span = {
+        str(replacement["spanId"]): replacement for replacement in replacements
+    }
+    changed = False
+    for paragraph in paragraphs:
+        if paragraph["type"] == "greeting":
+            break
+        for span in paragraph["spans"]:
+            original = span.get("original")
+            span_id = span.get("spanId")
+            if (
+                not span.get("editable")
+                or not isinstance(original, str)
+                or not isinstance(span_id, str)
+                or not is_date_line(original)
+            ):
+                continue
+            replacement = {
+                "paragraphId": paragraph["paragraphId"],
+                "spanId": span_id,
+                "original": original,
+                "replacement": replace_date_in_line(original, localized_date),
+                "reason": "Updates the letter date to the generation date",
+                "evidenceIds": [f"source:{span_id}", "generation:date"],
+            }
+            existing = replacements_by_span.get(span_id)
+            if existing is None:
+                replacements.append(replacement)
+            else:
+                existing.update(replacement)
+            replacements_by_span[span_id] = replacement
+            changed = True
+    if not changed:
+        return content
+    return json.dumps(
+        {"replacements": replacements},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def format_cover_letter_date(value: date, language: str) -> str:
+    if language == "German":
+        months = (
+            "Januar",
+            "Februar",
+            "März",
+            "April",
+            "Mai",
+            "Juni",
+            "Juli",
+            "August",
+            "September",
+            "Oktober",
+            "November",
+            "Dezember",
+        )
+        return f"{value.day}. {months[value.month - 1]} {value.year}"
+    months = (
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    )
+    return f"{months[value.month - 1]} {value.day}, {value.year}"
+
+
 def build_resume_from_template_package(template_content: bytes, content: str) -> bytes:
     """Patch only document.xml so every other DOCX package part remains untouched."""
     with zipfile.ZipFile(BytesIO(template_content)) as source:
@@ -137,6 +228,10 @@ def replace_cover_letter_spans(body, content: str) -> None:
         )
         if span is None:
             raise ValueError(f"Unknown cover-letter span for {paragraph_id}: {span_id}")
+        if replacement["original"] != span.original:
+            raise ValueError(
+                f"Cover-letter original text does not match {span_id}"
+            )
         replace_cover_letter_text_span(span, replacement["replacement"])
 
 

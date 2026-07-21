@@ -80,7 +80,7 @@ describe("ApplicationWorkspace", () => {
     });
   });
 
-  it("saves personal motivation and a company contact as verified cover-letter context", async () => {
+  it("saves recipient, employee contact, and additional cover-letter context", async () => {
     const savedPayloads: Array<{ confirmations: Array<{ questionId: string; response: string; exampleText: string }> }> = [];
     installApplicationWorkspaceApiMock({
       requestHandler: async (url, method, init) => {
@@ -89,9 +89,7 @@ describe("ApplicationWorkspace", () => {
           savedPayloads.push(payload);
           return Response.json(payload.confirmations.map((confirmation) => ({
             ...confirmation,
-            requirement: confirmation.questionId === "cover-letter-company-contact"
-              ? "Personal contact at the hiring company"
-              : "Personal motivation for this company and role",
+            requirement: confirmation.questionId,
             blocking: false,
             updatedAt: "2026-07-20T10:00:00.000Z",
           })));
@@ -101,23 +99,28 @@ describe("ApplicationWorkspace", () => {
     });
     renderApplicationWorkspace(createV3WorkspaceApplication());
 
-    fireEvent.change(await screen.findByLabelText("Personal motivation for cover letter"), {
-      target: { value: "I want to build useful products for Swiss SMEs and grow in backend automation." },
+    fireEvent.click(await screen.findByRole("button", { name: "Yes, use their name" }));
+    fireEvent.change(screen.getByLabelText("Recruiter or hiring contact full name"), {
+      target: { value: "Anna Müller" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Yes, I know someone" }));
-    fireEvent.change(screen.getByLabelText("Employee full name"), {
-      target: { value: "Anna Müller" },
+    fireEvent.change(screen.getByLabelText("Known employee full name"), {
+      target: { value: "Marco Rossi" },
+    });
+    fireEvent.change(screen.getByLabelText("Additional cover letter context"), {
+      target: { value: "Emphasize the product mission and avoid relocation details." },
     });
 
     await waitFor(() => expect(savedPayloads.length).toBeGreaterThan(0), { timeout: 2_000 });
     const savedById = Object.fromEntries(
       savedPayloads.at(-1)!.confirmations.map((confirmation) => [confirmation.questionId, confirmation]),
     );
-    expect(savedById["cover-letter-personal-motivation"].exampleText).toContain("Swiss SMEs");
-    expect(savedById["cover-letter-company-contact"]).toMatchObject({
+    expect(savedById["cover-letter-recipient-name"]).toMatchObject({
       response: "yes",
       exampleText: "Anna Müller",
     });
+    expect(savedById["cover-letter-company-contact"].exampleText).toBe("Marco Rossi");
+    expect(savedById["cover-letter-additional-context"].exampleText).toContain("product mission");
   });
 
   it("builds quick advice only from visible verified evidence sources", async () => {
@@ -895,7 +898,7 @@ describe("ApplicationWorkspace", () => {
     expect(assistantPrompts[1]).toContain("PREVIOUS_DRAFT_JSON");
   });
 
-  it("repairs a rejected cover letter without saving an unchanged fallback", async () => {
+  it("saves a generated cover letter without a validation repair pass", async () => {
     const uploadedAt = "2026-07-18T10:00:00.000Z";
     const source = {
       id: "cover-source",
@@ -923,7 +926,6 @@ describe("ApplicationWorkspace", () => {
       inputVersions: {},
       versions: [],
     };
-    const validationMessage = "Document validation failed: paragraph-0002-span-0001 adds a claim not supported by referenced evidence";
     const assistantPrompts: string[] = [];
     let assistantCalls = 0;
     let saveCalls = 0;
@@ -942,11 +944,7 @@ describe("ApplicationWorkspace", () => {
           assistantCalls += 1;
           const request = JSON.parse(String(init?.body)) as { message: string };
           assistantPrompts.push(request.message);
-          const message = assistantCalls === 1
-            ? JSON.stringify({ replacements: [{ paragraphId: "paragraph-0002", spanId: "paragraph-0002-span-0001", original: "Reusable body", replacement: "Unsupported role-specific opening", reason: "Matches the role", evidenceIds: ["source:paragraph-0002-span-0001"] }] })
-            : assistantCalls === 2
-              ? JSON.stringify({ replacements: [] })
-              : JSON.stringify({ replacements: [{ paragraphId: "paragraph-0002", spanId: "paragraph-0002-span-0001", original: "Reusable body", replacement: "Evidence-backed role-specific opening", reason: "Uses verified experience", evidenceIds: ["source:paragraph-0002-span-0001"] }] });
+          const message = JSON.stringify({ replacements: [{ paragraphId: "paragraph-0002", spanId: "paragraph-0002-span-0001", original: "Reusable body", replacement: "Evidence-backed role-specific opening", reason: "Uses verified experience", evidenceIds: ["source:paragraph-0002-span-0001"] }] });
           return Response.json({
             message,
             metadata: { generationArtifactId: `cover-artifact-${assistantCalls}` },
@@ -955,9 +953,6 @@ describe("ApplicationWorkspace", () => {
         if (url.pathname === "/documents" && method === "POST") {
           saveCalls += 1;
           const request = JSON.parse(String(init?.body)) as { generationArtifactId: string };
-          if (saveCalls === 1) {
-            return Response.json({ detail: validationMessage }, { status: 422 });
-          }
           finalArtifactId = request.generationArtifactId;
           return Response.json(savedDocument, { status: 201 });
         }
@@ -975,17 +970,17 @@ describe("ApplicationWorkspace", () => {
     fireEvent.click(generateCover);
 
     await waitFor(() => expect(props.onDocumentAttached).toHaveBeenCalledTimes(1), { timeout: 4_000 });
-    expect(assistantCalls).toBe(3);
-    expect(saveCalls).toBe(2);
-    expect(finalArtifactId).toBe("cover-artifact-3");
-    expect(assistantPrompts[0]).toContain("why this company and position");
+    expect(assistantCalls).toBe(1);
+    expect(saveCalls).toBe(1);
+    expect(finalArtifactId).toBe("cover-artifact-1");
+    expect(assistantPrompts[0]).toContain("Act as an experienced career consultant and recruiter");
+    expect(assistantPrompts[0]).toContain("employer need → verified candidate evidence → benefit");
+    expect(assistantPrompts[0]).toContain("confirmation:cover-letter-additional-context");
     expect(assistantPrompts[0]).toContain("confirmation:cover-letter-company-contact");
-    expect(assistantPrompts[0]).toContain("Do not target a rigid number of lines");
-    expect(assistantPrompts[1]).toContain(validationMessage);
-    expect(assistantPrompts[1]).toContain("Unsupported role-specific opening");
-    expect(assistantPrompts[2]).toContain("zero replacements");
-    expect(assistantPrompts[2]).toContain("PREVIOUS_DRAFT_JSON");
-    expect(screen.queryByText(validationMessage)).not.toBeInTheDocument();
+    expect(assistantPrompts[0]).toContain("exact vacancy title");
+    expect(assistantPrompts[0]).toContain("confirmation:cover-letter-recipient-name");
+    expect(assistantPrompts[0]).toContain("approximately 250–350 words");
+    expect(assistantPrompts.every((prompt) => prompt.length <= 11_500)).toBe(true);
   });
 
   it("automatically repairs the CV before generating and saving an application pack", async () => {

@@ -12,7 +12,10 @@ from docx.oxml.ns import qn
 from lxml import etree
 
 from app.services.cover_letter_blocks import extract_cover_letter_blocks_from_docx
-from app.services.document_export import build_document_from_template
+from app.services.document_export import (
+    build_document_from_template,
+    ensure_cover_letter_date_replacement,
+)
 from app.services.document_validation import build_document_diff
 
 
@@ -80,7 +83,7 @@ def document_bytes(document: Document) -> bytes:
         ("Bästa rekryteringsteam,", "Med vänliga hälsningar,"),
     ],
 )
-def test_multilingual_greetings_and_closings_protect_surrounding_paragraphs(
+def test_multilingual_greetings_are_editable_while_closings_stay_protected(
     greeting: str,
     closing: str,
 ) -> None:
@@ -93,7 +96,7 @@ def test_multilingual_greetings_and_closings_protect_surrounding_paragraphs(
     paragraphs = extract_cover_letter_blocks_from_docx(document_bytes(document))
 
     assert [(paragraph["type"], paragraph["editable"]) for paragraph in paragraphs] == [
-        ("greeting", False),
+        ("greeting", True),
         ("body", True),
         ("closing", False),
         ("signature", False),
@@ -114,7 +117,7 @@ def test_signature_drawing_before_closing_text_keeps_body_editable() -> None:
 
     assert [(paragraph["type"], paragraph["editable"]) for paragraph in paragraphs] == [
         ("protected", False),
-        ("greeting", False),
+        ("greeting", True),
         ("body", True),
         ("closing", False),
         ("signature", False),
@@ -134,13 +137,159 @@ def test_signature_drawing_without_closing_text_ends_editable_body() -> None:
     paragraphs = extract_cover_letter_blocks_from_docx(document_bytes(document))
 
     assert [(paragraph["type"], paragraph["editable"]) for paragraph in paragraphs] == [
-        ("protected", False),
-        ("greeting", False),
+        ("subject", True),
+        ("greeting", True),
         ("body", True),
         ("body", True),
         ("closing", False),
         ("signature", False),
     ]
+
+
+def test_cover_letter_renderer_updates_subject_and_greeting() -> None:
+    document = Document()
+    document.add_paragraph("Motivationsschreiben Application Developer")
+    document.add_paragraph("Sehr geehrte Damen und Herren,")
+    document.add_paragraph("Reusable body paragraph.")
+    document.add_paragraph("Freundliche Grüsse")
+    document.add_paragraph("Eduard Ishchenko")
+    template = document_bytes(document)
+    content = json.dumps(
+        {
+            "replacements": [
+                {
+                    "paragraphId": "paragraph-0001",
+                    "spanId": "paragraph-0001-span-0001",
+                    "original": "Motivationsschreiben Application Developer",
+                    "replacement": "Bewerbung als Platform Engineer bei Acme",
+                    "reason": "Uses the current vacancy title",
+                    "evidenceIds": [
+                        "source:paragraph-0001-span-0001",
+                        "vacancy:title",
+                        "vacancy:company",
+                    ],
+                },
+                {
+                    "paragraphId": "paragraph-0002",
+                    "spanId": "paragraph-0002-span-0001",
+                    "original": "Sehr geehrte Damen und Herren,",
+                    "replacement": "Liebes Acme Recruiting-Team,",
+                    "reason": "Uses the team fallback greeting",
+                    "evidenceIds": [
+                        "source:paragraph-0002-span-0001",
+                        "vacancy:company",
+                    ],
+                },
+            ]
+        }
+    )
+
+    rendered = build_document_from_template(
+        template_content=template,
+        content=content,
+        document_type="cover_letter",
+    )
+
+    assert [paragraph.text for paragraph in Document(BytesIO(rendered)).paragraphs[:2]] == [
+        "Bewerbung als Platform Engineer bei Acme",
+        "Liebes Acme Recruiting-Team,",
+    ]
+
+
+def test_cover_letter_renderer_updates_only_date_inside_contact_header() -> None:
+    document = Document()
+    header = document.add_paragraph()
+    header.add_run("Eduard Ishchenko")
+    header.add_run().add_break()
+    header.add_run("Männedorf, 15. Juli")
+    header.add_run().add_break()
+    header.add_run("+41 79 516 84 31")
+    header.add_run().add_break()
+    header.add_run("eduard@example.com")
+    document.add_paragraph("Sehr geehrte Damen und Herren,")
+    document.add_paragraph("Reusable body paragraph.")
+    document.add_paragraph("Freundliche Grüsse")
+    document.add_paragraph("Eduard Ishchenko")
+    template = document_bytes(document)
+
+    paragraphs = extract_cover_letter_blocks_from_docx(template)
+    header_spans = paragraphs[0]["spans"]
+    editable_spans = [span for span in header_spans if span["editable"]]
+
+    assert paragraphs[0]["type"] == "protected"
+    assert [(span["spanId"], span["original"]) for span in editable_spans] == [
+        ("paragraph-0001-span-0003", "Männedorf, 15. Juli")
+    ]
+
+    content = json.dumps(
+        {
+            "replacements": [
+                {
+                    "paragraphId": "paragraph-0001",
+                    "spanId": "paragraph-0001-span-0003",
+                    "original": "Männedorf, 15. Juli",
+                    "replacement": "Männedorf, 21. Juli 2026",
+                    "reason": "Updates the letter date",
+                    "evidenceIds": [
+                        "source:paragraph-0001-span-0003",
+                        "generation:date",
+                    ],
+                }
+            ]
+        }
+    )
+    rendered = build_document_from_template(
+        template_content=template,
+        content=content,
+        document_type="cover_letter",
+    )
+
+    assert Document(BytesIO(rendered)).paragraphs[0].text == (
+        "Eduard Ishchenko\nMännedorf, 21. Juli 2026\n"
+        "+41 79 516 84 31\neduard@example.com"
+    )
+
+
+def test_cover_letter_generation_injects_missing_current_date_replacement() -> None:
+    document = Document()
+    header = document.add_paragraph()
+    header.add_run("Männedorf, 15. Juli")
+    document.add_paragraph("Dear Hiring Team,")
+    document.add_paragraph("Reusable body paragraph.")
+    document.add_paragraph("Kind regards,")
+    document.add_paragraph("Eduard Ishchenko")
+    template = document_bytes(document)
+    model_content = json.dumps(
+        {
+            "replacements": [
+                {
+                    "paragraphId": "paragraph-0003",
+                    "spanId": "paragraph-0003-span-0001",
+                    "original": "Reusable body paragraph.",
+                    "replacement": "Motivation-led body paragraph.",
+                    "reason": "Tailors the motivation",
+                    "evidenceIds": ["source:paragraph-0003-span-0001"],
+                }
+            ]
+        }
+    )
+
+    enriched = ensure_cover_letter_date_replacement(
+        template_content=template,
+        content=model_content,
+        generation_date="2026-07-21",
+        language="German",
+    )
+    replacements = json.loads(enriched)["replacements"]
+
+    assert replacements[-1] == {
+        "paragraphId": "paragraph-0001",
+        "spanId": "paragraph-0001-span-0001",
+        "original": "Männedorf, 15. Juli",
+        "replacement": "Männedorf, 21. Juli 2026",
+        "reason": "Updates the letter date to the generation date",
+        "evidenceIds": ["source:paragraph-0001-span-0001", "generation:date"],
+    }
 
 
 def test_cover_letter_renderer_preserves_distinct_paragraph_and_run_styles() -> None:
@@ -323,7 +472,7 @@ def test_cover_letter_blocks_model_protected_paragraphs_and_editable_spans() -> 
 
     assert [(paragraph["type"], paragraph["editable"]) for paragraph in paragraphs] == [
         ("protected", False),
-        ("greeting", False),
+        ("greeting", True),
         ("body", True),
         ("closing", False),
         ("signature", False),
@@ -357,7 +506,7 @@ def test_cover_letter_blocks_model_protected_paragraphs_and_editable_spans() -> 
     assert all(
         span["editable"] is False
         for paragraph in paragraphs
-        if paragraph["type"] != "body"
+        if paragraph["type"] not in {"subject", "greeting", "body"}
         for span in paragraph["spans"]
     )
 
@@ -444,9 +593,9 @@ def test_cover_letter_renderer_updates_only_editable_spans_and_preserves_package
     assert len(body_paragraph.findall(".//" + qn("w:br"))) == 1
 
 
-def test_cover_letter_renderer_uses_canonical_original_for_known_editable_span() -> None:
+def test_cover_letter_renderer_edits_greeting_and_rejects_stale_original() -> None:
     template, _ = cover_letter_template()
-    protected = json.dumps(
+    greeting = json.dumps(
         {
             "replacements": [
                 {
@@ -454,7 +603,7 @@ def test_cover_letter_renderer_uses_canonical_original_for_known_editable_span()
                     "spanId": "paragraph-0002-span-0001",
                     "original": "Dear Hiring Team,",
                     "replacement": "Dear Acme Team,",
-                    "reason": "Unsafe greeting change",
+                    "reason": "Addresses the company hiring team",
                     "evidenceIds": ["source:paragraph-0002-span-0001"],
                 }
             ]
@@ -477,27 +626,19 @@ def test_cover_letter_renderer_uses_canonical_original_for_known_editable_span()
         }
     )
 
-    with pytest.raises(ValueError, match="Protected cover-letter span cannot be changed"):
-        build_document_from_template(
-            template_content=template,
-            content=protected,
-            document_type="cover_letter",
-        )
     rendered = build_document_from_template(
         template_content=template,
-        content=stale,
+        content=greeting,
         document_type="cover_letter",
     )
-    diff = build_document_diff(
-        template,
-        stale,
-        "cover_letter",
-        rendered_content=rendered,
-    )
+    assert Document(BytesIO(rendered)).paragraphs[1].text == "Dear Acme Team,"
 
-    assert Document(BytesIO(rendered)).paragraphs[2].text.startswith("Targeted introduction")
-    assert diff[0]["original"] == "Original body"
-    assert diff[0]["replacement"] == "Targeted introduction"
+    with pytest.raises(ValueError, match="original text does not match"):
+        build_document_from_template(
+            template_content=template,
+            content=stale,
+            document_type="cover_letter",
+        )
     with pytest.raises(ValueError, match="must contain a replacements array"):
         build_document_from_template(
             template_content=template,

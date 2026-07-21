@@ -45,6 +45,14 @@ PROFILE_EVIDENCE_FIELDS = (
 DIRECT_PROFILE_EVIDENCE_FIELDS = tuple(
     field for field in PROFILE_EVIDENCE_FIELDS if field != "experience"
 )
+VACANCY_EVIDENCE_FIELDS = (
+    "title",
+    "company",
+    "overview",
+    "responsibilities",
+    "requirements",
+    "skills",
+)
 
 
 class GenerationContextError(ValueError):
@@ -63,15 +71,21 @@ class ClarificationQuestion:
 
 SYSTEM_DOCUMENT_QUESTIONS = (
     ClarificationQuestion(
-        question_id="cover-letter-personal-motivation",
-        requirement="Personal motivation for this company and role",
-        question="What personally attracts you to this company and position?",
+        question_id="cover-letter-recipient-name",
+        requirement="Named recruiter or intended hiring contact",
+        question="Is a recruiter or intended hiring contact named for this application? If yes, provide their full name.",
         blocking=False,
     ),
     ClarificationQuestion(
         question_id="cover-letter-company-contact",
-        requirement="Personal contact at the hiring company",
-        question="Do you know or have you spoken with someone who works at this company? If yes, provide their full name.",
+        requirement="Known employee at the hiring company",
+        question="Do you know or have you spoken with an employee at this company? If yes, provide their full name.",
+        blocking=False,
+    ),
+    ClarificationQuestion(
+        question_id="cover-letter-additional-context",
+        requirement="Optional cover-letter context",
+        question="Is there anything else the letter should emphasize or avoid?",
         blocking=False,
     ),
 )
@@ -105,6 +119,7 @@ class AuthoritativeApplicationGenerationContext:
     analysis_fingerprint: str
     confirmations: tuple[AuthoritativeConfirmation, ...]
     language: str
+    generation_date: str
 
     def with_template(
         self,
@@ -121,6 +136,7 @@ class AuthoritativeApplicationGenerationContext:
             analysis_fingerprint=self.analysis_fingerprint,
             confirmations=self.confirmations,
             language=self.language,
+            generation_date=self.generation_date,
             template=template,
         )
 
@@ -178,6 +194,7 @@ class AuthoritativeGenerationContext(AuthoritativeApplicationGenerationContext):
                 "analysisFingerprint": self.analysis_fingerprint,
                 "confirmations": [asdict(confirmation) for confirmation in self.confirmations],
                 "language": self.language,
+                "generationDate": self.generation_date,
                 "sourceDocument": {
                     "id": self.template.id,
                     "name": self.template.name,
@@ -244,6 +261,20 @@ class AuthoritativeGenerationContext(AuthoritativeApplicationGenerationContext):
             for confirmation in self.confirmations
             if confirmation.response != "no"
         ]
+        vacancy_evidence = [
+            {
+                "id": f"vacancy:{field}",
+                "type": "vacancy",
+                "text": evidence_text(self.vacancy.get(field)),
+            }
+            for field in VACANCY_EVIDENCE_FIELDS
+            if evidence_text(self.vacancy.get(field))
+        ]
+        generation_evidence = {
+            "id": "generation:date",
+            "type": "generation",
+            "text": self.generation_date,
+        }
         return {
             "profile": {
                 field: self.profile.get(field, "") for field in PROFILE_EVIDENCE_FIELDS
@@ -263,8 +294,16 @@ class AuthoritativeGenerationContext(AuthoritativeApplicationGenerationContext):
                 *profile_evidence,
                 *experience_evidence,
                 *confirmation_evidence,
+                *vacancy_evidence,
+                generation_evidence,
             ],
         }
+
+
+def evidence_text(value: Any) -> str:
+    if isinstance(value, list):
+        return "\n".join(str(item).strip() for item in value if str(item).strip())
+    return str(value or "").strip()
 
 
 def load_authoritative_application_generation_context(
@@ -367,6 +406,7 @@ def load_authoritative_application_generation_context(
         analysis_fingerprint=str(authoritative_analysis["fingerprint"]),
         confirmations=tuple(confirmations),
         language=language,
+        generation_date=date.today().isoformat(),
     )
 
 

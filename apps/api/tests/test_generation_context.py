@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 import hashlib
 import json
 
@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base
+from app.api.assistant import assistant_inputs_from_generation_context
 from app.models.applications import CandidateConfirmationRecord, StoredApplicationRecord
 from app.models.documents import DocumentTemplateRecord
 from app.models.jobs import JobMatchRecord, StoredJobRecord
@@ -159,6 +160,7 @@ def test_loads_complete_authoritative_generation_context() -> None:
         assert context.analysis_revision == "match-context"
         assert len(context.analysis_fingerprint) == 64
         assert context.language == "German"
+        assert context.generation_date == date.today().isoformat()
         assert context.template.id == "template-context"
         assert context.confirmations[0].requirement == "Production Python"
         assert context.confirmations[0].blocking is True
@@ -172,7 +174,22 @@ def test_loads_complete_authoritative_generation_context() -> None:
             "profile:experience:experience-acme:title",
             "profile:experience:experience-acme:period",
             "confirmation:production-python",
+            "vacancy:title",
+            "vacancy:company",
+            "generation:date",
         }
+        assert evidence_by_id["vacancy:title"]["text"] == "Platform Engineer"
+        assert evidence_by_id["generation:date"] == {
+            "id": "generation:date",
+            "type": "generation",
+            "text": date.today().isoformat(),
+        }
+        assistant_inputs = assistant_inputs_from_generation_context(context)
+        assert assistant_inputs.job is not None
+        assert assistant_inputs.job.ai_match is None
+        assert assistant_inputs.application is not None
+        assert assistant_inputs.application.status == ""
+        assert assistant_inputs.confirmations == ()
         experience_claims = [
             item
             for item in evidence["evidenceCatalog"]
@@ -205,13 +222,16 @@ def test_cover_letter_context_questions_are_always_authoritative() -> None:
         )
     }
 
-    assert question_by_id["cover-letter-personal-motivation"].blocking is False
+    assert question_by_id["cover-letter-recipient-name"].requirement == (
+        "Named recruiter or intended hiring contact"
+    )
     assert question_by_id["cover-letter-company-contact"].blocking is False
     assert question_by_id["cover-letter-company-contact"].requirement == (
-        "Personal contact at the hiring company"
+        "Known employee at the hiring company"
     )
     assert "full name" in question_by_id["cover-letter-company-contact"].question.lower()
-    assert len(clarification_questions({})) == 2
+    assert question_by_id["cover-letter-additional-context"].blocking is False
+    assert len(clarification_questions({})) == 3
 
 
 def test_rejects_generation_when_required_confirmation_is_missing() -> None:

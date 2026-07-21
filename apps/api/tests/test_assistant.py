@@ -4,13 +4,14 @@ import hashlib
 import json
 import zipfile
 from collections.abc import Generator
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from io import BytesIO
 
 import pytest
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -273,8 +274,12 @@ def test_assistant_prompt_passes_cover_letter_as_structured_blocks() -> None:
         message="Tailor my cover letter and return structured replacements.",
         context_kind="application",
         profile=ProfilePayload(name="Eduard"),
-        job=AssistantJobContext(id="job-1", title="Backend Engineer"),
-        application=None,
+        job=None,
+        application=AssistantApplicationContext(
+            id="application-1",
+            generationDate="2026-07-21",
+            job=AssistantJobContext(id="job-1", title="Backend Engineer"),
+        ),
         source_documents=[
             AssistantSourceDocument(
                 id="source-cover",
@@ -288,8 +293,12 @@ def test_assistant_prompt_passes_cover_letter_as_structured_blocks() -> None:
 
     context, _ = prompt.split("USER_MESSAGE (trusted instructions):\n", 1)
     assert '"format":"cover-letter-blocks-v1"' in context
+    assert '"generationDate":"2026-07-21"' in context
+    assert '"generationDateEvidenceId":"generation:date"' in context
+    assert '"evidence_ids":{"title":"vacancy:title"}' in context
     assert '"paragraphId":"paragraph-0001"' in context
     assert '"type":"greeting"' in context
+    assert '"editable":true' in context
     assert '"original":"Original cover-letter body."' in context
     assert '"spanId":"paragraph-0002-span-0001"' in context
     assert '"style":{"italic":true' in context
@@ -947,6 +956,7 @@ def test_document_generation_uses_only_authoritative_server_context(
             artifact.input_versions["generationArtifact"]["inputSnapshotSha256"]
         ) == 64
         assert artifact.input_snapshot["profile"]["name"] == "Server Candidate"
+        assert artifact.input_snapshot["generationDate"] == date.today().isoformat()
         assert artifact.input_snapshot["confirmations"][0]["example_text"] == (
             "Built production Python services."
         )
@@ -958,12 +968,15 @@ def test_document_generation_uses_only_authoritative_server_context(
     profile = captured["profile"]
     job = captured["job"]
     confirmations = captured["candidate_confirmations"]
+    application = captured["application"]
     sources = captured["source_documents"]
     assert isinstance(profile, ProfilePayload) and profile.name == "Server Candidate"
     assert isinstance(job, AssistantJobContext)
     assert job.title == "Server Platform Engineer"
     assert job.ai_match is not None
     assert job.ai_match.application_guide["positioning"] == "Authoritative server positioning"
+    assert isinstance(application, AssistantApplicationContext)
+    assert application.generation_date == date.today().isoformat()
     assert isinstance(confirmations, list)
     assert confirmations[0].answer == "YES: Built production Python services."
     assert isinstance(sources, list)
@@ -1016,6 +1029,25 @@ def test_assistant_chat_rejects_message_over_configured_limit() -> None:
 
     assert response.status_code == 413
     assert response.json()["detail"] == "Message is too long (201 characters). The limit is 200."
+
+
+def test_document_generation_uses_internal_message_limit() -> None:
+    settings = Settings(openclaw_assistant_max_user_message_chars=200)
+
+    assistant_api.validate_assistant_message_length(
+        "x" * 6_001,
+        settings,
+        is_document_generation=True,
+    )
+
+    with pytest.raises(HTTPException, match="Message is too long") as exc_info:
+        assistant_api.validate_assistant_message_length(
+            "x" * 12_001,
+            settings,
+            is_document_generation=True,
+        )
+
+    assert exc_info.value.status_code == 413
 
 
 def test_assistant_chat_stream_emits_resumable_sse(monkeypatch: pytest.MonkeyPatch) -> None:

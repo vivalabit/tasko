@@ -36,6 +36,7 @@ from app.services.document_analysis import (
 from app.services.document_security import DocumentSecurityError
 from app.services.experience_evidence import build_atomic_experience_evidence
 from app.services.generation_context import DIRECT_PROFILE_EVIDENCE_FIELDS
+from app.services.generation_context import VACANCY_EVIDENCE_FIELDS
 from app.services.resume_import import (
     decode_resume_data_url,
     extract_json_objects,
@@ -415,15 +416,21 @@ def build_openclaw_context_payload(
         "candidate": build_profile_context(profile),
     }
     if application:
-        context_payload["application"] = application.model_dump(
+        application_context = application.model_dump(
             by_alias=True,
             exclude_defaults=True,
         )
+        add_vacancy_evidence_ids(application_context.get("job"))
+        if application_context.get("generationDate"):
+            application_context["generationDateEvidenceId"] = "generation:date"
+        context_payload["application"] = application_context
     elif job:
-        context_payload["job"] = job.model_dump(
+        job_context = job.model_dump(
             by_alias=True,
             exclude_defaults=True,
         )
+        add_vacancy_evidence_ids(job_context)
+        context_payload["job"] = job_context
     if history:
         context_payload["conversation_history"] = history
     if source_documents:
@@ -444,6 +451,18 @@ def build_openclaw_context_payload(
             context_payload["candidate_confirmations"].append(confirmation_context)
 
     return context_payload
+
+
+def add_vacancy_evidence_ids(job_context: Any) -> None:
+    if not isinstance(job_context, dict):
+        return
+    evidence_ids = {
+        field: f"vacancy:{field}"
+        for field in VACANCY_EVIDENCE_FIELDS
+        if job_context.get(field)
+    }
+    if evidence_ids:
+        job_context["evidence_ids"] = evidence_ids
 
 
 def analyze_openclaw_assistant_context(

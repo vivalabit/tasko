@@ -37,6 +37,7 @@ class AssistantApplicationContext(BaseModel):
     status: str = Field(default="", max_length=80)
     next_step: str = Field(default="", max_length=500, alias="nextStep")
     notes: str = Field(default="", max_length=12_000)
+    generation_date: str = Field(default="", max_length=10, alias="generationDate")
     job: AssistantJobContext
 
     model_config = {"populate_by_name": True}

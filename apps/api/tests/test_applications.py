@@ -393,14 +393,19 @@ def test_candidate_confirmations_are_structured_validated_and_persisted() -> Non
             json={
                 "confirmations": [
                     {
-                        "questionId": "cover-letter-personal-motivation",
+                        "questionId": "cover-letter-recipient-name",
                         "response": "yes",
-                        "exampleText": "The product serves Swiss SMEs and the backend role matches my goals.",
+                        "exampleText": "Anna Müller",
                     },
                     {
                         "questionId": "cover-letter-company-contact",
                         "response": "yes",
-                        "exampleText": "Anna Müller",
+                        "exampleText": "Marco Rossi",
+                    },
+                    {
+                        "questionId": "cover-letter-additional-context",
+                        "response": "yes",
+                        "exampleText": "Emphasize the product mission.",
                     },
                 ]
             },
@@ -409,7 +414,8 @@ def test_candidate_confirmations_are_structured_validated_and_persisted() -> Non
         cover_context_by_id = {
             item["questionId"]: item for item in cover_context_response.json()
         }
-        assert cover_context_by_id["cover-letter-company-contact"]["exampleText"] == "Anna Müller"
+        assert cover_context_by_id["cover-letter-recipient-name"]["exampleText"] == "Anna Müller"
+        assert cover_context_by_id["cover-letter-company-contact"]["exampleText"] == "Marco Rossi"
         assert cover_context_by_id["cover-letter-company-contact"]["blocking"] is False
 
         client_metadata_response = client.put(

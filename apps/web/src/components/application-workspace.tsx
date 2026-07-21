@@ -412,23 +412,37 @@ const defaultAiConfiguration: AiConfiguration = {
   consentVersion: "2026-07-18.v2",
 };
 const confirmationAnswerMaxChars = 1_500;
-const coverLetterMotivationQuestion = {
-  id: "cover-letter-personal-motivation",
-  requirement: "Personal motivation for this company and role",
-  question: "What personally attracts you to this company and position?",
-  why: "A Swiss motivation letter should explain why this employer and role matter to you personally.",
-  claimIfConfirmed: "The candidate has a specific personal motivation for this company and role.",
+const documentRevisionMessageMaxChars = 7_000;
+const documentGenerationMessageMaxChars = 11_500;
+const coverLetterRecipientQuestion = {
+  id: "cover-letter-recipient-name",
+  requirement: "Named recruiter or intended hiring contact",
+  question: "Is a recruiter or intended hiring contact named for this application?",
+  why: "A verified recipient name allows the letter to use a direct greeting; otherwise it will address the hiring team.",
+  claimIfConfirmed: "The named person is the recruiter or intended hiring contact for this application.",
   blocking: false,
 } satisfies NonNullable<ApplicationGuide["clarificationQuestions"]>[number];
 const coverLetterContactQuestion = {
   id: "cover-letter-company-contact",
-  requirement: "Personal contact at the hiring company",
-  question: "Do you know or have you spoken with someone who works at this company?",
-  why: "A genuine conversation can provide a credible, personal opening for the letter.",
-  claimIfConfirmed: "The candidate spoke with the named employee about the company.",
+  requirement: "Known employee at the hiring company",
+  question: "Do you know or have you spoken with an employee at this company?",
+  why: "A genuine personal contact can make the motivation more specific when mentioned accurately and without implying an endorsement.",
+  claimIfConfirmed: "The candidate knows or has spoken with the named employee at the company.",
   blocking: false,
 } satisfies NonNullable<ApplicationGuide["clarificationQuestions"]>[number];
-const coverLetterContextQuestions = [coverLetterMotivationQuestion, coverLetterContactQuestion];
+const coverLetterAdditionalContextQuestion = {
+  id: "cover-letter-additional-context",
+  requirement: "Optional cover-letter context",
+  question: "Is there anything else the letter should emphasize or avoid?",
+  why: "Optional context can make the letter more personal without changing the verified resume facts.",
+  claimIfConfirmed: "The candidate supplied additional instructions for the cover letter.",
+  blocking: false,
+} satisfies NonNullable<ApplicationGuide["clarificationQuestions"]>[number];
+const coverLetterContextQuestions = [
+  coverLetterRecipientQuestion,
+  coverLetterContactQuestion,
+  coverLetterAdditionalContextQuestion,
+];
 const coverLetterContextQuestionIds = new Set<string>(
   coverLetterContextQuestions.map((question) => question.id),
 );
@@ -436,7 +450,7 @@ const packStageDefinitions: Array<{ id: PackStageId; label: string }> = [
   { id: "resume_generation", label: "Generate CV" },
   { id: "resume_validation", label: "Validate CV" },
   { id: "cover_letter_generation", label: "Generate cover letter" },
-  { id: "saving", label: "Validate and save pack" },
+  { id: "saving", label: "Save pack" },
 ];
 
 function createId(prefix: string) {
@@ -552,13 +566,14 @@ function buildDocumentGenerationPrompt(
   targetLanguage: string,
 ) {
   if (type === "cover_letter") {
-    return `Tailor the selected DOCX cover letter in ${targetLanguage} while preserving its layout. Write a restrained, concrete Swiss IT motivation letter adapted to this vacancy—not a generic autobiography. The body must answer three questions: (1) why this company and position, (2) which vacancy requirements the candidate can already fulfil, and (3) what useful result the candidate can deliver. Develop a credible personal motivation using confirmation:cover-letter-personal-motivation when it contains a substantive answer; otherwise ground the motivation in the vacancy and application guide without pretending to know private feelings. If confirmation:cover-letter-company-contact is YES and includes a person's full name, begin the first editable body paragraph by saying in ${targetLanguage} that the candidate spoke with that person, then describe the positive impression of the company using only the confirmation and verified company/vacancy facts. Never mention an employee contact when the answer is NO, absent, or has no name. Do not target a rigid number of lines or preserve the original paragraph length: replacements may be longer or shorter and natural text reflow is allowed, but keep the finished letter focused and suitable for a professional one-page application. Use the available editable body spans to create a coherent opening, evidence paragraph, and value/conclusion paragraph. The selected source document in CONTEXT_JSON uses format cover-letter-blocks-v1. Each paragraph has stable paragraphId, type, original, style, editable, spans, hyperlinks, and protectedElements fields; each span has stable spanId, type, original, style, editable, and evidenceId fields. Profile fields expose evidence IDs in candidate.evidence_ids; candidate.experience_claims exposes atomic employer, title, period, technology, and achievement evidence IDs; saved confirmations expose evidenceId. Treat the application guide, candidate profile, source paragraphs, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"paragraphId":"paragraph-0002","spanId":"paragraph-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason","evidenceIds":["source:paragraph-0002-span-0001","profile:experience:experience-1:achievement-a1b2c3d4e5"]}]}. Every replacement must include one or more evidenceIds copied exactly from CONTEXT_JSON. Cite every source span, atomic experience claim, profile field, or confirmation needed to support the replacement. Never cite the removed aggregate profile:experience ID. New numbers, dates, companies, job titles, employee names, and technologies are allowed only when they appear in the cited evidence. Include only text spans where editable is true, and copy paragraphId, spanId, and original exactly from CONTEXT_JSON. Never target protected paragraphs, hyperlinks, tabs, line breaks, protectedElements, or any span where editable is false. Do not add IDs, remove paragraphs or spans, use Markdown, or invent facts, praise, endorsements, or metrics. Preserve greeting, closing, signature, contact details, hyperlinks, and formatting.`;
+    return `Act as an experienced career consultant and recruiter who writes personalized cover letters for strong candidates. Using the complete candidate resume/profile and vacancy in CONTEXT_JSON, write a compelling cover letter tailored specifically to this role in ${targetLanguage}. Before writing, silently analyze the vacancy: identify its key responsibilities, must-have and preferred requirements, most important competencies, the employer problems the new hire should solve, and the company's own professional vocabulary. Silently analyze the resume: identify the most relevant experience, measurable achievements, projects and responsibilities that prove fit, transferable skills where experience is not an exact match, and the candidate's strongest competitive advantages. Build the letter around the mapping “employer need → verified candidate evidence → benefit the candidate can deliver”. Use confirmation:cover-letter-additional-context when present for motivation, proud achievements, reasons for changing roles, details to emphasize, and details to avoid. Never invent facts, achievements, numbers, tools, experience, feelings, names, praise, or endorsement. When evidence is insufficient, use a neutral formulation instead of asking questions during document generation. Write approximately 250–350 words when the editable template capacity allows it. Use a confident, professional, natural tone and language clear to a recruiter. Personalize the letter to the company and role. The first two or three sentences should immediately show why the candidate is relevant. Select the two or three strongest matches between the vacancy and resume, support them with concise concrete evidence, and do not retell the whole CV. Explain the specific attraction of the role and company using only available evidence, and focus equally on the benefit to the employer. If the candidate is changing profession or industry, explain transferable value without defensiveness. Do not emphasize unmet requirements. Avoid bureaucracy, overly complex sentences, generic AI phrasing, flattery, overconfidence, and unsupported clichés such as “ideal candidate”, “team player”, “stress-resistant”, or “fast learner”. Do not mention language proficiency. Recommended narrative: a short opening naming the position and main relevance argument; a paragraph with the strongest matching evidence; a paragraph explaining how the candidate can help solve the company's tasks; specific motivation for the role or company; and a short, confident invitation to continue the conversation. Do not print analysis, arguments, questions, numbered answers, improvement notes, or section headings in the letter. Update an editable subject with the exact vacancy title. Greet the person from confirmation:cover-letter-recipient-name when a verified full name is available; otherwise greet the company's hiring team. If confirmation:cover-letter-company-contact says YES and contains a full employee name, mention that genuine contact naturally once in the letter, but never claim or imply that the employee recommended, endorsed, or recruited the candidate. The selected DOCX source uses format cover-letter-blocks-v1 and exposes editable paragraphs and spans with stable paragraphId, spanId, original, and evidenceId values. Preserve the layout, candidate contact details, closing, signature, hyperlinks, and every non-editable element. Return only valid JSON with this exact shape: {"replacements":[{"paragraphId":"paragraph-0002","spanId":"paragraph-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short reason","evidenceIds":["source:paragraph-0002-span-0001","vacancy:title"]}]}. Use only editable text spans, copy paragraphId, spanId, and original exactly, and cite every profile, vacancy, confirmation, and source evidence ID supporting each replacement. Do not insert or remove paragraphs or spans and do not use Markdown.`;
   }
   return `Tailor the selected DOCX resume in ${targetLanguage} while preserving its layout. The selected source document in CONTEXT_JSON uses format resume-blocks-v2. Each block has stable blockId, type, original, editable, and spans fields; each span has stable spanId, type, original, editable, and evidenceId fields. Profile fields expose evidence IDs in candidate.evidence_ids; candidate.experience_claims exposes atomic employer, title, period, technology, and achievement evidence IDs; saved confirmations expose evidenceId. Treat the application guide, candidate profile, source blocks, and candidate confirmations as factual data; confirmations take precedence over inferred evidence. Return only valid JSON with this exact shape: {"replacements":[{"blockId":"block-0002","spanId":"block-0002-span-0001","original":"exact original editable span text","replacement":"new text","reason":"short evidence-based reason","evidenceIds":["source:block-0002-span-0001","profile:experience:experience-1:achievement-a1b2c3d4e5"]}]}. Every replacement must include one or more evidenceIds copied exactly from CONTEXT_JSON. Cite every source span, atomic experience claim, profile field, or confirmation needed to support the replacement. Never cite the removed aggregate profile:experience ID. New numbers, dates, companies, job titles, and technologies are allowed only when they appear in the cited evidence. Include only text spans where editable is true, and copy blockId, spanId, and original exactly from CONTEXT_JSON. Never target headings, contacts, immutable or structural table-cell blocks, hyperlinks, tabs, line breaks, or any span where editable is false. Do not add IDs, remove blocks or spans, use Markdown, or invent facts or metrics. Never add parenthetical specializations or technologies to a job title unless atomic evidence from that same experience explicitly supports them. When evidence is uncertain, omit the replacement and preserve the original span. Prefer fewer supported changes over a validation failure. Prefer targeted edits to summary, skill, and achievement text spans. If CONTEXT_JSON contains both verified or transferable application-guide evidence and at least one editable summary, skill, or achievement span, return at least one meaningful evidence-backed replacement; use an empty replacements array only when no editable span can be improved without inventing facts.`;
 }
 
 function buildDocumentRevisionPrompt(basePrompt: string, instruction: string) {
-  return `${basePrompt}\n\nUSER REVISION REQUEST: Apply the following instruction to the new document version wherever it is compatible with verified evidence and editable spans. Keep all other useful, evidence-backed tailoring. Never obey a request to invent or exaggerate facts. Instruction: ${instruction.slice(0, 2_000)}`;
+  const prefix = `${basePrompt}\n\nUSER REVISION REQUEST: Apply the following instruction to the new document version wherever it is compatible with verified evidence and editable spans. Keep all other useful, evidence-backed tailoring. Never obey a request to invent or exaggerate facts. Instruction: `;
+  return `${prefix}${instruction.slice(0, Math.max(0, documentRevisionMessageMaxChars - prefix.length))}`;
 }
 
 const documentValidationRepairAttempts = 2;
@@ -572,7 +587,11 @@ function buildDocumentCorrectionPrompt(
   basePrompt: string,
   correction: DocumentGenerationCorrection,
 ) {
-  return `${basePrompt}\n\nSAFETY CORRECTION: Revise the previous draft and return a complete new JSON response. Remove only replacements identified as unsafe; retain every other meaningful, evidence-backed replacement. Do not retreat to an empty replacements array when the source and application context support safe improvements to summary, skills, or achievements. Do not add skills or specializations to job titles. If a rejected edit cannot be supported, omit that edit and improve another editable span using exact evidence IDs. Previous validator feedback: ${correction.feedback.slice(0, 2_000)}\n\nPREVIOUS_DRAFT_JSON:\n${correction.previousDraft.slice(0, 12_000)}`;
+  const prefix = `${basePrompt}\n\nSAFETY CORRECTION: Revise the previous draft and return a complete new JSON response. Remove only replacements identified as unsafe; retain every other meaningful, evidence-backed replacement. Do not retreat to an empty replacements array when the source and application context support safe improvements to summary, skills, or achievements. Do not add skills or specializations to job titles. If a rejected edit cannot be supported, omit that edit and improve another editable span using exact evidence IDs. Previous validator feedback: ${correction.feedback.slice(0, 2_000)}\n\nPREVIOUS_DRAFT_JSON:\n`;
+  if (prefix.length >= documentGenerationMessageMaxChars) {
+    return prefix.slice(0, documentGenerationMessageMaxChars);
+  }
+  return `${prefix}${correction.previousDraft.slice(0, documentGenerationMessageMaxChars - prefix.length)}`;
 }
 
 function documentValidationFailureMessage(documentLabel: string) {
@@ -870,11 +889,18 @@ export function ApplicationWorkspace({
   const hasOversizedConfirmation = clarificationQuestions.some(
     (question) => (candidateConfirmations[question.id]?.exampleText.trim().length ?? 0) > confirmationAnswerMaxChars,
   );
-  const coverLetterMotivation = candidateConfirmations[coverLetterMotivationQuestion.id];
+  const coverLetterRecipient = candidateConfirmations[coverLetterRecipientQuestion.id];
+  const coverLetterRecipientName = coverLetterRecipient?.exampleText.trim() ?? "";
   const coverLetterContact = candidateConfirmations[coverLetterContactQuestion.id];
   const coverLetterContactName = coverLetterContact?.exampleText.trim() ?? "";
-  const coverLetterContactNameComplete = coverLetterContact?.response !== "yes"
-    || coverLetterContactName.split(/\s+/).filter(Boolean).length >= 2;
+  const coverLetterAdditionalContext = candidateConfirmations[coverLetterAdditionalContextQuestion.id];
+  const coverLetterNamesComplete = (
+    coverLetterRecipient?.response !== "yes"
+    || coverLetterRecipientName.split(/\s+/).filter(Boolean).length >= 2
+  ) && (
+    coverLetterContact?.response !== "yes"
+    || coverLetterContactName.split(/\s+/).filter(Boolean).length >= 2
+  );
   const vacancyLanguage = applicationGuide?.language || (application ? detectLegacyJobLanguage(application.job) : "");
   const effectiveLanguage = languageMode === "auto" ? vacancyLanguage : languageMode;
   useEffect(() => {
@@ -1128,7 +1154,7 @@ export function ApplicationWorkspace({
     && coverPreflight.status === "ready"
     && coverPreflight.report?.supported === true;
   const documentChatTargetReady = documentChatTarget === "cover_letter"
-    ? Boolean(selectedCoverSourceId && coverPreflightReady && coverLetterContactNameComplete)
+    ? Boolean(selectedCoverSourceId && coverPreflightReady && coverLetterNamesComplete)
     : Boolean(selectedResumeSourceId && resumePreflightReady);
   const jobUrl = activeApplication.job.applyUrl || activeApplication.job.sourceUrl || "";
   const profileReady = Boolean(profile.name && (profile.experience || profile.resume_file_name));
@@ -1207,7 +1233,7 @@ export function ApplicationWorkspace({
       }),
     });
     if (response.status === 413) {
-      throw new Error("The application context is larger than the assistant can process. Your answers are saved — shorten unusually long confirmations and try again.");
+      throw new Error(await readApiError(response, "The document-generation request is too large. Shorten the revision instruction and try again."));
     }
     if (!response.ok) {
       const message = await readApiError(response, "AI request failed");
@@ -1328,15 +1354,16 @@ export function ApplicationWorkspace({
 
   async function generateDocument(type: GeneratedDocument["type"], userInstruction = "") {
     if (isGeneratingPack) return false;
-    if (type === "cover_letter" && !coverLetterContactNameComplete) {
-      setDocumentError("Enter the employee's full name before generating the cover letter");
+    if (type === "cover_letter" && !coverLetterNamesComplete) {
+      setDocumentError("Complete the selected cover-letter contact names before generating");
       return false;
     }
     setGenerationType(type);
     setDocumentError("");
     try {
       let correction: DocumentGenerationCorrection | undefined;
-      for (let attempt = 1; attempt <= documentValidationRepairAttempts; attempt += 1) {
+      const validationAttempts = type === "cover_letter" ? 1 : documentValidationRepairAttempts;
+      for (let attempt = 1; attempt <= validationAttempts; attempt += 1) {
         const generated = await generateDocumentDraft(type, undefined, correction, userInstruction);
         const { draft } = generated;
         const existingDocument = type === "cover_letter" ? latestCoverLetter : latestResume;
@@ -1372,7 +1399,7 @@ export function ApplicationWorkspace({
         }
         const message = await readApiError(response, "Document save failed");
         if (isDocumentValidationFailure(response.status, message)) {
-          if (attempt < documentValidationRepairAttempts) {
+          if (attempt < validationAttempts) {
             correction = {
               feedback: message,
               previousDraft: generated.generatedContent,
@@ -1490,8 +1517,8 @@ export function ApplicationWorkspace({
 
   async function generatePack() {
     if (isGeneratingPack || generationType) return;
-    if (!coverLetterContactNameComplete) {
-      setDocumentError("Enter the employee's full name before generating the application pack");
+    if (!coverLetterNamesComplete) {
+      setDocumentError("Complete the selected cover-letter contact names before generating the application pack");
       return;
     }
     const packJobId = createId("application-pack");
@@ -1522,7 +1549,6 @@ export function ApplicationWorkspace({
     setDocumentError("");
     let resumeDraft: GeneratedDocumentDraft | undefined;
     let coverDraft: GeneratedDocumentDraft | undefined;
-    let coverGeneratedContent = "";
     let packSaveStarted = false;
     try {
       let resumeCorrection: DocumentGenerationCorrection | undefined;
@@ -1588,7 +1614,6 @@ export function ApplicationWorkspace({
           (attempt) => updateProgress("cover_letter_generation", "retrying", "Retrying cover letter generation…", attempt),
         );
         coverDraft = generatedCover.draft;
-        coverGeneratedContent = generatedCover.generatedContent;
         updateProgress("cover_letter_generation", "completed", "Cover letter draft generated");
       } catch (error) {
         const message = error instanceof Error ? error.message : "Cover letter generation failed";
@@ -1600,10 +1625,10 @@ export function ApplicationWorkspace({
       updateProgress(
         "saving",
         "active",
-        coverDraft ? "Validating and committing both documents" : "Saving validated CV as an explicit partial pack",
+        coverDraft ? "Committing both documents" : "Saving validated CV as an explicit partial pack",
       );
       packSaveStarted = true;
-      let packResponse = await postPackRequest(
+      const packResponse = await postPackRequest(
         "/documents/packs",
         {
           packJobId,
@@ -1617,44 +1642,8 @@ export function ApplicationWorkspace({
         "saving",
         "Application pack save failed",
       );
-      let packFailureMessage = "";
-      if (!packResponse.ok && coverDraft) {
-        const message = await readApiError(packResponse, "Application pack validation failed");
-        if (isDocumentValidationFailure(packResponse.status, message)) {
-          setGenerationType("cover_letter");
-          updateProgress("cover_letter_generation", "retrying", "Removing unsupported edits and regenerating cover letter…", 2);
-          const correctedCover = await generateDocumentDraft(
-            "cover_letter",
-            (attempt) => updateProgress("cover_letter_generation", "retrying", "Retrying cover letter generation…", attempt),
-            {
-              feedback: message,
-              previousDraft: coverGeneratedContent,
-            },
-          );
-          coverDraft = correctedCover.draft;
-          coverGeneratedContent = correctedCover.generatedContent;
-          setGenerationType("");
-          updateProgress("saving", "active", "Validating and committing corrected documents", 2);
-          packResponse = await postPackRequest(
-            "/documents/packs",
-            {
-              packJobId,
-              jobId: activeApplication.job.id,
-              applicationId: activeApplication.id,
-              persistenceMode: packPersistenceMode,
-              resume: resumeDraft,
-              coverLetter: coverDraft,
-            },
-            "saving",
-            "Application pack save failed",
-          );
-        } else {
-          packFailureMessage = message;
-        }
-      }
       if (!packResponse.ok) {
-        const message = packFailureMessage
-          || await readApiError(packResponse, "Application pack validation failed");
+        const message = await readApiError(packResponse, "Application pack save failed");
         const userMessage = isDocumentValidationFailure(packResponse.status, message)
           ? documentValidationFailureMessage("application pack")
           : message;
@@ -2078,7 +2067,7 @@ export function ApplicationWorkspace({
                 <div className="flex flex-col gap-2 sm:items-end">
                   <div className="flex items-center gap-2 text-[9px] text-muted"><span>AI provider: <strong className="text-white">{aiConfiguration.providerName}</strong></span>{aiDisclosureAccepted ? <button type="button" onClick={revokeAiConsent} className="font-bold text-amber-200 hover:text-white">Revoke consent</button> : <span className="font-bold text-amber-200">Consent required</span>}</div>
                   <label className="flex items-center gap-2 text-[9px] font-bold text-muted"><span>On cover failure</span><select value={packPersistenceMode} disabled={isGeneratingPack} onChange={(event) => setPackPersistenceMode(event.target.value as PackPersistenceMode)} className="h-8 rounded-lg border border-white/[0.08] bg-[#151c24] px-2 text-[10px] font-bold text-white outline-none focus:border-accent/60 disabled:opacity-50"><option value="atomic">Roll back pack</option><option value="partial">Keep validated CV</option></select></label>
-                  <Button onClick={() => requestAiGeneration("pack")} disabled={isGeneratingPack || Boolean(generationType) || !documentsLoaded || !selectedResumeSourceId || !selectedCoverSourceId || !resumePreflightReady || !coverPreflightReady || !coverLetterContactNameComplete || !applicationReview || !confirmationsReady} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? packStageDefinitions.find((stage) => stage.id === packProgress?.stage)?.label ?? "Generating pack…" : "Generate both documents"}</Button>
+                  <Button onClick={() => requestAiGeneration("pack")} disabled={isGeneratingPack || Boolean(generationType) || !documentsLoaded || !selectedResumeSourceId || !selectedCoverSourceId || !resumePreflightReady || !coverPreflightReady || !coverLetterNamesComplete || !applicationReview || !confirmationsReady} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white shadow-[0_12px_28px_rgba(255,90,0,0.2)] hover:bg-[#ff6a14] disabled:opacity-40">{isGeneratingPack ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}{isGeneratingPack ? packStageDefinitions.find((stage) => stage.id === packProgress?.stage)?.label ?? "Generating pack…" : "Generate both documents"}</Button>
                 </div>
               </div>
               <div className="p-5 sm:p-6">
@@ -2090,52 +2079,53 @@ export function ApplicationWorkspace({
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <p className="text-[10px] font-black uppercase tracking-[0.12em] text-accent">Cover letter context</p>
-                      <h3 className="mt-1 text-sm font-bold text-white">Make the motivation personal and credible</h3>
-                      <p className="mt-1 max-w-3xl text-[11px] leading-5 text-muted">Optional details for a restrained Swiss IT motivation letter. Answers save automatically and are treated as verified evidence.</p>
+                      <h3 className="mt-1 text-sm font-bold text-white">Optional personal context</h3>
+                      <p className="mt-1 max-w-3xl text-[11px] leading-5 text-muted">The letter is grounded in the resume and vacancy. Add only details that are true and useful.</p>
                     </div>
                     <span className={cn("rounded-full border px-2 py-1 text-[9px] font-black", confirmationsDirty ? "border-amber-400/20 bg-amber-400/[0.06] text-amber-200" : "border-success/20 bg-success/[0.06] text-success")}>{confirmationsDirty ? "Saving…" : "Saved"}</span>
                   </div>
                   <div className="mt-4 grid gap-4 lg:grid-cols-2">
-                    <label className="block rounded-xl border border-white/[0.07] bg-black/15 p-4">
-                      <span className="text-xs font-bold text-white">Why this company and position?</span>
-                      <span className="mt-1 block text-[10px] leading-4 text-muted">Add your genuine personal reason. The letter will connect it to the vacancy without inventing details.</span>
-                      <textarea
-                        aria-label="Personal motivation for cover letter"
-                        value={coverLetterMotivation?.exampleText ?? ""}
-                        maxLength={confirmationAnswerMaxChars}
-                        onChange={(event) => updateCandidateConfirmation(coverLetterMotivationQuestion, { response: "yes", exampleText: event.target.value })}
-                        rows={4}
-                        placeholder="Example: I want to work on a product used by Swiss SMEs, and the mix of backend engineering and automation matches the direction in which I want to grow."
-                        className="mt-3 w-full resize-y rounded-xl border border-white/[0.08] bg-[#0b1118] px-3 py-2.5 text-xs leading-5 text-white outline-none placeholder:text-muted/55 focus:border-accent/40"
-                      />
-                    </label>
                     <div className="rounded-xl border border-white/[0.07] bg-black/15 p-4">
-                      <p className="text-xs font-bold text-white">Do you know someone at the company?</p>
-                      <p className="mt-1 text-[10px] leading-4 text-muted">If yes, provide the full name. The opening will mention that conversation and only make evidence-backed positive statements about the company.</p>
+                      <p className="text-xs font-bold text-white">Is a recruiter or hiring contact named?</p>
+                      <p className="mt-1 text-[10px] leading-4 text-muted">If yes, provide the full name and the letter will greet that person. Otherwise it will greet the company&apos;s hiring team.</p>
                       <div className="mt-3 grid grid-cols-2 gap-2">
-                        <button type="button" onClick={() => updateCandidateConfirmation(coverLetterContactQuestion, { response: "yes" })} className={cn("h-9 rounded-lg border text-[10px] font-black transition", coverLetterContact?.response === "yes" ? "border-success/35 bg-success/10 text-success" : "border-white/[0.08] bg-white/[0.025] text-muted hover:text-white")}>Yes, I know someone</button>
-                        <button type="button" onClick={() => updateCandidateConfirmation(coverLetterContactQuestion, { response: "no", exampleText: "" })} className={cn("h-9 rounded-lg border text-[10px] font-black transition", coverLetterContact?.response === "no" ? "border-white/25 bg-white/[0.08] text-white" : "border-white/[0.08] bg-white/[0.025] text-muted hover:text-white")}>No personal contact</button>
+                        <button type="button" onClick={() => updateCandidateConfirmation(coverLetterRecipientQuestion, { response: "yes" })} className={cn("h-9 rounded-lg border text-[10px] font-black transition", coverLetterRecipient?.response === "yes" ? "border-success/35 bg-success/10 text-success" : "border-white/[0.08] bg-white/[0.025] text-muted hover:text-white")}>Yes, use their name</button>
+                        <button type="button" onClick={() => updateCandidateConfirmation(coverLetterRecipientQuestion, { response: "no", exampleText: "" })} className={cn("h-9 rounded-lg border text-[10px] font-black transition", coverLetterRecipient?.response === "no" ? "border-white/25 bg-white/[0.08] text-white" : "border-white/[0.08] bg-white/[0.025] text-muted hover:text-white")}>No, greet the team</button>
                       </div>
-                      {coverLetterContact?.response === "yes" ? (
+                      {coverLetterRecipient?.response === "yes" ? (
                         <label className="mt-3 block">
-                          <span className="text-[10px] font-bold text-[#d9e0e8]">Employee full name</span>
+                          <span className="text-[10px] font-bold text-[#d9e0e8]">Recipient full name</span>
                           <input
-                            aria-label="Employee full name"
-                            value={coverLetterContactName}
+                            aria-label="Recruiter or hiring contact full name"
+                            value={coverLetterRecipientName}
                             maxLength={160}
-                            onChange={(event) => updateCandidateConfirmation(coverLetterContactQuestion, { response: "yes", exampleText: event.target.value })}
+                            onChange={(event) => updateCandidateConfirmation(coverLetterRecipientQuestion, { response: "yes", exampleText: event.target.value })}
                             placeholder="First name and last name"
-                            className={cn("mt-1.5 h-10 w-full rounded-xl border bg-[#0b1118] px-3 text-xs text-white outline-none placeholder:text-muted/55", coverLetterContactNameComplete ? "border-white/[0.08] focus:border-accent/40" : "border-amber-400/40 focus:border-amber-300")}
+                            className={cn("mt-1.5 h-10 w-full rounded-xl border bg-[#0b1118] px-3 text-xs text-white outline-none placeholder:text-muted/55", coverLetterNamesComplete ? "border-white/[0.08] focus:border-accent/40" : "border-amber-400/40 focus:border-amber-300")}
                           />
-                          {!coverLetterContactNameComplete ? <span className="mt-1.5 block text-[9px] font-bold text-amber-200">Enter the employee&apos;s first and last name before generating the cover letter.</span> : null}
+                          {!coverLetterNamesComplete ? <span className="mt-1.5 block text-[9px] font-bold text-amber-200">Enter first and last name before generating.</span> : null}
                         </label>
                       ) : null}
                     </div>
+                    <div className="rounded-xl border border-white/[0.07] bg-black/15 p-4">
+                      <p className="text-xs font-bold text-white">Do you know someone at the company?</p>
+                      <p className="mt-1 text-[10px] leading-4 text-muted">If yes, provide the employee&apos;s full name. The letter may mention the genuine contact once without implying a recommendation.</p>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <button type="button" onClick={() => updateCandidateConfirmation(coverLetterContactQuestion, { response: "yes" })} className={cn("h-9 rounded-lg border text-[10px] font-black transition", coverLetterContact?.response === "yes" ? "border-success/35 bg-success/10 text-success" : "border-white/[0.08] bg-white/[0.025] text-muted hover:text-white")}>Yes, I know someone</button>
+                        <button type="button" onClick={() => updateCandidateConfirmation(coverLetterContactQuestion, { response: "no", exampleText: "" })} className={cn("h-9 rounded-lg border text-[10px] font-black transition", coverLetterContact?.response === "no" ? "border-white/25 bg-white/[0.08] text-white" : "border-white/[0.08] bg-white/[0.025] text-muted hover:text-white")}>No company contact</button>
+                      </div>
+                      {coverLetterContact?.response === "yes" ? <label className="mt-3 block"><span className="text-[10px] font-bold text-[#d9e0e8]">Employee full name</span><input aria-label="Known employee full name" value={coverLetterContactName} maxLength={160} onChange={(event) => updateCandidateConfirmation(coverLetterContactQuestion, { response: "yes", exampleText: event.target.value })} placeholder="First name and last name" className={cn("mt-1.5 h-10 w-full rounded-xl border bg-[#0b1118] px-3 text-xs text-white outline-none placeholder:text-muted/55", coverLetterNamesComplete ? "border-white/[0.08] focus:border-accent/40" : "border-amber-400/40 focus:border-amber-300")} /></label> : null}
+                    </div>
+                    <label className="block rounded-xl border border-white/[0.07] bg-black/15 p-4 lg:col-span-2">
+                      <span className="text-xs font-bold text-white">Anything else to emphasize or avoid?</span>
+                      <span className="mt-1 block text-[10px] leading-4 text-muted">Optional: motivation, a proud achievement, reason for changing roles, what to emphasize, or what not to mention.</span>
+                      <textarea aria-label="Additional cover letter context" value={coverLetterAdditionalContext?.exampleText ?? ""} maxLength={confirmationAnswerMaxChars} onChange={(event) => updateCandidateConfirmation(coverLetterAdditionalContextQuestion, { response: event.target.value.trim() ? "yes" : "no", exampleText: event.target.value })} rows={3} placeholder="Example: I am particularly interested in the company’s product; emphasize stakeholder work; do not mention relocation." className="mt-3 w-full resize-y rounded-xl border border-white/[0.08] bg-[#0b1118] px-3 py-2.5 text-xs leading-5 text-white outline-none placeholder:text-muted/55 focus:border-accent/40" />
+                    </label>
                   </div>
                 </div>
                 <div className="grid gap-4 lg:grid-cols-2">
                   <DocumentCard documentType="tailored_resume" icon={FileText} label="Tailored CV" description="Focused for this role, with your structure and visual style intact." document={latestResume} isOutdated={isResumeOutdated} isGenerating={generationType === "tailored_resume"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("tailored_resume")} onRestore={(version) => latestResume && restoreDocumentVersion(latestResume, version)} onLoadMoreVersions={() => latestResume && void loadMoreDocumentVersions(latestResume)} onDelete={() => latestResume && void deleteGeneratedDocument(latestResume)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedResumeSourceId && resumePreflightReady && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedResumeSourceId ? "Select source first" : resumePreflight.status === "checking" ? "Checking template…" : resumePreflight.status === "error" ? "Preflight failed" : !resumePreflight.report?.supported ? "Template unsupported" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source CV" sources={resumeSources} selectedId={selectedResumeSourceId} preflight={resumePreflight} deletingSourceId={deletingSourceId} onChange={(sourceId) => { setSelectedResumeSourceId(sourceId); setIsResumeSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "CV / Resume")} onDelete={(source) => void deleteWorkspaceSource(source)} />} />
-                  <DocumentCard documentType="cover_letter" icon={Mail} label="Cover letter" description="A restrained Swiss-style motivation letter: why this role, relevant proof, and the value you can deliver." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} onLoadMoreVersions={() => latestCoverLetter && void loadMoreDocumentVersions(latestCoverLetter)} onDelete={() => latestCoverLetter && void deleteGeneratedDocument(latestCoverLetter)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && coverPreflightReady && coverLetterContactNameComplete && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedCoverSourceId ? "Select source first" : coverPreflight.status === "checking" ? "Checking template…" : coverPreflight.status === "error" ? "Preflight failed" : !coverPreflight.report?.supported ? "Template unsupported" : !coverLetterContactNameComplete ? "Enter employee name" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} preflight={coverPreflight} deletingSourceId={deletingSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} onDelete={(source) => void deleteWorkspaceSource(source)} />} />
+                  <DocumentCard documentType="cover_letter" icon={Mail} label="Cover letter" description="A restrained Swiss-style motivation letter: why this role, relevant proof, and the value you can deliver." document={latestCoverLetter} isOutdated={isCoverLetterOutdated} isGenerating={generationType === "cover_letter"} restoringVersionKey={restoringVersionKey} loadingVersionHistoryId={loadingVersionHistoryId} deletingDocumentId={deletingDocumentId} onGenerate={() => requestAiGeneration("cover_letter")} onRestore={(version) => latestCoverLetter && restoreDocumentVersion(latestCoverLetter, version)} onLoadMoreVersions={() => latestCoverLetter && void loadMoreDocumentVersions(latestCoverLetter)} onDelete={() => latestCoverLetter && void deleteGeneratedDocument(latestCoverLetter)} canGenerate={Boolean(!isGeneratingPack && documentsLoaded && selectedCoverSourceId && coverPreflightReady && coverLetterNamesComplete && applicationReview && confirmationsReady)} disabledLabel={isGeneratingPack ? "Pack job running…" : !documentsLoaded ? documentError ? "Retry loading history" : "Loading history…" : !selectedCoverSourceId ? "Select source first" : coverPreflight.status === "checking" ? "Checking template…" : coverPreflight.status === "error" ? "Preflight failed" : !coverPreflight.report?.supported ? "Template unsupported" : !coverLetterNamesComplete ? "Complete contact names" : !applicationReview ? analysisRequiredLabel : hasOversizedConfirmation ? "Shorten confirmation" : "Complete required answers"} sourceControl={<SourcePicker label="Source cover letter" sources={coverSources} selectedId={selectedCoverSourceId} preflight={coverPreflight} deletingSourceId={deletingSourceId} onChange={(sourceId) => { setSelectedCoverSourceId(sourceId); setIsCoverSourceManual(Boolean(sourceId)); }} onAttach={(file) => void attachWorkspaceSource(file, "Cover Letter")} onDelete={(source) => void deleteWorkspaceSource(source)} />} />
                 </div>
                 <div className="mt-5 rounded-2xl border border-accent/20 bg-gradient-to-br from-accent/[0.055] to-white/[0.015] p-4 sm:p-5">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -2168,7 +2158,7 @@ export function ApplicationWorkspace({
                     </label>
                     <Button type="button" onClick={applyDocumentChatInstruction} disabled={!documentChatInput.trim() || Boolean(generationType) || isGeneratingPack || !documentsLoaded || !documentChatTargetReady || !applicationReview || !confirmationsReady} className="h-11 shrink-0 rounded-xl bg-accent px-4 text-xs font-bold text-white disabled:opacity-40">{generationType === documentChatTarget ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}Apply instruction</Button>
                   </div>
-                  {!documentChatTargetReady ? <p className="mt-2 text-[9px] font-bold text-amber-200">Select a supported {documentChatTarget === "cover_letter" ? "cover letter" : "CV"} source{documentChatTarget === "cover_letter" && !coverLetterContactNameComplete ? " and complete the employee name" : ""} first.</p> : null}
+                  {!documentChatTargetReady ? <p className="mt-2 text-[9px] font-bold text-amber-200">Select a supported {documentChatTarget === "cover_letter" ? "cover letter" : "CV"} source{documentChatTarget === "cover_letter" && !coverLetterNamesComplete ? " and complete the contact names" : ""} first.</p> : null}
                 </div>
               </div>
             </section>

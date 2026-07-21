@@ -1,3 +1,4 @@
+import re
 import zipfile
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -124,6 +125,31 @@ CLOSING_PREFIXES = (
     "vriendelijke groeten",
 )
 BODY_MARKERS = ("{{cover_letter_body}}", "{{content}}")
+SUBJECT_PREFIXES = (
+    "application for ",
+    "application: ",
+    "applying for ",
+    "betreff:",
+    "bewerbung als ",
+    "bewerbung auf ",
+    "bewerbung für ",
+    "bewerbung um ",
+    "cover letter",
+    "motivationsschreiben",
+    "motivation letter",
+    "subject:",
+)
+DATE_LINE_PATTERN = re.compile(
+    r"(?:\b(?:0?[1-9]|[12]\d|3[01])\.?(?:\s+)(?:"
+    r"january|february|march|april|may|june|july|august|september|october|"
+    r"november|december|januar|februar|märz|maerz|mai|juni|juli|oktober|"
+    r"dezember)(?:\s+\d{4})?\b)"
+    r"|(?:\b(?:january|february|march|april|may|june|july|august|september|"
+    r"october|november|december)\s+(?:0?[1-9]|[12]\d|3[01])(?:,\s*\d{4})?\b)"
+    r"|(?:\b(?:0?[1-9]|[12]\d|3[01])[./-](?:0?[1-9]|1[0-2])[./-]\d{2,4}\b)"
+    r"|(?:\b\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b)",
+    re.IGNORECASE,
+)
 
 
 class UnsupportedCoverLetterStructureError(ValueError):
@@ -233,6 +259,11 @@ def parse_cover_letter_blocks(
         for index, text in enumerate(originals)
         if any(marker in text.lower() for marker in BODY_MARKERS)
     }
+    subject_indexes = {
+        index
+        for index, text in enumerate(originals)
+        if greeting_index is not None and index < greeting_index and is_subject(text)
+    }
 
     paragraphs: list[CoverLetterParagraph] = []
     for index, (element, original) in enumerate(zip(elements, originals, strict=True)):
@@ -244,6 +275,7 @@ def parse_cover_letter_blocks(
             greeting_index=greeting_index,
             closing_index=closing_index,
             marker_indexes=marker_indexes,
+            subject_indexes=subject_indexes,
         )
         spans, hyperlinks, protected_elements = build_spans(
             element,
@@ -274,6 +306,7 @@ def classify_paragraph(
     greeting_index: int | None,
     closing_index: int | None,
     marker_indexes: set[int],
+    subject_indexes: set[int],
 ) -> tuple[str, bool]:
     if nearest_ancestor(paragraph, qn("w:tc")) is not None:
         return "tableCell", False
@@ -281,8 +314,10 @@ def classify_paragraph(
         return "empty", False
     if index in marker_indexes:
         return "body", True
+    if index in subject_indexes:
+        return "subject", True
     if index == greeting_index:
-        return "greeting", False
+        return "greeting", True
     if index == closing_index:
         return "closing", False
     if closing_index is not None and index > closing_index:
@@ -297,6 +332,11 @@ def classify_paragraph(
 def is_greeting(text: str) -> bool:
     normalized = " ".join(text.strip().casefold().split())
     return any(normalized.startswith(prefix) for prefix in GREETING_PREFIXES)
+
+
+def is_subject(text: str) -> bool:
+    normalized = " ".join(text.strip().casefold().split())
+    return any(normalized.startswith(prefix) for prefix in SUBJECT_PREFIXES)
 
 
 def is_closing(text: str) -> bool:
@@ -403,10 +443,19 @@ def build_spans(
             paragraph_id=paragraph_id,
             span_type="text",
             tokens=group,
-            editable=paragraph_editable and bool(original.strip()),
+            editable=(paragraph_editable or is_date_line(original))
+            and bool(original.strip()),
         )
         cursor = end
     return spans, hyperlinks, protected_elements
+
+
+def is_date_line(text: str) -> bool:
+    return DATE_LINE_PATTERN.search(text) is not None
+
+
+def replace_date_in_line(text: str, replacement: str) -> str:
+    return DATE_LINE_PATTERN.sub(replacement, text, count=1)
 
 
 def append_span(
