@@ -69,12 +69,18 @@ class JobMatchFeedbackRequest(BaseModel):
     feedback: Literal["good_match", "bad_match", "not_interested"]
 
 
+class AiMatchJobFailure(BaseModel):
+    id: str = Field(min_length=1, max_length=160)
+    error: str = Field(min_length=1, max_length=240)
+
+
 class AiMatchJobStatus(BaseModel):
     run_id: str = Field(default="", alias="runId")
     status: Literal["idle", "queued", "running", "completed", "failed"] = "idle"
     total: int = 0
     processed: int = 0
     updated_jobs: list[StoredJobPayload] = Field(default_factory=list, alias="updatedJobs")
+    failed_jobs: list[AiMatchJobFailure] = Field(default_factory=list, alias="failedJobs")
     error: str | None = None
 
     model_config = {"populate_by_name": True}

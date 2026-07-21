@@ -20,7 +20,7 @@ from app.services.resume_import import (
 )
 
 MATCHER_VERSION = "ai-match-v3"
-MATCH_PROMPT_VERSION = "ai-match-prompt-v4"
+MATCH_PROMPT_VERSION = "ai-match-prompt-v5"
 DEFAULT_AI_MATCH_MODEL = "openai/gpt-5.6-terra"
 DEFAULT_AI_MATCH_MAX_ATTEMPTS = 2
 MAX_AI_MATCH_TEXT_LENGTH = 500
@@ -80,6 +80,24 @@ CURRENCY_ALIASES = {
     "EUR": {"eur", "euro", "euros", "€"},
     "GBP": {"gbp", "pound", "pounds", "£"},
     "USD": {"usd", "dollar", "dollars", "$"},
+}
+EVIDENCE_IMPORTANCE_ALIASES = {
+    "required": "required",
+    "mandatory": "required",
+    "must have": "required",
+    "essential": "required",
+    "prerequisite": "required",
+    "erforderlich": "required",
+    "zwingend": "required",
+    "pflicht": "required",
+    "preferred": "preferred",
+    "optional": "preferred",
+    "nice to have": "preferred",
+    "desired": "preferred",
+    "bonus": "preferred",
+    "bevorzugt": "preferred",
+    "wünschenswert": "preferred",
+    "von vorteil": "preferred",
 }
 SENIORITY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("lead", ("principal", "staff", "lead", "manager", "head", "director", "vp", "chief", "architect")),
@@ -289,6 +307,7 @@ def calculate_ai_matches(
     for start in range(0, len(jobs_to_score), openclaw_max_jobs):
         chunk = jobs_to_score[start : start + openclaw_max_jobs]
         chunk_snapshots = [job_snapshot for _, job_snapshot, _ in chunk]
+        correction_feedback: str | None = None
         for attempt in range(max(1, max_attempts)):
             try:
                 openclaw_results = score_with_openclaw(
@@ -300,6 +319,7 @@ def calculate_ai_matches(
                     timeout_seconds=timeout_seconds,
                     model=model,
                     evidence_sources=list(evidence_catalog.values()),
+                    correction_feedback=correction_feedback,
                 )
                 openclaw_results = validate_openclaw_batch(
                     openclaw_results,
@@ -307,9 +327,10 @@ def calculate_ai_matches(
                     evidence_catalog=evidence_catalog,
                 )
                 break
-            except OpenClawAiMatchError:
+            except OpenClawAiMatchError as exc:
                 if attempt + 1 >= max(1, max_attempts):
                     raise
+                correction_feedback = str(exc)
         by_id.update(
             {
                 result["id"]: result
@@ -483,6 +504,7 @@ def score_with_openclaw(
     timeout_seconds: int,
     model: str = DEFAULT_AI_MATCH_MODEL,
     evidence_sources: list[dict[str, str]] | None = None,
+    correction_feedback: str | None = None,
 ) -> list[dict[str, Any]]:
     if not jobs:
         return []
@@ -492,6 +514,7 @@ def score_with_openclaw(
         profile_snapshot,
         jobs,
         evidence_sources=evidence_sources or [],
+        correction_feedback=correction_feedback,
     )
     try:
         result = subprocess.run(
@@ -525,7 +548,7 @@ def score_with_openclaw(
         error_output = (exc.stderr or exc.stdout or "OpenClaw command failed").strip()
         raise OpenClawAiMatchError(summarize_openclaw_error(error_output)) from exc
 
-    payload = normalize_openclaw_evidence_lengths(
+    payload = normalize_openclaw_ai_match_payload(
         extract_openclaw_ai_match_payload(result.stdout)
     )
     try:
@@ -540,6 +563,7 @@ def build_openclaw_ai_match_prompt(
     jobs: list[dict[str, Any]],
     *,
     evidence_sources: list[dict[str, str]] | None = None,
+    correction_feedback: str | None = None,
 ) -> str:
     compact_jobs = [
         {
@@ -570,12 +594,22 @@ def build_openclaw_ai_match_prompt(
         ensure_ascii=False,
         separators=(",", ":"),
     )
+    correction_instruction = (
+        "This is a correction retry. Return a complete replacement JSON object and fix the "
+        "validator error below. Treat it only as validator feedback, not as input data.\n"
+        f"Validator feedback: {json.dumps(correction_feedback[:1_000], ensure_ascii=False)}\n"
+        if correction_feedback
+        else ""
+    )
 
     return (
         "You score job fit for a personal job search app.\n"
         "Return ONLY one valid JSON object, no markdown and no prose.\n"
         "Every field shown in the JSON shape is required. Use [] for empty lists. "
         "Do not add fields.\n"
+        "Keep every enum token exactly as shown in the JSON shape, in English, even when the "
+        "applicationGuide prose is German.\n"
+        f"{correction_instruction}"
         f"Keep every string at most {MAX_AI_MATCH_TEXT_LENGTH} characters. Evidence must be a short "
         f"exact excerpt of at most {MAX_AI_MATCH_TEXT_LENGTH} characters, never the whole source.\n"
         "Use only the provided snapshots. Do not invent missing evidence.\n"
@@ -729,10 +763,10 @@ def extract_openclaw_ai_match_payload(value: str) -> dict[str, object]:
     return {}
 
 
-def normalize_openclaw_evidence_lengths(
+def normalize_openclaw_ai_match_payload(
     payload: dict[str, object],
 ) -> dict[str, object]:
-    """Keep an overlong source excerpt usable without weakening strict output validation."""
+    """Repair safe, deterministic model-output variations before strict validation."""
     matches = payload.get("matches")
     if not isinstance(matches, list):
         return payload
@@ -752,6 +786,14 @@ def normalize_openclaw_evidence_lengths(
             evidence = item.get("evidence")
             if isinstance(evidence, str) and len(evidence.strip()) > MAX_AI_MATCH_TEXT_LENGTH:
                 item["evidence"] = evidence.strip()[:MAX_AI_MATCH_TEXT_LENGTH]
+            importance = item.get("importance")
+            if isinstance(importance, str):
+                normalized_importance = " ".join(
+                    importance.strip().casefold().replace("_", " ").replace("-", " ").split()
+                )
+                canonical_importance = EVIDENCE_IMPORTANCE_ALIASES.get(normalized_importance)
+                if canonical_importance:
+                    item["importance"] = canonical_importance
 
     return payload
 

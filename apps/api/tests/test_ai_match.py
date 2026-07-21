@@ -407,6 +407,7 @@ def test_openclaw_prompt_treats_score_as_expert_judgment() -> None:
     assert '"candidateEvidenceSources"' in prompt
     assert '"sourceIds"' in prompt
     assert "Evidence must be a short exact excerpt of at most 500 characters" in prompt
+    assert "Keep every enum token exactly as shown" in prompt
     assert "if a data role requires Excel" in prompt
     assert "reuse directly when tailoring the candidate's CV and cover letter" in prompt
     assert '"weights"' not in prompt
@@ -549,6 +550,47 @@ def test_incomplete_ai_match_is_retried_and_never_synthetically_completed(
             "label": "Profile · skills",
             "excerpt": "Python",
         }
+    ]
+
+
+def test_ai_match_retry_includes_validation_feedback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    correction_feedback: list[str | None] = []
+
+    def fake_score_with_openclaw(*, jobs: list[dict], **kwargs: object) -> list[dict]:
+        correction_feedback.append(kwargs.get("correction_feedback"))
+        if len(correction_feedback) == 1:
+            raise OpenClawAiMatchError(
+                "applicationGuide.evidenceMatrix.1.importance must be required or preferred"
+            )
+        return [valid_match_result(jobs[0]["id"])]
+
+    monkeypatch.setattr(ai_match_service, "score_with_openclaw", fake_score_with_openclaw)
+
+    calculate_ai_matches(
+        ProfilePayload(skills="Python"),
+        [
+            {
+                "id": "job-correction-retry",
+                "title": "Python Engineer",
+                "company": "Acme",
+                "requirements": ["Python"],
+                "skills": ["Python"],
+            }
+        ],
+        command="openclaw",
+        agent_id="main",
+        thinking="low",
+        timeout_seconds=1,
+        openclaw_enabled=True,
+        openclaw_max_jobs=1,
+        max_attempts=2,
+    )
+
+    assert correction_feedback == [
+        None,
+        "applicationGuide.evidenceMatrix.1.importance must be required or preferred",
     ]
 
 
@@ -771,6 +813,55 @@ def test_score_with_openclaw_truncates_overlong_evidence_excerpt(
     evidence = results[0]["applicationGuide"]["evidenceMatrix"][0]["evidence"]
     assert len(evidence) == ai_match_service.MAX_AI_MATCH_TEXT_LENGTH
     assert overlong_evidence.startswith(evidence)
+
+
+@pytest.mark.parametrize(
+    ("model_value", "expected"),
+    [
+        ("mandatory", "required"),
+        ("must-have", "required"),
+        ("wünschenswert", "preferred"),
+        ("nice_to_have", "preferred"),
+    ],
+)
+def test_score_with_openclaw_normalizes_safe_importance_synonyms(
+    monkeypatch: pytest.MonkeyPatch,
+    model_value: str,
+    expected: str,
+) -> None:
+    match = valid_match_result("manual-job-importance")
+    guide = match["applicationGuide"]
+    assert isinstance(guide, dict)
+    evidence_matrix = guide["evidenceMatrix"]
+    assert isinstance(evidence_matrix, list)
+    assert isinstance(evidence_matrix[0], dict)
+    evidence_matrix[0]["importance"] = model_value
+
+    def fake_run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(match), stderr="")
+
+    monkeypatch.setattr(ai_match_service.subprocess, "run", fake_run)
+
+    results = ai_match_service.score_with_openclaw(
+        profile_snapshot={"roles": ["Python Engineer"]},
+        jobs=[
+            build_job_snapshot(
+                {
+                    "id": "manual-job-importance",
+                    "title": "Python Engineer",
+                    "company": "Acme",
+                    "requirements": ["Python"],
+                    "skills": ["Python"],
+                }
+            )
+        ],
+        command="openclaw",
+        agent_id="main",
+        thinking="low",
+        timeout_seconds=10,
+    )
+
+    assert results[0]["applicationGuide"]["evidenceMatrix"][0]["importance"] == expected
 
 
 def test_seniority_normalization_handles_common_variants() -> None:

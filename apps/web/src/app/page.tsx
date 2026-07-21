@@ -7,7 +7,6 @@ import {
   ArchiveRestore,
   Ban,
   BarChart3,
-  Bell,
   Bookmark,
   BrainCircuit,
   BriefcaseBusiness,
@@ -68,7 +67,7 @@ import {
 } from "@/components/assistant-view";
 import { ApplicationWorkspace } from "@/components/application-workspace";
 import { DashboardGreeting, useHydrationSafeCurrentTime } from "@/components/dashboard-greeting";
-import { legacyAiMatchVersion } from "@/lib/ai-match";
+import { getAiMatchAnalysisStatus, legacyAiMatchVersion } from "@/lib/ai-match";
 import { findWorkspaceApplication, getHashForView, getRouteFromHash, type View } from "@/lib/app-route";
 import { cn } from "@/lib/utils";
 import { runSequentially } from "@/lib/async-queue";
@@ -187,6 +186,7 @@ type AiMatchJobStatus = {
   total: number;
   processed: number;
   updatedJobs: Array<{ id: string; data: unknown }>;
+  failedJobs?: Array<{ id: string; error: string }>;
   error?: string | null;
 };
 
@@ -337,6 +337,7 @@ type JobFilterKey = "location" | "remote" | "salary" | "experience" | "type" | "
 type JobFilters = Record<JobFilterKey, string>;
 
 type JobSortBy = "AI Match" | "Time" | "Salary";
+type BulkAnalysisScope = "recent" | "missing";
 
 type ParserSearchConfig = {
   id: string;
@@ -581,6 +582,7 @@ const snapshotPollDelayMs = 4000;
 const snapshotPollMaxAttempts = 30;
 const aiMatchStatusPollDelayMs = 2500;
 const aiMatchStatusPollMaxAttempts = 720;
+const recentJobWindowMs = 24 * 60 * 60 * 1000;
 const importedJobsStorageKey = "tasko.importedJobs.v1";
 const savedJobIdsStorageKey = "tasko.savedJobIds.v1";
 const archivedJobIdsStorageKey = "tasko.archivedJobIds.v1";
@@ -1761,6 +1763,26 @@ function deduplicateParsedJobs(jobs: ParsedJob[]) {
   });
 }
 
+const entryItTitlePattern = /\b(?:software|developer|entwickler|entwicklung|python|data|machine[\s-]?learning|deep[\s-]?learning|artificial[\s-]?intelligence|ai|ml|web|front[\s-]?end|back[\s-]?end|full[\s-]?stack|devops|mlops|cloud|it|informatik|cyber(?:security)?|security|network|embedded|firmware|programming)\b/i;
+const entryLevelTitlePattern = /\b(?:intern(?:ship)?|praktik\w*|working[\s-]?student|werkstudent\w*|junior|graduate|trainee|student\w*)\b/i;
+const entryLevelSeniorityPattern = /^(?:internship|entry level|associate)$/i;
+const seniorTitlePattern = /\b(?:senior|lead|staff|head|principal|manager|architect|director|chief)\b/i;
+const seniorSeniorityPattern = /(?:mid[\s-]?senior|senior|executive|director)/i;
+
+function isEntryItParsedJob(job: ParsedJob) {
+  const title = job.title?.trim() || "";
+  const seniority = job.seniority?.trim() || "";
+
+  if (!entryItTitlePattern.test(title)) return false;
+  if (seniorTitlePattern.test(title) || seniorSeniorityPattern.test(seniority)) return false;
+
+  return entryLevelTitlePattern.test(title) || entryLevelSeniorityPattern.test(seniority);
+}
+
+function shouldFilterEntryItJobs(form: ParserSearchForm) {
+  return form.searchName.trim().toLowerCase() === "entry it";
+}
+
 const manualJobSkillPatterns: Array<{ label: string; pattern: RegExp }> = [
   { label: "IPX", pattern: /\bipx\b/i },
   { label: "HVAC", pattern: /\bhvac\b/i },
@@ -2581,6 +2603,18 @@ function getJobPostedTime(job: Job) {
   return getRelativePostedTime(job.posted);
 }
 
+function getBulkAnalysisCandidates(jobsToCheck: Job[], scope: BulkAnalysisScope) {
+  const recentCutoff = Date.now() - recentJobWindowMs;
+
+  return jobsToCheck.filter((job) => {
+    if (job.archived) return false;
+    if (scope === "missing") return getAiMatchAnalysisStatus(job.aiMatch) !== "current";
+
+    const addedAt = Date.parse(job.addedAt ?? "");
+    return !Number.isNaN(addedAt) && addedAt >= recentCutoff;
+  });
+}
+
 function formatJobPosted(value: string) {
   const parsedDate = Date.parse(value);
   if (!Number.isNaN(parsedDate)) {
@@ -2736,7 +2770,8 @@ export default function HomePage() {
   const [areApplicationEventsLoaded, setAreApplicationEventsLoaded] = useState(false);
   const [jobFilters, setJobFilters] = useState<JobFilters>(defaultJobFilters);
   const [sortBy, setSortBy] = useState<JobSortBy>("AI Match");
-  const [alertsEnabled, setAlertsEnabled] = useState(false);
+  const [isAnalysisMenuOpen, setIsAnalysisMenuOpen] = useState(false);
+  const [bulkAnalysisScope, setBulkAnalysisScope] = useState<BulkAnalysisScope | null>(null);
   const [isManualJobDialogOpen, setIsManualJobDialogOpen] = useState(false);
   const [manualJobDraft, setManualJobDraft] = useState<ManualJobDraft>(defaultManualJobDraft);
   const [isParserDialogOpen, setIsParserDialogOpen] = useState(false);
@@ -2808,6 +2843,8 @@ export default function HomePage() {
     () => availableJobs.filter((job) => !job.archived && savedJobs.includes(job.id)).length,
     [availableJobs, savedJobs],
   );
+  const recentAnalysisJobs = getBulkAnalysisCandidates(availableJobs, "recent");
+  const missingAnalysisJobs = getBulkAnalysisCandidates(availableJobs, "missing");
 
   const locationFilterOptions = useMemo(
     () =>
@@ -4957,7 +4994,8 @@ export default function HomePage() {
     });
   }
 
-  async function refreshAiMatch(job: Job, force = false, conflictRetry = false): Promise<boolean> {
+  async function refreshAiMatches(jobsToMatch: Job[], force = false, conflictRetry = false): Promise<boolean> {
+    if (jobsToMatch.length === 0) return true;
     setAiMatchErrorMessage("");
 
     try {
@@ -4965,14 +5003,14 @@ export default function HomePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          jobs: [{ id: job.id, data: job }],
+          jobs: jobsToMatch.map((job) => ({ id: job.id, data: job })),
         }),
       });
 
       if (response.status === 409) {
-        const previousRunCompleted = await pollAiMatchStatus();
-        if (!previousRunCompleted || conflictRetry) return false;
-        return refreshAiMatch(job, force, true);
+        const previousRunStatus = await pollAiMatchStatus();
+        if (!previousRunStatus || conflictRetry) return false;
+        return refreshAiMatches(jobsToMatch, force, true);
       }
 
       if (!response.ok) {
@@ -4984,11 +5022,43 @@ export default function HomePage() {
       const startedStatus = (await response.json()) as AiMatchJobStatus;
       applyAiMatchStatus(startedStatus);
 
-      return pollAiMatchStatus();
+      const completedStatus = await pollAiMatchStatus();
+      return Boolean(completedStatus && (completedStatus.failedJobs?.length ?? 0) === 0);
     } catch (error) {
       const message = error instanceof Error ? error.message : "AI match request failed";
       reportAiMatchError(message);
       return false;
+    }
+  }
+
+  function refreshAiMatch(job: Job, force = false, conflictRetry = false) {
+    return refreshAiMatches([job], force, conflictRetry);
+  }
+
+  async function runBulkAiAnalysis(scope: BulkAnalysisScope) {
+    const jobsToAnalyze = getBulkAnalysisCandidates(availableJobs, scope);
+    if (jobsToAnalyze.length === 0 || bulkAnalysisScope) return;
+
+    setIsAnalysisMenuOpen(false);
+    setBulkAnalysisScope(scope);
+    appendAppLog({
+      level: "info",
+      area: "AI Match",
+      message: `Bulk AI analysis started for ${jobsToAnalyze.length} vacancies`,
+      details: scope === "recent" ? "Vacancies added in the last 24 hours" : "Vacancies without current AI analysis",
+    });
+
+    try {
+      const completed = await refreshAiMatches(jobsToAnalyze, true);
+      if (completed) {
+        appendAppLog({
+          level: "success",
+          area: "AI Match",
+          message: `Bulk AI analysis completed for ${jobsToAnalyze.length} vacancies`,
+        });
+      }
+    } finally {
+      setBulkAnalysisScope(null);
     }
   }
 
@@ -5027,7 +5097,7 @@ export default function HomePage() {
     }
   }
 
-  async function pollAiMatchStatus() {
+  async function pollAiMatchStatus(): Promise<AiMatchJobStatus | null> {
     for (let attempt = 0; attempt < aiMatchStatusPollMaxAttempts; attempt += 1) {
       await wait(aiMatchStatusPollDelayMs);
 
@@ -5037,28 +5107,37 @@ export default function HomePage() {
       if (!response.ok) {
         const message = await readApiErrorMessage(response, "AI match status check failed");
         reportAiMatchError(message, `HTTP ${response.status}`);
-        return false;
+        return null;
       }
 
       const status = (await response.json()) as AiMatchJobStatus;
       applyAiMatchStatus(status);
 
       if (status.status === "completed") {
-        setAiMatchErrorMessage("");
-        return true;
+        const failedJobs = status.failedJobs ?? [];
+        if (failedJobs.length > 0) {
+          const successfulJobs = Math.max(0, status.processed - failedJobs.length);
+          reportAiMatchError(
+            `AI analysis completed: ${successfulJobs} succeeded, ${failedJobs.length} failed`,
+            failedJobs.map((job) => `${job.id}: ${job.error}`).join("\n"),
+          );
+        } else {
+          setAiMatchErrorMessage("");
+        }
+        return status;
       }
       if (status.status === "failed") {
         reportAiMatchError(status.error || "AI match run failed");
-        return false;
+        return null;
       }
       if (status.status === "idle") {
         reportAiMatchError("AI match run stopped before completing");
-        return false;
+        return null;
       }
     }
 
     reportAiMatchError("AI match status timed out before completing");
-    return false;
+    return null;
   }
 
   function addParsedJobsToList(parsedJobs: ParsedJob[]) {
@@ -5221,9 +5300,13 @@ export default function HomePage() {
     }
 
     const returnedJobs = successfulResults.flatMap(({ result }) => result.value.jobs ?? []);
+    const relevantJobs = shouldFilterEntryItJobs(parserSearchForm)
+      ? returnedJobs.filter(isEntryItParsedJob)
+      : returnedJobs;
+    const excludedJobsCount = returnedJobs.length - relevantJobs.length;
     const combinedJobs = (parserSearchForm.deduplicate
-      ? deduplicateParsedJobs(returnedJobs)
-      : returnedJobs
+      ? deduplicateParsedJobs(relevantJobs)
+      : relevantJobs
     ).slice(0, resultsLimit);
     const addedCount = addParsedJobsToList(combinedJobs);
     const failedLabels = failedResults.map(({ parser }) => getParserLabel(parser));
@@ -5239,6 +5322,9 @@ export default function HomePage() {
       level: failedLabels.length > 0 ? "warning" : addedCount > 0 ? "success" : "warning",
       area: "Vacancy search",
       message: finalMessage,
+      details: excludedJobsCount > 0
+        ? `Excluded ${excludedJobsCount} vacancies that were not entry-level IT roles.`
+        : undefined,
     });
   }
 
@@ -5435,17 +5521,53 @@ export default function HomePage() {
               <Archive className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
               Archived {archivedJobsCount > 0 ? `(${archivedJobsCount})` : ""}
             </Button>
-            <Button
-              variant="ghost"
-              className={cn(
-                "h-9 rounded-md border border-border bg-white/[0.03] px-3 text-xs text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
-                alertsEnabled && "border-accent/70 text-white",
-              )}
-              onClick={() => setAlertsEnabled((enabled) => !enabled)}
-            >
-              <Bell className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
-              Job Alerts
-            </Button>
+            <div className="relative" onKeyDown={(event) => event.key === "Escape" && setIsAnalysisMenuOpen(false)}>
+              <Button
+                variant="ghost"
+                aria-haspopup="menu"
+                aria-expanded={isAnalysisMenuOpen}
+                className={cn(
+                  "h-9 rounded-md border border-border bg-white/[0.03] px-3 text-xs text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
+                  (isAnalysisMenuOpen || bulkAnalysisScope) && "border-accent/70 text-white",
+                )}
+                disabled={bulkAnalysisScope !== null}
+                onClick={() => setIsAnalysisMenuOpen((isOpen) => !isOpen)}
+              >
+                <Sparkles className={cn("h-[18px] w-[18px] 2xl:h-5 2xl:w-5", bulkAnalysisScope && "animate-pulse text-accent")} />
+                {bulkAnalysisScope ? "Analyzing..." : "Analysis"}
+                {!bulkAnalysisScope ? <ChevronDown className="h-3.5 w-3.5 text-muted" /> : null}
+              </Button>
+
+              {isAnalysisMenuOpen ? (
+                <div
+                  role="menu"
+                  aria-label="Bulk AI analysis"
+                  className="absolute right-0 top-11 z-40 grid w-[300px] gap-1 rounded-md border border-border bg-[#101720] p-2 shadow-[0_18px_40px_rgba(0,0,0,0.48)] 2xl:top-14"
+                >
+                  <p className="px-2 pb-1 pt-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-muted">Run AI analysis</p>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={recentAnalysisJobs.length === 0}
+                    onClick={() => void runBulkAiAnalysis("recent")}
+                    className="rounded-md px-2.5 py-2 text-left transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
+                  >
+                    <span className="block text-xs font-bold text-[#e6ebf3]">Vacancies added in the last 24 hours</span>
+                    <span className="mt-1 block text-[11px] leading-4 text-muted">Re-run analysis for {recentAnalysisJobs.length} active vacancies.</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={missingAnalysisJobs.length === 0}
+                    onClick={() => void runBulkAiAnalysis("missing")}
+                    className="rounded-md px-2.5 py-2 text-left transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
+                  >
+                    <span className="block text-xs font-bold text-[#e6ebf3]">Vacancies without current analysis</span>
+                    <span className="mt-1 block text-[11px] leading-4 text-muted">Analyze {missingAnalysisJobs.length} vacancies with missing or outdated results.</span>
+                  </button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </header>
 
@@ -5561,6 +5683,7 @@ export default function HomePage() {
                     <div className="min-w-0 pt-0.5">
                       <h2 className="line-clamp-2 text-[13px] font-bold leading-tight text-white 2xl:text-base">{job.title}</h2>
                       <p className="mt-0.5 truncate text-xs font-bold text-[#aeb5c2] 2xl:text-sm">{job.company}</p>
+                      <p className="mt-1 truncate text-[10px] font-semibold text-[#aeb5c2] 2xl:text-[11px]">Source: {getJobSourceLabel(job)}</p>
                     </div>
                     <div className="grid grid-cols-2 justify-items-center gap-1.5">
                       <div className="col-span-2">
@@ -5632,6 +5755,7 @@ export default function HomePage() {
                     <p className="mt-1.5 text-sm font-semibold text-muted 2xl:mt-2 2xl:text-base">
                       {selectedJob.company} <span className="text-white/35">•</span> {selectedJob.location} <span className="text-white/35">•</span> {selectedJob.type}
                     </p>
+                    <p className="mt-1 text-xs font-semibold text-[#aeb5c2] 2xl:text-sm">Source: {getJobSourceLabel(selectedJob)}</p>
                     <p className="mt-2 text-sm font-semibold text-muted 2xl:mt-3 2xl:text-base">{selectedJob.salary}</p>
                   </div>
                 </div>
@@ -6068,6 +6192,7 @@ export default function HomePage() {
                       <span className="text-xs font-bold text-[#d8dee8]">Existing configs</span>
                       <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                         <select
+                          aria-label="Existing configs"
                           value={selectedParserSearchConfigId}
                           onChange={(event) => loadParserSearchConfig(event.target.value)}
                           className="h-9 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-muted outline-none focus:border-accent/70"
@@ -8883,6 +9008,7 @@ function DashboardView({
                           <p className="truncate text-xs text-muted">{job.company} · {job.location}</p>
                           <div className="mt-1 flex gap-1.5">
                             <span className="tag max-w-[96px] truncate">{job.type}</span>
+                            <span className="tag max-w-[120px] truncate">Source: {getJobSourceLabel(job)}</span>
                           </div>
                         </div>
                         <div className="hidden text-left sm:block">
@@ -12067,6 +12193,10 @@ const jobSourceBadges: Record<Job["logo"], { label: string; text: string; classN
   figma: { label: "Figma", text: "F", className: "bg-black text-white" },
   stripe: { label: "Stripe", text: "S", className: "bg-[#635bff] text-white" },
 };
+
+function getJobSourceLabel(job: Job) {
+  return jobSourceBadges[job.logo].label;
+}
 
 function getSpecializedJobRoleCategory(value: string): JobRoleCategory | null {
   const text = value.toLowerCase();
