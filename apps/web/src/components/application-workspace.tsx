@@ -385,6 +385,7 @@ type DocumentChatMessage = {
 type ApplicationWorkspaceProps = {
   application: WorkspaceApplication | null;
   profile: WorkspaceProfile;
+  backLabel?: string;
   onBack: () => void;
   onOpenAssistant: (prompt: string, applicationId: string) => void;
   onDocumentAttached: (
@@ -702,6 +703,7 @@ function buildGroundedAdvice(prompt: string, guide?: ApplicationGuide) {
 export function ApplicationWorkspace({
   application,
   profile,
+  backLabel = "Applications",
   onBack,
   onOpenAssistant,
   onDocumentAttached,
@@ -1112,7 +1114,7 @@ export function ApplicationWorkspace({
         <div className="panel max-w-md p-6 text-center">
           <FileText className="mx-auto h-8 w-8 text-muted" />
           <h1 className="mt-3 text-lg font-bold text-white">No application selected</h1>
-          <Button className="mt-4 bg-accent text-white" onClick={onBack}><ArrowLeft className="h-4 w-4" /> Back to applications</Button>
+          <Button className="mt-4 bg-accent text-white" onClick={onBack}><ArrowLeft className="h-4 w-4" /> Back to {backLabel.toLowerCase()}</Button>
         </div>
       </section>
     );
@@ -1907,7 +1909,7 @@ export function ApplicationWorkspace({
     <section className="job-scroll application-workspace min-w-0 flex-1 overflow-y-auto px-3 py-4 sm:px-5 xl:px-7">
       <div className="mx-auto max-w-[1420px]">
         <button type="button" onClick={onBack} className="mb-4 inline-flex items-center gap-2 text-xs font-semibold text-muted transition hover:text-white">
-          <ArrowLeft className="h-4 w-4" /> Applications
+          <ArrowLeft className="h-4 w-4" /> {backLabel}
         </button>
 
         <header className="application-hero overflow-hidden rounded-2xl border border-white/[0.09]">

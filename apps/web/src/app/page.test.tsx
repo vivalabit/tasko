@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { expect, it, vi } from "vitest";
 
 import HomePage from "@/app/page";
+import { installApplicationWorkspaceApiMock } from "@/test/application-workspace-harness";
 
 it("adds a manual vacancy to Jobs, persists it, and starts AI analysis", async () => {
   window.history.replaceState(null, "", "#jobs");
@@ -104,10 +105,24 @@ it("searches LinkedIn, Indeed, and jobs.ch together when all sources are selecte
       return Response.json({ parser: "linkedin", status: "completed", jobs: [] });
     }
     if (url.pathname === "/parsers/indeed/search" && method === "POST") {
-      return Response.json({ parser: "indeed", status: "completed", jobs: [] });
+      return Response.json({
+        parser: "indeed",
+        status: "completed",
+        jobs: [{
+          source: "indeed",
+          title: "Junior Data Engineer",
+          company: "Example AG",
+          location: "Zurich",
+          url: "https://ch.indeed.com/viewjob?jk=example",
+        }],
+      });
     }
     if (url.pathname === "/parsers/jobs_ch/search" && method === "POST") {
       return Response.json({ parser: "jobs_ch", status: "completed", jobs: [] });
+    }
+    if (url.pathname === "/jobs" && method === "PUT") return Response.json([]);
+    if (url.pathname === "/jobs/ai-match/run" && method === "POST") {
+      return Response.json({ detail: "AI match disabled in test" }, { status: 403 });
     }
 
     throw new Error(`Unhandled request: ${method} ${url.pathname}`);
@@ -136,5 +151,53 @@ it("searches LinkedIn, Indeed, and jobs.ch together when all sources are selecte
     expect(requests).toContainEqual({ path: "/parsers/indeed/search", method: "POST" });
     expect(requests).toContainEqual({ path: "/parsers/jobs_ch/search", method: "POST" });
   });
-  expect(await screen.findByText("No vacancies returned from LinkedIn + Indeed + jobs.ch")).toBeInTheDocument();
+  expect(await screen.findByText("Added 1 vacancies from LinkedIn + Indeed + jobs.ch")).toBeInTheDocument();
+  expect(screen.getAllByRole("img", { name: "Data Engineering role · Indeed" })).toHaveLength(2);
+});
+
+it("keeps preparation drafts out of Applications until they are marked as applied", async () => {
+  window.history.replaceState(null, "", "#jobs");
+  const savedApplicationStatuses: string[] = [];
+
+  installApplicationWorkspaceApiMock({
+    requestHandler: async (url, method, init) => {
+      if (url.pathname === "/parser-search-configs.local.json") return Response.json([]);
+      if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
+      if (url.pathname === "/applications" && method === "GET") return Response.json([]);
+      if (url.pathname === "/applications/events" && method === "GET") return Response.json([]);
+      if (url.pathname === "/profile" && method === "GET") return Response.json({});
+      if (url.pathname === "/settings" && method === "GET") {
+        return Response.json({ has_brightdata_api_key: false, brightdata_api_key_preview: "" });
+      }
+      if (url.pathname === "/applications" && method === "PUT") {
+        const payload = JSON.parse(String(init?.body)) as {
+          applications: Array<{ data: { status: string } }>;
+        };
+        savedApplicationStatuses.push(...payload.applications.map((application) => application.data.status));
+        return Response.json(payload.applications);
+      }
+      if (url.pathname === "/applications/events" && method === "PUT") return Response.json([]);
+      return undefined;
+    },
+  });
+
+  render(<HomePage />);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Prepare application" }));
+  expect(await screen.findByText("Application prep")).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: "Jobs" })).toBeInTheDocument();
+  await waitFor(() => expect(savedApplicationStatuses).toContain("draft"));
+
+  fireEvent.click(screen.getByRole("button", { name: "Jobs" }));
+  fireEvent.click(screen.getByRole("link", { name: "Applications" }));
+  expect(await screen.findByText("No applications yet")).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("link", { name: "Jobs" }));
+  const continuePreparation = await screen.findByRole("button", { name: "Continue preparation" });
+  fireEvent.click(continuePreparation);
+  fireEvent.click(await screen.findByRole("button", { name: "Mark as applied" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Applications" }));
+
+  expect(await screen.findByText("Applications (1)")).toBeInTheDocument();
+  await waitFor(() => expect(savedApplicationStatuses).toContain("applied"));
 });

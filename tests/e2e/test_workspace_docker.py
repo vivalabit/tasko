@@ -91,6 +91,16 @@ class WorkspaceDockerE2E(unittest.TestCase):
         cls.wait_for_api()
 
     @classmethod
+    def tearDownClass(cls) -> None:
+        # Keep explicit cleanup even though the runner removes the isolated Docker volumes.
+        # This also protects personal data if the test is pointed at a persistent environment.
+        for path in (f"/applications/{APPLICATION_ID}", f"/jobs/{JOB_ID}"):
+            try:
+                cls.api_request("DELETE", path, expected_status=204)
+            except (AssertionError, OSError, URLError):
+                pass
+
+    @classmethod
     def compose(cls, *arguments: str, capture: bool = False) -> str:
         command = ["docker", "compose", "--project-name", cls.compose_project]
         for compose_file in cls.compose_files:

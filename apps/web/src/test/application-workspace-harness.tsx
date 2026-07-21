@@ -212,7 +212,7 @@ export function installApplicationWorkspaceApiMock({
         : input instanceof URL
           ? input.href
           : input.url;
-    const url = new URL(requestUrl);
+    const url = new URL(requestUrl, "http://localhost");
     const method = init?.method ?? "GET";
     const customResponse = await requestHandler?.(url, method, init);
     if (customResponse) return customResponse;

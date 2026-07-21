@@ -161,7 +161,7 @@ type Job = {
   experience: string;
   department: string;
   match: number;
-  logo: "stripe" | "figma" | "linkedin" | "manual";
+  logo: "stripe" | "figma" | "linkedin" | "indeed" | "jobs_ch" | "manual";
   overview: string;
   responsibilities: string[];
   requirements: string[];
@@ -545,6 +545,7 @@ const applicationStatuses: Array<{ status: ApplicationStatus; label: string }> =
   { status: "offer", label: "Offer" },
   { status: "rejected", label: "Rejected" },
 ];
+const trackedApplicationStatuses = applicationStatuses.filter((item) => item.status !== "draft");
 
 const applicationStatusStyles: Record<ApplicationStatus, string> = {
   draft: "border-[#9f7aea]/40 bg-[#9f7aea]/14 text-[#c4a7ff]",
@@ -585,9 +586,14 @@ const savedJobIdsStorageKey = "tasko.savedJobIds.v1";
 const archivedJobIdsStorageKey = "tasko.archivedJobIds.v1";
 const deletedJobIdsStorageKey = "tasko.deletedJobIds.v1";
 const applicationsStorageKey = "tasko.applications.v1";
+const legacyDemoApplicationIds = new Set([
+  "application-stripe-senior-product-designer",
+  "application-figma-product-design-lead",
+]);
 const applicationEventsStorageKey = "tasko.applicationEvents.v1";
 const profileStorageKey = "tasko.profile.v1";
-const parserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v1";
+const legacyParserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v1";
+const parserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v2";
 const uiSettingsStorageKey = "tasko.uiSettings.v1";
 const appLogsStorageKey = "tasko.appLogs.v1";
 const parserSearchConfigsLocalUrl = "/parser-search-configs.local.json";
@@ -1683,6 +1689,11 @@ function createParsedJobId(job: ParsedJob, index: number) {
 
 function mapParsedJobToJob(job: ParsedJob, index: number): Job {
   const parserLabel = getParserLabel(job.source);
+  const sourceLogo: Job["logo"] = job.source === "indeed"
+    ? "indeed"
+    : job.source === "jobs_ch" || job.source === "jobs.ch"
+      ? "jobs_ch"
+      : "linkedin";
   const title = job.title?.trim() || `${parserLabel} vacancy`;
   const company = job.company?.trim() || parserLabel;
   const location = job.location?.trim() || "Not specified";
@@ -1712,7 +1723,7 @@ function mapParsedJobToJob(job: ParsedJob, index: number): Job {
     experience,
     department: `${parserLabel} import`,
     match: 50,
-    logo: "manual",
+    logo: sourceLogo,
     overview,
     responsibilities: [`Review the ${parserLabel} vacancy details`, "Compare requirements with your profile", "Decide whether to save or apply"],
     requirements: [experience, type, location].filter((item) => item !== "Not specified"),
@@ -1960,13 +1971,30 @@ function wait(ms: number) {
 async function readApiErrorMessage(response: Response, fallback: string) {
   try {
     const payload = (await response.json()) as { detail?: unknown; message?: unknown };
-    if (typeof payload.detail === "string" && payload.detail.trim()) return payload.detail;
-    if (typeof payload.message === "string" && payload.message.trim()) return payload.message;
+    return formatApiErrorDetail(payload.detail) || formatApiErrorDetail(payload.message) || fallback;
   } catch {
     // Error responses are not guaranteed to be JSON.
   }
 
   return fallback;
+}
+
+function formatApiErrorDetail(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) {
+    return value.map(formatApiErrorDetail).filter(Boolean).join("; ");
+  }
+  if (!value || typeof value !== "object") return "";
+
+  const detail = value as Record<string, unknown>;
+  if (typeof detail.msg === "string" && detail.msg.trim()) {
+    const location = Array.isArray(detail.loc)
+      ? detail.loc.filter((part) => part !== "body").map(String).join(".")
+      : "";
+    return location ? `${location}: ${detail.msg.trim()}` : detail.msg.trim();
+  }
+
+  return formatApiErrorDetail(detail.detail) || formatApiErrorDetail(detail.message);
 }
 
 function createClientId(prefix: string) {
@@ -2182,7 +2210,14 @@ function normalizeStoredJobs(value: unknown) {
       typeof candidate.experience === "string" &&
       typeof candidate.department === "string" &&
       typeof candidate.match === "number" &&
-      (candidate.logo === "stripe" || candidate.logo === "figma" || candidate.logo === "linkedin" || candidate.logo === "manual") &&
+      (
+        candidate.logo === "stripe" ||
+        candidate.logo === "figma" ||
+        candidate.logo === "linkedin" ||
+        candidate.logo === "indeed" ||
+        candidate.logo === "jobs_ch" ||
+        candidate.logo === "manual"
+      ) &&
       typeof candidate.overview === "string" &&
       Array.isArray(candidate.responsibilities) &&
       Array.isArray(candidate.requirements) &&
@@ -2193,11 +2228,19 @@ function normalizeStoredJobs(value: unknown) {
     return [
       sanitizeLegacyLocalAiMatch({
         ...(candidate as Job),
+        logo: normalizeStoredJobLogo(candidate as Job),
         archived: Boolean(candidate.archived),
         archivedAt: typeof candidate.archivedAt === "string" ? candidate.archivedAt : undefined,
       }),
     ];
   });
+}
+
+function normalizeStoredJobLogo(job: Job): Job["logo"] {
+  if (job.id.startsWith("linkedin-")) return "linkedin";
+  if (job.id.startsWith("indeed-")) return "indeed";
+  if (job.id.startsWith("jobs_ch-")) return "jobs_ch";
+  return job.logo;
 }
 
 function normalizeStoredJobIds(value: unknown) {
@@ -2269,6 +2312,10 @@ function normalizeStoredApplications(value: unknown) {
       },
     ];
   });
+}
+
+function removeLegacyDemoApplications(applications: TrackedApplication[]) {
+  return applications.filter((application) => !legacyDemoApplicationIds.has(application.id));
 }
 
 function normalizeStoredApplicationEvents(value: unknown) {
@@ -2827,10 +2874,23 @@ export default function HomePage() {
 
   const selectedJob = filteredJobs.find((job) => job.id === selectedJobId) ?? filteredJobs[0] ?? null;
   const isSelectedSaved = selectedJob ? savedJobs.includes(selectedJob.id) : false;
-  const selectedJobApplication = selectedJob
+  const selectedJobPreparation = selectedJob
     ? applications.find((application) => application.job.id === selectedJob.id)
     : undefined;
-  const selectedApplication = applications.find((application) => application.id === selectedApplicationId) ?? applications[0] ?? null;
+  const selectedJobApplication = selectedJobPreparation?.status === "draft" ? undefined : selectedJobPreparation;
+  const trackedApplications = useMemo(
+    () => applications.filter((application) => application.status !== "draft"),
+    [applications],
+  );
+  const trackedApplicationIds = useMemo(
+    () => new Set(trackedApplications.map((application) => application.id)),
+    [trackedApplications],
+  );
+  const trackedApplicationEvents = useMemo(
+    () => applicationEvents.filter((event) => trackedApplicationIds.has(event.applicationId)),
+    [applicationEvents, trackedApplicationIds],
+  );
+  const selectedApplication = trackedApplications.find((application) => application.id === selectedApplicationId) ?? trackedApplications[0] ?? null;
   const workspaceApplication = findWorkspaceApplication(applications, workspaceApplicationId);
 
   function openAiMatchSection(section: "analysis" | "recommendations") {
@@ -2878,6 +2938,7 @@ export default function HomePage() {
       const configs: ParserSearchConfig[] = [];
 
       try {
+        window.localStorage.removeItem(legacyParserSearchConfigsStorageKey);
         const rawConfigs = window.localStorage.getItem(parserSearchConfigsStorageKey);
         if (rawConfigs) {
           const parsedConfigs = JSON.parse(rawConfigs) as ParserSearchConfig[];
@@ -2934,7 +2995,9 @@ export default function HomePage() {
   useEffect(() => {
     try {
       const rawApplications = window.localStorage.getItem(applicationsStorageKey);
-      const storedApplications = normalizeStoredApplications(rawApplications ? JSON.parse(rawApplications) : []);
+      const storedApplications = removeLegacyDemoApplications(
+        normalizeStoredApplications(rawApplications ? JSON.parse(rawApplications) : []),
+      );
       setApplications(storedApplications);
       setSelectedApplicationId((currentId) => currentId || storedApplications[0]?.id || "");
     } catch {
@@ -3143,7 +3206,9 @@ export default function HomePage() {
         if (!response.ok) return;
 
         const storedApplications = (await response.json()) as Array<{ id: string; data: unknown }>;
-        const loadedApplications = normalizeStoredApplications(storedApplications.map((application) => application.data));
+        const loadedApplications = removeLegacyDemoApplications(
+          normalizeStoredApplications(storedApplications.map((application) => application.data)),
+        );
         if (loadedApplications.length === 0) return;
 
         setApplications(loadedApplications);
@@ -3310,6 +3375,11 @@ export default function HomePage() {
     const existingApplication = applications.find((item) => item.job.id === job.id);
 
     if (existingApplication) {
+      setApplications((currentApplications) => currentApplications.map((item) =>
+        item.id === existingApplication.id
+          ? { ...item, job, status: "applied", appliedAt: new Date().toISOString() }
+          : item,
+      ));
       setSelectedApplicationId(existingApplication.id);
     } else {
       setApplications((currentApplications) => [application, ...currentApplications]);
@@ -3513,6 +3583,10 @@ export default function HomePage() {
           ? {
               ...application,
               status,
+              appliedAt:
+                status === "applied" && application.status === "draft"
+                  ? new Date().toISOString()
+                  : application.appliedAt,
             }
           : application,
       ),
@@ -5037,7 +5111,9 @@ export default function HomePage() {
       const snapshotData = (await snapshotResponse.json()) as ParserApiResponse & { detail?: string };
 
       if (!snapshotResponse.ok) {
-        throw new Error(snapshotData.detail ?? `${getParserLabel(parser)} snapshot request failed`);
+        throw new Error(
+          formatApiErrorDetail(snapshotData.detail) || `${getParserLabel(parser)} snapshot request failed`,
+        );
       }
 
       if (snapshotData.status === "completed") {
@@ -5085,10 +5161,10 @@ export default function HomePage() {
         folder: parserSearchForm.folder,
       }),
     });
-    const data = (await response.json()) as ParserApiResponse & { detail?: string };
+    const data = (await response.json()) as ParserApiResponse & { detail?: unknown };
 
     if (!response.ok) {
-      throw new Error(data.detail ?? `${parserLabel} parser request failed`);
+      throw new Error(formatApiErrorDetail(data.detail) || `${parserLabel} parser request failed`);
     }
 
     const initialJobsCount = (data.jobs ?? []).length;
@@ -5187,8 +5263,8 @@ export default function HomePage() {
           <DashboardView
             profile={profile}
             jobs={availableJobs.filter((job) => !job.archived)}
-            applications={applications}
-            events={applicationEvents}
+            applications={trackedApplications}
+            events={trackedApplicationEvents}
             savedJobIds={savedJobs}
             isLoading={!isProfileLoaded || !areApplicationsLoaded || !areApplicationEventsLoaded || !areSavedJobsLoaded}
             onStartSearch={startJobSearchFromDashboard}
@@ -5204,7 +5280,8 @@ export default function HomePage() {
           <ApplicationWorkspace
             application={workspaceApplication}
             profile={profile}
-            onBack={() => changeView("Applications")}
+            backLabel={workspaceApplication?.status === "draft" ? "Jobs" : "Applications"}
+            onBack={() => changeView(workspaceApplication?.status === "draft" ? "Jobs" : "Applications")}
             onOpenAssistant={(prompt, applicationId) => openAssistant(prompt, "application", applicationId)}
             onDocumentAttached={attachGeneratedDocumentToApplication}
             onRefreshAnalysis={refreshApplicationAnalysis}
@@ -5220,8 +5297,8 @@ export default function HomePage() {
           />
         ) : activeView === "Applications" ? (
           <ApplicationsView
-            applications={applications}
-            events={applicationEvents}
+            applications={trackedApplications}
+            events={trackedApplicationEvents}
             matchingApplicationIds={matchingApplicationIds}
             profile={profile}
             selectedApplication={selectedApplication}
@@ -5240,8 +5317,8 @@ export default function HomePage() {
           />
         ) : activeView === "Calendar" ? (
           <CalendarView
-            applications={applications}
-            events={applicationEvents}
+            applications={trackedApplications}
+            events={trackedApplicationEvents}
             onOpenAssistant={(prompt, applicationId) => openAssistant(prompt, applicationId ? "application" : "profile", applicationId)}
             onSaveEvent={saveApplicationEvent}
             onDeleteEvent={deleteApplicationEvent}
@@ -5599,7 +5676,11 @@ export default function HomePage() {
                     onClick={() => prepareJobApplication(selectedJob)}
                   >
                     <FileText className="h-4 w-4 2xl:h-5 2xl:w-5" />
-                    {selectedJobApplication ? "Open application" : "Prepare application"}
+                    {selectedJobPreparation
+                      ? selectedJobPreparation.status === "draft"
+                        ? "Continue preparation"
+                        : "Open application"
+                      : "Prepare application"}
                   </Button>
                 </div>
               </div>
@@ -7166,7 +7247,7 @@ function ApplicationsView({
           <div className="flex h-10 min-w-0 items-center gap-1.5 overflow-x-auto rounded-md border border-border bg-white/[0.035] p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] md:col-span-2 xl:col-span-1 2xl:h-12 2xl:gap-2">
             {[
               { value: "all" as const, label: "All" },
-              ...applicationStatuses.map((item) => ({ value: item.status, label: item.label })),
+              ...trackedApplicationStatuses.map((item) => ({ value: item.status, label: item.label })),
             ].map((item) => {
               const isActive = selectedStatusFilter === item.value;
 
@@ -7367,7 +7448,7 @@ function ApplicationsView({
                         </button>
                         <div className="my-1 h-px bg-border" />
                         <p className="px-2 py-1 text-[10px] font-bold uppercase tracking-normal text-muted">Change status</p>
-                        {applicationStatuses.map((item) => (
+                        {trackedApplicationStatuses.map((item) => (
                           <button
                             key={item.status}
                             type="button"
@@ -7741,7 +7822,7 @@ function ApplicationsView({
                   onChange={(event) => updateManualApplicationDraft("status", event.target.value as ApplicationStatus)}
                   className="h-10 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
                 >
-                  {applicationStatuses.map((item) => (
+                  {trackedApplicationStatuses.map((item) => (
                     <option key={item.status} value={item.status}>
                       {item.label}
                     </option>
@@ -8672,7 +8753,7 @@ function DashboardView({
     rejected: "#d94d4d",
   };
   let statusArcOffset = 0;
-  const statusOverview = applicationStatuses.map((item) => {
+  const statusOverview = trackedApplicationStatuses.map((item) => {
     const count = applications.filter((application) => application.status === item.status).length;
     const arcPercentage = applications.length > 0 ? (count / applications.length) * 100 : 0;
     const arcOffset = statusArcOffset;
@@ -11991,6 +12072,8 @@ type JobRoleCategory = keyof typeof jobRoleVisuals;
 
 const jobSourceBadges: Record<Job["logo"], { label: string; text: string; className: string }> = {
   linkedin: { label: "LinkedIn", text: "in", className: "bg-[#0a66c2] text-white" },
+  indeed: { label: "Indeed", text: "indeed", className: "bg-white text-[#2557a7] tracking-[-0.08em]" },
+  jobs_ch: { label: "jobs.ch", text: "jobs.ch", className: "bg-white text-[#e30613] tracking-[-0.08em]" },
   manual: { label: "Manually added", text: "+", className: "bg-[#2a323d] text-[#dce2ea]" },
   figma: { label: "Figma", text: "F", className: "bg-black text-white" },
   stripe: { label: "Stripe", text: "S", className: "bg-[#635bff] text-white" },
