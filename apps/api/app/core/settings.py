@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     brightdata_api_key: str | None = None
     brightdata_api_url: str = "https://api.brightdata.com/datasets/v3"
     brightdata_linkedin_jobs_dataset_id: str = "gd_lpfll7v5hcqtkxl6l"
+    brightdata_indeed_jobs_dataset_id: str = "gd_l4dx9j9sscpvs7no2"
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:3001"]
     cors_origin_regex: str = (
         r"^http://(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"

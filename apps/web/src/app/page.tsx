@@ -264,6 +264,7 @@ type ApplicationTimelineItem = {
 };
 
 type ParsedJob = {
+  source?: string;
   title?: string | null;
   company?: string | null;
   location?: string | null;
@@ -276,6 +277,7 @@ type ParsedJob = {
 };
 
 type ParserApiResponse = {
+  parser?: string;
   status: "completed" | "queued" | "running";
   jobs?: ParsedJob[];
   search_url?: string;
@@ -308,7 +310,10 @@ type AppLogEntry = {
   details?: string;
 };
 
+type ParserId = "linkedin" | "indeed";
+
 type ParserSearchForm = {
+  parser: ParserId;
   keywords: string;
   location: string;
   remote: string;
@@ -596,6 +601,7 @@ const assistantPrompts = {
 } as const;
 
 const defaultParserSearchForm: ParserSearchForm = {
+  parser: "linkedin",
   keywords: "",
   location: "",
   remote: "Any",
@@ -1636,18 +1642,24 @@ function getProfileCompletion(profile: CandidateProfile) {
   return Math.round((completedFields.length / completionItems.length) * 100);
 }
 
+function getParserLabel(parser: string | undefined) {
+  return parser === "indeed" ? "Indeed" : "LinkedIn";
+}
+
 function createParsedJobId(job: ParsedJob, index: number) {
-  const source = job.url || `${job.title ?? "linkedin-job"}-${job.company ?? "company"}-${job.location ?? "location"}-${index}`;
-  return `linkedin-${source.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 96)}`;
+  const parser = job.source === "indeed" ? "indeed" : "linkedin";
+  const source = job.url || `${job.title ?? `${parser}-job`}-${job.company ?? "company"}-${job.location ?? "location"}-${index}`;
+  return `${parser}-${source.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 96)}`;
 }
 
 function mapParsedJobToJob(job: ParsedJob, index: number): Job {
-  const title = job.title?.trim() || "LinkedIn vacancy";
-  const company = job.company?.trim() || "LinkedIn";
+  const parserLabel = getParserLabel(job.source);
+  const title = job.title?.trim() || `${parserLabel} vacancy`;
+  const company = job.company?.trim() || parserLabel;
   const location = job.location?.trim() || "Not specified";
   const type = job.employment_type?.trim() || "Not specified";
   const experience = job.seniority?.trim() || "Not specified";
-  const overview = job.description?.trim() || "Imported from LinkedIn via Bright Data. Open the source vacancy to review the full description and apply details.";
+  const overview = job.description?.trim() || `Imported from ${parserLabel} via Bright Data. Open the source vacancy to review the full description and apply details.`;
 
   return {
     id: createParsedJobId(job, index),
@@ -1656,20 +1668,20 @@ function mapParsedJobToJob(job: ParsedJob, index: number): Job {
     location,
     type,
     salary: "Not specified",
-    posted: job.posted_at?.trim() || "LinkedIn",
+    posted: job.posted_at?.trim() || parserLabel,
     experience,
-    department: "LinkedIn import",
+    department: `${parserLabel} import`,
     match: 50,
     logo: "manual",
     overview,
-    responsibilities: ["Review the LinkedIn vacancy details", "Compare requirements with your profile", "Decide whether to save or apply"],
+    responsibilities: [`Review the ${parserLabel} vacancy details`, "Compare requirements with your profile", "Decide whether to save or apply"],
     requirements: [experience, type, location].filter((item) => item !== "Not specified"),
-    skills: ["LinkedIn", "Imported"],
+    skills: [parserLabel, "Imported"],
     salaryAverage: "N/A",
     salaryMin: "N/A",
     salaryMax: "N/A",
     recommendations: [],
-    companyInfo: `${company} vacancy imported from LinkedIn${job.url ? `: ${job.url}` : "."}`,
+    companyInfo: `${company} vacancy imported from ${parserLabel}${job.url ? `: ${job.url}` : "."}`,
     reviews: ["This vacancy was imported automatically and has not been reviewed yet."],
     similarJobs: [],
     applyUrl: job.apply_url?.trim() || job.url?.trim() || undefined,
@@ -2051,7 +2063,7 @@ function buildRecommendationPlan(job: Job): JobRecommendation[] {
 }
 
 function isImportedJob(job: Job) {
-  return job.id.startsWith("linkedin-");
+  return job.id.startsWith("linkedin-") || job.id.startsWith("indeed-");
 }
 
 function isManualJob(job: Job) {
@@ -4926,7 +4938,7 @@ export default function HomePage() {
     return importedJobs.length;
   }
 
-  async function pollLinkedInSnapshot(snapshotId: string): Promise<ParserApiResponse> {
+  async function pollParserSnapshot(snapshotId: string, parser: ParserId): Promise<ParserApiResponse> {
     for (let attempt = 1; attempt <= snapshotPollMaxAttempts; attempt += 1) {
       const pollMessage = `Bright Data snapshot queued. Checking ${attempt}/${snapshotPollMaxAttempts}...`;
       setParserSearchMessage(pollMessage);
@@ -4939,12 +4951,12 @@ export default function HomePage() {
       await wait(snapshotPollDelayMs);
 
       const snapshotResponse = await fetch(
-        `${apiBaseUrl}/parsers/linkedin/snapshots/${encodeURIComponent(snapshotId)}?results_limit=${Number.parseInt(parserSearchForm.resultsLimit, 10) || 10}&deduplicate=${parserSearchForm.deduplicate}`,
+        `${apiBaseUrl}/parsers/${parser}/snapshots/${encodeURIComponent(snapshotId)}?results_limit=${Number.parseInt(parserSearchForm.resultsLimit, 10) || 10}&deduplicate=${parserSearchForm.deduplicate}`,
       );
       const snapshotData = (await snapshotResponse.json()) as ParserApiResponse & { detail?: string };
 
       if (!snapshotResponse.ok) {
-        throw new Error(snapshotData.detail ?? "LinkedIn snapshot request failed");
+        throw new Error(snapshotData.detail ?? `${getParserLabel(parser)} snapshot request failed`);
       }
 
       if (snapshotData.status === "completed") {
@@ -4962,12 +4974,14 @@ export default function HomePage() {
   }
 
   async function runParsers() {
+    const parser = parserSearchForm.parser;
+    const parserLabel = getParserLabel(parser);
     setParserSearchStatus("loading");
     setParserSearchMessage("");
-      appendAppLog({
-        level: "info",
-        area: "Vacancy search",
-        message: "LinkedIn vacancy search started",
+    appendAppLog({
+      level: "info",
+      area: "Vacancy search",
+      message: `${parserLabel} vacancy search started`,
       details: [
         `Keywords: ${parserSearchForm.keywords || "Any"}`,
         `Location: ${parserSearchForm.location || parserSearchForm.country || "Any"}`,
@@ -4977,7 +4991,7 @@ export default function HomePage() {
     });
 
     try {
-      const response = await fetch(`${apiBaseUrl}/parsers/linkedin/search`, {
+      const response = await fetch(`${apiBaseUrl}/parsers/${parser}/search`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -4997,7 +5011,7 @@ export default function HomePage() {
       const data = (await response.json()) as ParserApiResponse & { detail?: string };
 
       if (!response.ok) {
-        throw new Error(data.detail ?? "LinkedIn parser request failed");
+        throw new Error(data.detail ?? `${parserLabel} parser request failed`);
       }
 
       const initialJobsCount = (data.jobs ?? []).length;
@@ -5006,7 +5020,7 @@ export default function HomePage() {
         area: "Vacancy search",
         message:
           data.status === "completed"
-            ? `LinkedIn parser returned ${initialJobsCount} vacancies immediately`
+            ? `${parserLabel} parser returned ${initialJobsCount} vacancies immediately`
             : `Bright Data snapshot queued: ${data.snapshot_id ?? "waiting"}`,
         details: [data.search_url ? `Search URL: ${data.search_url}` : "", data.message || ""].filter(Boolean).join("\n") || undefined,
       });
@@ -5015,14 +5029,14 @@ export default function HomePage() {
         data.status === "completed"
           ? data
           : data.snapshot_id
-            ? await pollLinkedInSnapshot(data.snapshot_id)
+            ? await pollParserSnapshot(data.snapshot_id, parser)
             : data;
       const addedCount = finalData.status === "completed" ? addParsedJobsToList(finalData.jobs ?? []) : 0;
       const finalMessage =
         finalData.status === "completed"
           ? addedCount > 0
-            ? `Added ${addedCount} LinkedIn vacancies to Jobs`
-            : "No LinkedIn vacancies returned for this search"
+            ? `Added ${addedCount} ${parserLabel} vacancies to Jobs`
+            : `No ${parserLabel} vacancies returned for this search`
           : `Bright Data snapshot queued: ${finalData.snapshot_id ?? data.snapshot_id ?? "waiting"}`;
 
       setParserSearchStatus("ready");
@@ -5037,7 +5051,7 @@ export default function HomePage() {
         ].filter(Boolean).join("\n") || undefined,
       });
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : "LinkedIn parser request failed";
+      const errorMessage = error instanceof Error ? error.message : `${parserLabel} parser request failed`;
       setParserSearchStatus("error");
       setParserSearchMessage(errorMessage);
       appendAppLog({
@@ -5653,20 +5667,45 @@ export default function HomePage() {
                 <div className="grid min-h-0 lg:grid-cols-[334px_minmax(0,1fr)] lg:items-start">
                   <section className="border-b border-border p-4 lg:self-start lg:border-b-0 2xl:p-5">
                     <h3 className="text-sm font-bold text-white">1. Choose parser</h3>
-                    <div className="mt-4 rounded-md border border-accent bg-white/[0.035] p-3 shadow-[0_0_0_1px_rgba(255,90,0,0.18)]">
-                      <div className="flex items-center gap-3">
-                        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-[#0a66c2] text-lg font-black text-white">in</div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <h4 className="text-sm font-bold text-white">LinkedIn</h4>
-                            <span className="rounded bg-success/18 px-2 py-0.5 text-[11px] font-bold text-success">Recommended</span>
-                          </div>
-                          <p className="mt-1 text-xs font-medium text-muted">Extract jobs from LinkedIn</p>
-                        </div>
-                        <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full border-2 border-accent">
-                          <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-                        </span>
-                      </div>
+                    <div className="mt-4 grid gap-3">
+                      {([
+                        { id: "linkedin", label: "LinkedIn", description: "Extract jobs from LinkedIn", mark: "in", color: "bg-[#0a66c2]" },
+                        { id: "indeed", label: "Indeed", description: "Extract jobs from Indeed", mark: "i", color: "bg-[#2557a7]" },
+                      ] as const).map((parserOption) => {
+                        const isSelected = parserSearchForm.parser === parserOption.id;
+                        return (
+                          <button
+                            key={parserOption.id}
+                            type="button"
+                            aria-pressed={isSelected}
+                            onClick={() => updateParserSearchForm("parser", parserOption.id)}
+                            className={cn(
+                              "rounded-md border bg-white/[0.035] p-3 text-left transition",
+                              isSelected
+                                ? "border-accent shadow-[0_0_0_1px_rgba(255,90,0,0.18)]"
+                                : "border-border hover:border-white/20 hover:bg-white/[0.055]",
+                            )}
+                          >
+                            <div className="flex items-center gap-3">
+                              <div className={cn("grid h-9 w-9 shrink-0 place-items-center rounded-md text-lg font-black text-white", parserOption.color)}>
+                                {parserOption.mark}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <h4 className="text-sm font-bold text-white">{parserOption.label}</h4>
+                                  {parserOption.id === "linkedin" && (
+                                    <span className="rounded bg-success/18 px-2 py-0.5 text-[11px] font-bold text-success">Recommended</span>
+                                  )}
+                                </div>
+                                <p className="mt-1 text-xs font-medium text-muted">{parserOption.description}</p>
+                              </div>
+                              <span className={cn("grid h-4 w-4 shrink-0 place-items-center rounded-full border-2", isSelected ? "border-accent" : "border-white/25")}>
+                                {isSelected && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      })}
                     </div>
                   </section>
 
@@ -5922,7 +5961,7 @@ export default function HomePage() {
 
               <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm font-semibold text-muted">
-                  Parser: <span className="text-white">LinkedIn</span>
+                  Parser: <span className="text-white">{getParserLabel(parserSearchForm.parser)}</span>
                   {parserSearchMessage && (
                     <span className={cn("ml-2", parserSearchStatus === "error" ? "text-[#ff7a7a]" : "text-accent")}>
                       {parserSearchMessage}
@@ -8153,7 +8192,7 @@ function SettingsView({
         message ||
         (settings.has_brightdata_api_key
           ? "Key is encrypted and stored securely"
-          : "Add a Bright Data key to enable LinkedIn vacancy search.");
+          : "Add a Bright Data key to enable LinkedIn and Indeed vacancy search.");
 
   useEffect(() => {
     setIsCurrentKeyVisible(false);
@@ -8261,7 +8300,7 @@ function SettingsView({
               <div className="min-w-0">
                 <h2 className="text-base font-bold text-white 2xl:text-lg">Bright Data</h2>
                 <p className="mt-1 text-[13px] leading-5 text-muted 2xl:text-sm 2xl:leading-6">
-                  LinkedIn vacancy search uses this server-side API key.
+                  LinkedIn and Indeed vacancy search use this server-side API key.
                 </p>
               </div>
             </div>
@@ -8340,7 +8379,7 @@ function SettingsView({
                 <div>
                   <h3 className="text-sm font-bold text-[#d8dee8] 2xl:text-base">How it works</h3>
                   <p className="mt-2 max-w-[720px] text-sm leading-6 text-muted 2xl:text-base 2xl:leading-7">
-                    Your API key is saved securely and used for LinkedIn vacancy search on the server side.
+                    Your API key is saved securely and used for LinkedIn and Indeed vacancy search on the server side.
                     <br />
                     The full key is fetched only when you reveal or copy it.
                   </p>

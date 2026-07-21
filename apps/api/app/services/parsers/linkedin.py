@@ -64,7 +64,7 @@ class LinkedInJobsParser:
             raise BrightDataConfigurationError("BRIGHTDATA_API_KEY is not configured")
 
         search_url = self.build_search_url(request)
-        payload = {"input": [{"url": search_url, "selective_search": bool(request.keywords.strip())}]}
+        payload = {"input": [self.build_search_input(request, search_url)]}
         params = {
             "dataset_id": self.dataset_id,
             "type": "discover_new",
@@ -112,6 +112,13 @@ class LinkedInJobsParser:
             search_url=search_url,
             jobs=jobs[: request.results_limit],
         )
+
+    @staticmethod
+    def build_search_input(request: LinkedInSearchRequest, search_url: str) -> dict[str, Any]:
+        return {
+            "url": search_url,
+            "selective_search": bool(request.keywords.strip()),
+        }
 
     def get_snapshot(
         self,

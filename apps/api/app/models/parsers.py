@@ -23,6 +23,10 @@ class LinkedInSearchRequest(BaseModel):
     folder: str = Field(default="", max_length=120)
 
 
+class IndeedSearchRequest(LinkedInSearchRequest):
+    """Indeed supports the same user-facing search filters as LinkedIn."""
+
+
 class ParsedJob(BaseModel):
     source: str = "linkedin"
     title: str | None = None
