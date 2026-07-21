@@ -313,7 +313,7 @@ type AppLogEntry = {
 type ParserId = "linkedin" | "indeed";
 
 type ParserSearchForm = {
-  parser: ParserId;
+  parsers: ParserId[];
   keywords: string;
   location: string;
   remote: string;
@@ -601,7 +601,7 @@ const assistantPrompts = {
 } as const;
 
 const defaultParserSearchForm: ParserSearchForm = {
-  parser: "linkedin",
+  parsers: ["linkedin"],
   keywords: "",
   location: "",
   remote: "Any",
@@ -1646,6 +1646,21 @@ function getParserLabel(parser: string | undefined) {
   return parser === "indeed" ? "Indeed" : "LinkedIn";
 }
 
+function getParsersLabel(parsers: ParserId[]) {
+  return parsers.map(getParserLabel).join(" + ");
+}
+
+function normalizeParserIds(form: ParserSearchForm): ParserId[] {
+  const parserCandidates = Array.isArray(form.parsers) ? form.parsers : [];
+  const legacyParser = (form as ParserSearchForm & { parser?: unknown }).parser;
+  const validParsers = parserCandidates.filter(
+    (parser): parser is ParserId => parser === "linkedin" || parser === "indeed",
+  );
+  if (validParsers.length > 0) return Array.from(new Set(validParsers));
+  if (legacyParser === "linkedin" || legacyParser === "indeed") return [legacyParser];
+  return [...defaultParserSearchForm.parsers];
+}
+
 function createParsedJobId(job: ParsedJob, index: number) {
   const parser = job.source === "indeed" ? "indeed" : "linkedin";
   const source = job.url || `${job.title ?? `${parser}-job`}-${job.company ?? "company"}-${job.location ?? "location"}-${index}`;
@@ -1688,6 +1703,27 @@ function mapParsedJobToJob(job: ParsedJob, index: number): Job {
     sourceUrl: job.url?.trim() || undefined,
     addedAt: new Date().toISOString(),
   };
+}
+
+function deduplicateParsedJobs(jobs: ParsedJob[]) {
+  const seenUrls = new Set<string>();
+  const seenVacancies = new Set<string>();
+
+  return jobs.filter((job) => {
+    const normalizedUrl = job.url?.trim().toLowerCase().replace(/\/$/, "") || "";
+    const normalizedVacancy = [job.title, job.company, job.location]
+      .map((value) => value?.trim().toLowerCase().replace(/\s+/g, " ") || "")
+      .join("|");
+    const hasVacancyIdentity = Boolean(job.title?.trim() && job.company?.trim());
+    const duplicate =
+      (normalizedUrl && seenUrls.has(normalizedUrl)) ||
+      (hasVacancyIdentity && seenVacancies.has(normalizedVacancy));
+
+    if (duplicate) return false;
+    if (normalizedUrl) seenUrls.add(normalizedUrl);
+    if (hasVacancyIdentity) seenVacancies.add(normalizedVacancy);
+    return true;
+  });
 }
 
 const manualJobSkillPatterns: Array<{ label: string; pattern: RegExp }> = [
@@ -1921,7 +1957,11 @@ function normalizeParserSearchConfigs(configs: ParserSearchConfig[]) {
     .filter((config) => config.id && config.name && config.form)
     .map((config) => ({
       ...config,
-      form: { ...defaultParserSearchForm, ...config.form },
+      form: {
+        ...defaultParserSearchForm,
+        ...config.form,
+        parsers: normalizeParserIds(config.form),
+      },
     }));
   const uniqueConfigs = new Map<string, ParserSearchConfig>();
 
@@ -3676,6 +3716,21 @@ export default function HomePage() {
     setParserSearchMessage("");
   }
 
+  function toggleParser(parser: ParserId) {
+    setParserSearchForm((current) => {
+      const isSelected = current.parsers.includes(parser);
+      if (isSelected && current.parsers.length === 1) return current;
+      return {
+        ...current,
+        parsers: isSelected
+          ? current.parsers.filter((selectedParser) => selectedParser !== parser)
+          : [...current.parsers, parser],
+      };
+    });
+    setParserSearchStatus("idle");
+    setParserSearchMessage("");
+  }
+
   async function saveAppSettings(apiKey = brightDataApiKeyDraft) {
     setSettingsSaveStatus("loading");
     setSettingsSaveMessage("");
@@ -4939,8 +4994,9 @@ export default function HomePage() {
   }
 
   async function pollParserSnapshot(snapshotId: string, parser: ParserId): Promise<ParserApiResponse> {
+    const parserLabel = getParserLabel(parser);
     for (let attempt = 1; attempt <= snapshotPollMaxAttempts; attempt += 1) {
-      const pollMessage = `Bright Data snapshot queued. Checking ${attempt}/${snapshotPollMaxAttempts}...`;
+      const pollMessage = `${parserLabel} snapshot queued. Checking ${attempt}/${snapshotPollMaxAttempts}...`;
       setParserSearchMessage(pollMessage);
       appendAppLog({
         level: "info",
@@ -4973,11 +5029,8 @@ export default function HomePage() {
     throw new Error("Bright Data snapshot is still not ready. Try again later.");
   }
 
-  async function runParsers() {
-    const parser = parserSearchForm.parser;
+  async function runParser(parser: ParserId): Promise<ParserApiResponse> {
     const parserLabel = getParserLabel(parser);
-    setParserSearchStatus("loading");
-    setParserSearchMessage("");
     appendAppLog({
       level: "info",
       area: "Vacancy search",
@@ -4990,76 +5043,113 @@ export default function HomePage() {
       ].join("\n"),
     });
 
-    try {
-      const response = await fetch(`${apiBaseUrl}/parsers/${parser}/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          keywords: parserSearchForm.keywords,
-          location: parserSearchForm.location,
-          remote: parserSearchForm.remote,
-          experience_level: parserSearchForm.experienceLevel,
-          job_type: parserSearchForm.jobType,
-          date_posted: parserSearchForm.datePosted,
-          results_limit: Number.parseInt(parserSearchForm.resultsLimit, 10) || 10,
-          country: parserSearchForm.country,
-          deduplicate: parserSearchForm.deduplicate,
-          search_name: parserSearchForm.searchName,
-          folder: parserSearchForm.folder,
-        }),
-      });
-      const data = (await response.json()) as ParserApiResponse & { detail?: string };
+    const response = await fetch(`${apiBaseUrl}/parsers/${parser}/search`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        keywords: parserSearchForm.keywords,
+        location: parserSearchForm.location,
+        remote: parserSearchForm.remote,
+        experience_level: parserSearchForm.experienceLevel,
+        job_type: parserSearchForm.jobType,
+        date_posted: parserSearchForm.datePosted,
+        results_limit: Number.parseInt(parserSearchForm.resultsLimit, 10) || 10,
+        country: parserSearchForm.country,
+        deduplicate: parserSearchForm.deduplicate,
+        search_name: parserSearchForm.searchName,
+        folder: parserSearchForm.folder,
+      }),
+    });
+    const data = (await response.json()) as ParserApiResponse & { detail?: string };
 
-      if (!response.ok) {
-        throw new Error(data.detail ?? `${parserLabel} parser request failed`);
-      }
+    if (!response.ok) {
+      throw new Error(data.detail ?? `${parserLabel} parser request failed`);
+    }
 
-      const initialJobsCount = (data.jobs ?? []).length;
-      appendAppLog({
-        level: data.status === "completed" ? (initialJobsCount > 0 ? "success" : "warning") : "info",
-        area: "Vacancy search",
-        message:
-          data.status === "completed"
-            ? `${parserLabel} parser returned ${initialJobsCount} vacancies immediately`
-            : `Bright Data snapshot queued: ${data.snapshot_id ?? "waiting"}`,
-        details: [data.search_url ? `Search URL: ${data.search_url}` : "", data.message || ""].filter(Boolean).join("\n") || undefined,
-      });
-
-      const finalData =
+    const initialJobsCount = (data.jobs ?? []).length;
+    appendAppLog({
+      level: data.status === "completed" ? (initialJobsCount > 0 ? "success" : "warning") : "info",
+      area: "Vacancy search",
+      message:
         data.status === "completed"
-          ? data
-          : data.snapshot_id
-            ? await pollParserSnapshot(data.snapshot_id, parser)
-            : data;
-      const addedCount = finalData.status === "completed" ? addParsedJobsToList(finalData.jobs ?? []) : 0;
-      const finalMessage =
-        finalData.status === "completed"
-          ? addedCount > 0
-            ? `Added ${addedCount} ${parserLabel} vacancies to Jobs`
-            : `No ${parserLabel} vacancies returned for this search`
-          : `Bright Data snapshot queued: ${finalData.snapshot_id ?? data.snapshot_id ?? "waiting"}`;
+          ? `${parserLabel} parser returned ${initialJobsCount} vacancies immediately`
+          : `${parserLabel} snapshot queued: ${data.snapshot_id ?? "waiting"}`,
+      details: [data.search_url ? `Search URL: ${data.search_url}` : "", data.message || ""].filter(Boolean).join("\n") || undefined,
+    });
 
-      setParserSearchStatus("ready");
-      setParserSearchMessage(finalMessage);
-      appendAppLog({
-        level: finalData.status === "completed" ? (addedCount > 0 ? "success" : "warning") : "info",
-        area: "Vacancy search",
-        message: finalMessage,
-        details: [
-          finalData.search_url ? `Search URL: ${finalData.search_url}` : "",
-          finalData.snapshot_id ? `Snapshot: ${finalData.snapshot_id}` : "",
-        ].filter(Boolean).join("\n") || undefined,
-      });
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : `${parserLabel} parser request failed`;
-      setParserSearchStatus("error");
-      setParserSearchMessage(errorMessage);
+    const finalData =
+      data.status === "completed"
+        ? data
+        : data.snapshot_id
+          ? await pollParserSnapshot(data.snapshot_id, parser)
+          : data;
+    return {
+      ...finalData,
+      jobs: (finalData.jobs ?? []).map((job) => ({ ...job, source: job.source ?? parser })),
+    };
+  }
+
+  async function runParsers() {
+    const parsers = normalizeParserIds(parserSearchForm);
+    const parsersLabel = getParsersLabel(parsers);
+    const resultsLimit = Number.parseInt(parserSearchForm.resultsLimit, 10) || 10;
+    setParserSearchStatus("loading");
+    setParserSearchMessage(`Searching ${parsersLabel}...`);
+
+    const results = await Promise.allSettled(parsers.map((parser) => runParser(parser)));
+    const successfulResults = results
+      .map((result, index) => ({ result, parser: parsers[index] }))
+      .filter(
+        (entry): entry is { result: PromiseFulfilledResult<ParserApiResponse>; parser: ParserId } =>
+          entry.result.status === "fulfilled",
+      );
+    const failedResults = results
+      .map((result, index) => ({ result, parser: parsers[index] }))
+      .filter(
+        (entry): entry is { result: PromiseRejectedResult; parser: ParserId } =>
+          entry.result.status === "rejected",
+      );
+
+    for (const { result, parser } of failedResults) {
       appendAppLog({
         level: "error",
         area: "Vacancy search",
-        message: errorMessage,
+        message: `${getParserLabel(parser)} search failed`,
+        details: result.reason instanceof Error ? result.reason.message : String(result.reason),
       });
     }
+
+    if (successfulResults.length === 0) {
+      const errorMessage = failedResults
+        .map(({ result, parser }) =>
+          `${getParserLabel(parser)}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
+        )
+        .join(" · ");
+      setParserSearchStatus("error");
+      setParserSearchMessage(errorMessage || "Vacancy search failed");
+      return;
+    }
+
+    const returnedJobs = successfulResults.flatMap(({ result }) => result.value.jobs ?? []);
+    const combinedJobs = (parserSearchForm.deduplicate
+      ? deduplicateParsedJobs(returnedJobs)
+      : returnedJobs
+    ).slice(0, resultsLimit);
+    const addedCount = addParsedJobsToList(combinedJobs);
+    const failedLabels = failedResults.map(({ parser }) => getParserLabel(parser));
+    const finalMessage = failedLabels.length
+      ? `Added ${addedCount} vacancies from ${getParsersLabel(successfulResults.map(({ parser }) => parser))}; failed: ${failedLabels.join(", ")}`
+      : addedCount > 0
+        ? `Added ${addedCount} vacancies from ${parsersLabel}`
+        : `No vacancies returned from ${parsersLabel}`;
+
+    setParserSearchStatus("ready");
+    setParserSearchMessage(finalMessage);
+    appendAppLog({
+      level: failedLabels.length > 0 ? "warning" : addedCount > 0 ? "success" : "warning",
+      area: "Vacancy search",
+      message: finalMessage,
+    });
   }
 
   return (
@@ -5651,7 +5741,7 @@ export default function HomePage() {
               <div className="flex shrink-0 items-start justify-between gap-4">
                 <div>
                   <h2 className="text-[22px] font-bold leading-tight text-white 2xl:text-[24px]">Search vacancies</h2>
-                  <p className="mt-1 text-sm font-medium text-muted">Choose parser and configure search settings</p>
+                  <p className="mt-1 text-sm font-medium text-muted">Choose one or more sources and configure search settings</p>
                 </div>
                 <button
                   type="button"
@@ -5666,19 +5756,19 @@ export default function HomePage() {
               <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto rounded-md border border-border">
                 <div className="grid min-h-0 lg:grid-cols-[334px_minmax(0,1fr)] lg:items-start">
                   <section className="border-b border-border p-4 lg:self-start lg:border-b-0 2xl:p-5">
-                    <h3 className="text-sm font-bold text-white">1. Choose parser</h3>
+                    <h3 className="text-sm font-bold text-white">1. Choose sources</h3>
                     <div className="mt-4 grid gap-3">
                       {([
                         { id: "linkedin", label: "LinkedIn", description: "Extract jobs from LinkedIn", mark: "in", color: "bg-[#0a66c2]" },
                         { id: "indeed", label: "Indeed", description: "Extract jobs from Indeed", mark: "i", color: "bg-[#2557a7]" },
                       ] as const).map((parserOption) => {
-                        const isSelected = parserSearchForm.parser === parserOption.id;
+                        const isSelected = parserSearchForm.parsers.includes(parserOption.id);
                         return (
                           <button
                             key={parserOption.id}
                             type="button"
                             aria-pressed={isSelected}
-                            onClick={() => updateParserSearchForm("parser", parserOption.id)}
+                            onClick={() => toggleParser(parserOption.id)}
                             className={cn(
                               "rounded-md border bg-white/[0.035] p-3 text-left transition",
                               isSelected
@@ -5699,8 +5789,8 @@ export default function HomePage() {
                                 </div>
                                 <p className="mt-1 text-xs font-medium text-muted">{parserOption.description}</p>
                               </div>
-                              <span className={cn("grid h-4 w-4 shrink-0 place-items-center rounded-full border-2", isSelected ? "border-accent" : "border-white/25")}>
-                                {isSelected && <span className="h-1.5 w-1.5 rounded-full bg-accent" />}
+                              <span className={cn("grid h-5 w-5 shrink-0 place-items-center rounded border-2", isSelected ? "border-accent bg-accent" : "border-white/25")}>
+                                {isSelected && <Check className="h-3.5 w-3.5 text-white" />}
                               </span>
                             </div>
                           </button>
@@ -5961,7 +6051,7 @@ export default function HomePage() {
 
               <div className="mt-4 flex shrink-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm font-semibold text-muted">
-                  Parser: <span className="text-white">{getParserLabel(parserSearchForm.parser)}</span>
+                  Sources: <span className="text-white">{getParsersLabel(parserSearchForm.parsers)}</span>
                   {parserSearchMessage && (
                     <span className={cn("ml-2", parserSearchStatus === "error" ? "text-[#ff7a7a]" : "text-accent")}>
                       {parserSearchMessage}
