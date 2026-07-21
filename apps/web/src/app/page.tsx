@@ -599,7 +599,6 @@ const appLogsStorageKey = "tasko.appLogs.v1";
 const parserSearchConfigsLocalUrl = "/parser-search-configs.local.json";
 const legacyMovedFromJobsNote = "Moved from Jobs after applying.";
 const maxStoredAppLogs = 300;
-const maxActiveImportedJobs = 10;
 
 const assistantPrompts = {
   analyzeJob: "Analyze this vacancy against my profile. Summarize the strongest evidence, gaps, risks, and whether I should apply.",
@@ -2538,18 +2537,8 @@ function mergeJobs(importedJobs: Job[], currentJobs: Job[]) {
   return [...importedJobs, ...currentJobs.filter((job) => !importedIds.has(job.id))];
 }
 
-function keepFreshestImportedJobs(jobs: Job[]) {
-  return [...jobs]
-    .sort((a, b) => getJobPostedTime(b) - getJobPostedTime(a))
-    .slice(0, maxActiveImportedJobs);
-}
-
 function keepStoredUserJobs(jobs: Job[]) {
-  const freshestImportedJobIds = new Set(
-    keepFreshestImportedJobs(jobs.filter(isImportedJob)).map((job) => job.id),
-  );
-
-  return jobs.filter((job) => isManualJob(job) || freshestImportedJobIds.has(job.id));
+  return jobs.filter(isUserManagedJob);
 }
 
 function hasActiveJobFilters(filters: JobFilters) {

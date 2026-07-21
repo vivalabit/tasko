@@ -20,9 +20,10 @@ from app.services.resume_import import (
 )
 
 MATCHER_VERSION = "ai-match-v3"
-MATCH_PROMPT_VERSION = "ai-match-prompt-v3"
+MATCH_PROMPT_VERSION = "ai-match-prompt-v4"
 DEFAULT_AI_MATCH_MODEL = "openai/gpt-5.6-terra"
 DEFAULT_AI_MATCH_MAX_ATTEMPTS = 2
+MAX_AI_MATCH_TEXT_LENGTH = 500
 MAX_REASON_COUNT = 3
 MAX_GAP_COUNT = 3
 MAX_EVIDENCE_MATRIX_COUNT = 8
@@ -93,8 +94,14 @@ class OpenClawAiMatchError(RuntimeError):
     pass
 
 
-StrictText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=500)]
-OptionalEvidenceText = Annotated[str, StringConstraints(strip_whitespace=True, max_length=500)]
+StrictText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_AI_MATCH_TEXT_LENGTH),
+]
+OptionalEvidenceText = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, max_length=MAX_AI_MATCH_TEXT_LENGTH),
+]
 
 
 class StrictAiMatchModel(BaseModel):
@@ -518,7 +525,9 @@ def score_with_openclaw(
         error_output = (exc.stderr or exc.stdout or "OpenClaw command failed").strip()
         raise OpenClawAiMatchError(summarize_openclaw_error(error_output)) from exc
 
-    payload = extract_openclaw_ai_match_payload(result.stdout)
+    payload = normalize_openclaw_evidence_lengths(
+        extract_openclaw_ai_match_payload(result.stdout)
+    )
     try:
         validated = OpenClawAiMatchPayload.model_validate(payload)
     except ValidationError as exc:
@@ -567,6 +576,8 @@ def build_openclaw_ai_match_prompt(
         "Return ONLY one valid JSON object, no markdown and no prose.\n"
         "Every field shown in the JSON shape is required. Use [] for empty lists. "
         "Do not add fields.\n"
+        f"Keep every string at most {MAX_AI_MATCH_TEXT_LENGTH} characters. Evidence must be a short "
+        f"exact excerpt of at most {MAX_AI_MATCH_TEXT_LENGTH} characters, never the whole source.\n"
         "Use only the provided snapshots. Do not invent missing evidence.\n"
         "For every job, set score as your expert judgment from 0 to 100.\n"
         "Score is the final AI assessment, not an arithmetic sum of breakdown values.\n"
@@ -716,6 +727,33 @@ def extract_openclaw_ai_match_payload(value: str) -> dict[str, object]:
                         return final_payload
 
     return {}
+
+
+def normalize_openclaw_evidence_lengths(
+    payload: dict[str, object],
+) -> dict[str, object]:
+    """Keep an overlong source excerpt usable without weakening strict output validation."""
+    matches = payload.get("matches")
+    if not isinstance(matches, list):
+        return payload
+
+    for match in matches:
+        if not isinstance(match, dict):
+            continue
+        guide = match.get("applicationGuide")
+        if not isinstance(guide, dict):
+            continue
+        evidence_matrix = guide.get("evidenceMatrix")
+        if not isinstance(evidence_matrix, list):
+            continue
+        for item in evidence_matrix:
+            if not isinstance(item, dict):
+                continue
+            evidence = item.get("evidence")
+            if isinstance(evidence, str) and len(evidence.strip()) > MAX_AI_MATCH_TEXT_LENGTH:
+                item["evidence"] = evidence.strip()[:MAX_AI_MATCH_TEXT_LENGTH]
+
+    return payload
 
 
 def normalize_openclaw_result(

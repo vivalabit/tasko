@@ -406,6 +406,7 @@ def test_openclaw_prompt_treats_score_as_expert_judgment() -> None:
     assert '"clarificationQuestions"' in prompt
     assert '"candidateEvidenceSources"' in prompt
     assert '"sourceIds"' in prompt
+    assert "Evidence must be a short exact excerpt of at most 500 characters" in prompt
     assert "if a data role requires Excel" in prompt
     assert "reuse directly when tailoring the candidate's CV and cover letter" in prompt
     assert '"weights"' not in prompt
@@ -728,6 +729,48 @@ def test_score_with_openclaw_accepts_single_match_object(
     )
 
     assert results == [match]
+
+
+def test_score_with_openclaw_truncates_overlong_evidence_excerpt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    match = valid_match_result("manual-job-long-evidence")
+    guide = match["applicationGuide"]
+    assert isinstance(guide, dict)
+    evidence_matrix = guide["evidenceMatrix"]
+    assert isinstance(evidence_matrix, list)
+    assert isinstance(evidence_matrix[0], dict)
+    overlong_evidence = "Python delivery evidence. " * 30
+    evidence_matrix[0]["evidence"] = overlong_evidence
+
+    def fake_run(args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(match), stderr="")
+
+    monkeypatch.setattr(ai_match_service.subprocess, "run", fake_run)
+
+    results = ai_match_service.score_with_openclaw(
+        profile_snapshot={"roles": ["Python Engineer"]},
+        jobs=[
+            build_job_snapshot(
+                {
+                    "id": "manual-job-long-evidence",
+                    "title": "Python Engineer",
+                    "company": "Acme",
+                    "overview": "Build Python services.",
+                    "requirements": ["Python"],
+                    "skills": ["Python"],
+                }
+            )
+        ],
+        command="openclaw",
+        agent_id="main",
+        thinking="low",
+        timeout_seconds=10,
+    )
+
+    evidence = results[0]["applicationGuide"]["evidenceMatrix"][0]["evidence"]
+    assert len(evidence) == ai_match_service.MAX_AI_MATCH_TEXT_LENGTH
+    assert overlong_evidence.startswith(evidence)
 
 
 def test_seniority_normalization_handles_common_variants() -> None:
