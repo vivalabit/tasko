@@ -27,6 +27,10 @@ class IndeedSearchRequest(LinkedInSearchRequest):
     """Indeed supports the same user-facing search filters as LinkedIn."""
 
 
+class JobsChSearchRequest(LinkedInSearchRequest):
+    """Tasko search fields accepted by the jobs.ch source."""
+
+
 class ParsedJob(BaseModel):
     source: str = "linkedin"
     title: str | None = None
@@ -38,6 +42,11 @@ class ParsedJob(BaseModel):
     employment_type: str | None = None
     seniority: str | None = None
     description: str | None = None
+    salary: str | None = None
+    salary_min: int | None = None
+    salary_max: int | None = None
+    salary_currency: str | None = None
+    salary_unit: str | None = None
     raw: dict[str, Any] = Field(default_factory=dict)
 
 

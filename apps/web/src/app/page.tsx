@@ -274,6 +274,11 @@ type ParsedJob = {
   employment_type?: string | null;
   seniority?: string | null;
   description?: string | null;
+  salary?: string | null;
+  salary_min?: number | null;
+  salary_max?: number | null;
+  salary_currency?: string | null;
+  salary_unit?: string | null;
 };
 
 type ParserApiResponse = {
@@ -310,7 +315,7 @@ type AppLogEntry = {
   details?: string;
 };
 
-type ParserId = "linkedin" | "indeed";
+type ParserId = "linkedin" | "indeed" | "jobs_ch";
 
 type ParserSearchForm = {
   parsers: ParserId[];
@@ -1643,7 +1648,9 @@ function getProfileCompletion(profile: CandidateProfile) {
 }
 
 function getParserLabel(parser: string | undefined) {
-  return parser === "indeed" ? "Indeed" : "LinkedIn";
+  if (parser === "indeed") return "Indeed";
+  if (parser === "jobs_ch" || parser === "jobs.ch") return "jobs.ch";
+  return "LinkedIn";
 }
 
 function getParsersLabel(parsers: ParserId[]) {
@@ -1654,15 +1661,22 @@ function normalizeParserIds(form: ParserSearchForm): ParserId[] {
   const parserCandidates = Array.isArray(form.parsers) ? form.parsers : [];
   const legacyParser = (form as ParserSearchForm & { parser?: unknown }).parser;
   const validParsers = parserCandidates.filter(
-    (parser): parser is ParserId => parser === "linkedin" || parser === "indeed",
+    (parser): parser is ParserId =>
+      parser === "linkedin" || parser === "indeed" || parser === "jobs_ch",
   );
   if (validParsers.length > 0) return Array.from(new Set(validParsers));
-  if (legacyParser === "linkedin" || legacyParser === "indeed") return [legacyParser];
+  if (legacyParser === "linkedin" || legacyParser === "indeed" || legacyParser === "jobs_ch") {
+    return [legacyParser];
+  }
   return [...defaultParserSearchForm.parsers];
 }
 
 function createParsedJobId(job: ParsedJob, index: number) {
-  const parser = job.source === "indeed" ? "indeed" : "linkedin";
+  const parser = job.source === "indeed"
+    ? "indeed"
+    : job.source === "jobs_ch" || job.source === "jobs.ch"
+      ? "jobs_ch"
+      : "linkedin";
   const source = job.url || `${job.title ?? `${parser}-job`}-${job.company ?? "company"}-${job.location ?? "location"}-${index}`;
   return `${parser}-${source.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 96)}`;
 }
@@ -1674,7 +1688,18 @@ function mapParsedJobToJob(job: ParsedJob, index: number): Job {
   const location = job.location?.trim() || "Not specified";
   const type = job.employment_type?.trim() || "Not specified";
   const experience = job.seniority?.trim() || "Not specified";
-  const overview = job.description?.trim() || `Imported from ${parserLabel} via Bright Data. Open the source vacancy to review the full description and apply details.`;
+  const overview = job.description?.trim() || `Imported from ${parserLabel}. Open the source vacancy to review the full description and apply details.`;
+  const salaryCurrency = job.salary_currency?.trim() || "";
+  const formatSalaryAmount = (value: number | null | undefined) =>
+    typeof value === "number" ? `${salaryCurrency ? `${salaryCurrency} ` : ""}${value.toLocaleString("en-CH")}` : "N/A";
+  const salary = job.salary?.trim() || (
+    job.salary_min != null || job.salary_max != null
+      ? [formatSalaryAmount(job.salary_min), formatSalaryAmount(job.salary_max)].filter((value, position, values) => value !== "N/A" && (position === 0 || value !== values[0])).join(" – ")
+      : "Not specified"
+  );
+  const salaryAverage = job.salary_min != null && job.salary_max != null
+    ? formatSalaryAmount(Math.round((job.salary_min + job.salary_max) / 2))
+    : formatSalaryAmount(job.salary_min ?? job.salary_max);
 
   return {
     id: createParsedJobId(job, index),
@@ -1682,7 +1707,7 @@ function mapParsedJobToJob(job: ParsedJob, index: number): Job {
     title,
     location,
     type,
-    salary: "Not specified",
+    salary,
     posted: job.posted_at?.trim() || parserLabel,
     experience,
     department: `${parserLabel} import`,
@@ -1692,9 +1717,9 @@ function mapParsedJobToJob(job: ParsedJob, index: number): Job {
     responsibilities: [`Review the ${parserLabel} vacancy details`, "Compare requirements with your profile", "Decide whether to save or apply"],
     requirements: [experience, type, location].filter((item) => item !== "Not specified"),
     skills: [parserLabel, "Imported"],
-    salaryAverage: "N/A",
-    salaryMin: "N/A",
-    salaryMax: "N/A",
+    salaryAverage,
+    salaryMin: formatSalaryAmount(job.salary_min),
+    salaryMax: formatSalaryAmount(job.salary_max),
     recommendations: [],
     companyInfo: `${company} vacancy imported from ${parserLabel}${job.url ? `: ${job.url}` : "."}`,
     reviews: ["This vacancy was imported automatically and has not been reviewed yet."],
@@ -2103,7 +2128,7 @@ function buildRecommendationPlan(job: Job): JobRecommendation[] {
 }
 
 function isImportedJob(job: Job) {
-  return job.id.startsWith("linkedin-") || job.id.startsWith("indeed-");
+  return job.id.startsWith("linkedin-") || job.id.startsWith("indeed-") || job.id.startsWith("jobs_ch-");
 }
 
 function isManualJob(job: Job) {
@@ -5761,6 +5786,7 @@ export default function HomePage() {
                       {([
                         { id: "linkedin", label: "LinkedIn", description: "Extract jobs from LinkedIn", mark: "in", color: "bg-[#0a66c2]" },
                         { id: "indeed", label: "Indeed", description: "Extract jobs from Indeed", mark: "i", color: "bg-[#2557a7]" },
+                        { id: "jobs_ch", label: "jobs.ch", description: "Extract jobs from jobs.ch", mark: "j", color: "bg-[#e4002b]" },
                       ] as const).map((parserOption) => {
                         const isSelected = parserSearchForm.parsers.includes(parserOption.id);
                         return (

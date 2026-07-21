@@ -1,8 +1,14 @@
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.core.settings import get_settings
-from app.models.parsers import IndeedSearchRequest, LinkedInSearchRequest, ParserSearchResponse
+from app.models.parsers import (
+    IndeedSearchRequest,
+    JobsChSearchRequest,
+    LinkedInSearchRequest,
+    ParserSearchResponse,
+)
 from app.services.parsers.indeed import IndeedJobsParser
+from app.services.parsers.jobs_ch import JobsChParser, JobsChRequestError
 from app.services.parsers.linkedin import (
     BrightDataConfigurationError,
     BrightDataRequestError,
@@ -18,6 +24,16 @@ def _indeed_parser() -> IndeedJobsParser:
         api_key=settings.brightdata_api_key,
         api_url=settings.brightdata_api_url,
         dataset_id=settings.brightdata_indeed_jobs_dataset_id,
+    )
+
+
+def _jobs_ch_parser() -> JobsChParser:
+    settings = get_settings()
+    return JobsChParser(
+        base_url=settings.jobs_ch_base_url,
+        timeout_seconds=settings.jobs_ch_timeout_seconds,
+        max_pages=settings.jobs_ch_max_pages,
+        detail_workers=settings.jobs_ch_detail_workers,
     )
 
 
@@ -109,6 +125,17 @@ def get_indeed_snapshot(
             detail=str(exc),
         ) from exc
     except BrightDataRequestError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+
+@router.post("/jobs_ch/search", response_model=ParserSearchResponse)
+def search_jobs_ch_jobs(request: JobsChSearchRequest) -> ParserSearchResponse:
+    try:
+        return _jobs_ch_parser().search(request)
+    except JobsChRequestError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=str(exc),

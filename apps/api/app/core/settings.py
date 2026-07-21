@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     brightdata_api_url: str = "https://api.brightdata.com/datasets/v3"
     brightdata_linkedin_jobs_dataset_id: str = "gd_lpfll7v5hcqtkxl6l"
     brightdata_indeed_jobs_dataset_id: str = "gd_l4dx9j9sscpvs7no2"
+    jobs_ch_base_url: str = "https://www.jobs.ch"
+    jobs_ch_timeout_seconds: float = Field(default=30.0, ge=1, le=120)
+    jobs_ch_max_pages: int = Field(default=50, ge=1, le=100)
+    jobs_ch_detail_workers: int = Field(default=6, ge=1, le=20)
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:3001"]
     cors_origin_regex: str = (
         r"^http://(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|"

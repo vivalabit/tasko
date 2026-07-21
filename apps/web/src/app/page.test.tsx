@@ -79,7 +79,7 @@ it("adds a manual vacancy to Jobs, persists it, and starts AI analysis", async (
   expect(locallyStoredJobs.some((job) => job.title === "Backend Engineer")).toBe(true);
 });
 
-it("searches LinkedIn and Indeed together when both sources are selected", async () => {
+it("searches LinkedIn, Indeed, and jobs.ch together when all sources are selected", async () => {
   window.history.replaceState(null, "", "#jobs");
   const requests: Array<{ path: string; method: string }> = [];
   const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
@@ -106,6 +106,9 @@ it("searches LinkedIn and Indeed together when both sources are selected", async
     if (url.pathname === "/parsers/indeed/search" && method === "POST") {
       return Response.json({ parser: "indeed", status: "completed", jobs: [] });
     }
+    if (url.pathname === "/parsers/jobs_ch/search" && method === "POST") {
+      return Response.json({ parser: "jobs_ch", status: "completed", jobs: [] });
+    }
 
     throw new Error(`Unhandled request: ${method} ${url.pathname}`);
   });
@@ -116,17 +119,22 @@ it("searches LinkedIn and Indeed together when both sources are selected", async
   fireEvent.click(await screen.findByRole("button", { name: "Search vacancies" }));
   const linkedinSource = screen.getByRole("button", { name: /LinkedIn/ });
   const indeedSource = screen.getByRole("button", { name: /Indeed/ });
+  const jobsChSource = screen.getByRole("button", { name: /jobs\.ch/ });
   expect(linkedinSource).toHaveAttribute("aria-pressed", "true");
   expect(indeedSource).toHaveAttribute("aria-pressed", "false");
+  expect(jobsChSource).toHaveAttribute("aria-pressed", "false");
 
   fireEvent.click(indeedSource);
+  fireEvent.click(jobsChSource);
   expect(linkedinSource).toHaveAttribute("aria-pressed", "true");
   expect(indeedSource).toHaveAttribute("aria-pressed", "true");
+  expect(jobsChSource).toHaveAttribute("aria-pressed", "true");
   fireEvent.click(screen.getByRole("button", { name: "Start search" }));
 
   await waitFor(() => {
     expect(requests).toContainEqual({ path: "/parsers/linkedin/search", method: "POST" });
     expect(requests).toContainEqual({ path: "/parsers/indeed/search", method: "POST" });
+    expect(requests).toContainEqual({ path: "/parsers/jobs_ch/search", method: "POST" });
   });
-  expect(await screen.findByText("No vacancies returned from LinkedIn + Indeed")).toBeInTheDocument();
+  expect(await screen.findByText("No vacancies returned from LinkedIn + Indeed + jobs.ch")).toBeInTheDocument();
 });
