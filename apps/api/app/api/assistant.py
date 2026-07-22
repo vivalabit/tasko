@@ -51,18 +51,18 @@ from app.models.documents import (
 )
 from app.models.jobs import StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
-from app.services.ai_backend import create_configured_ai_backend
 from app.services.ai_privacy import require_current_ai_consent
 from app.services.assistant import (
-    OpenClawAssistantRun,
-    OpenClawAssistantError,
-    OpenClawAssistantTimeoutError,
+    AIAssistantRun,
+    AssistantAIFacade,
+    AssistantError,
+    AssistantTimeoutError,
     SourceDocumentPreflightError,
     compact_conversation_history,
+    create_assistant_ai_facade,
     encode_message_actions,
     extract_assistant_action_previews,
     preflight_source_documents,
-    run_ai_assistant as run_openclaw_assistant,
 )
 from app.services.generation_context import (
     AuthoritativeGenerationContext,
@@ -110,6 +110,34 @@ class AuthoritativeAssistantInputs:
 assistant_streams: dict[str, AssistantStreamState] = {}
 GENERATION_ARTIFACT_TTL = timedelta(minutes=30)
 GENERATION_MESSAGE_MAX_CHARS = 12_000
+
+
+async def generate_assistant_with_facade(
+    *,
+    facade: AssistantAIFacade,
+    thread_id: str,
+    message: str,
+    context_kind: str,
+    profile: ProfilePayload,
+    job: AssistantJobContext | None,
+    application: AssistantApplicationContext | None,
+    history: dict[str, object] | None = None,
+    source_documents: list[AssistantSourceDocument] | None = None,
+    candidate_confirmations: list[AssistantCandidateConfirmation] | None = None,
+    session_scope: str = "",
+) -> AIAssistantRun:
+    return await facade.generate(
+        thread_id=thread_id,
+        message=message,
+        context_kind=context_kind,
+        profile=profile,
+        job=job,
+        application=application,
+        history=history,
+        source_documents=source_documents,
+        candidate_confirmations=candidate_confirmations,
+        session_scope=session_scope,
+    )
 
 
 def begin_generation_artifact(
@@ -259,7 +287,11 @@ async def chat_with_assistant(
     if request.generation_context is None:
         await preflight_assistant_source_documents(request)
 
-    inputs = load_authoritative_assistant_inputs(db, request)
+    inputs = load_authoritative_assistant_inputs(
+        db,
+        request,
+        generation_backend=settings.ai_backend_mode,
+    )
     history = load_compact_conversation_history(db, request.thread_id, settings)
     generation_artifact = None
     if inputs.generation_context is not None:
@@ -272,51 +304,29 @@ async def chat_with_assistant(
         )
 
     try:
-        run = await run_openclaw_assistant(
+        run = await generate_assistant_with_facade(
+            facade=create_assistant_ai_facade(settings),
             thread_id=request.thread_id,
             message=request.message,
             context_kind=request.context_kind,
             profile=inputs.profile,
             job=inputs.job,
             application=inputs.application,
-            command=settings.openclaw_command,
-            agent_id=settings.openclaw_assistant_agent_id,
-            thinking=settings.ai_reasoning_for(settings.openclaw_assistant_thinking),
-            timeout_seconds=settings.ai_timeout_for(
-                settings.openclaw_assistant_timeout_seconds
-            ),
-            model=(
-                settings.openai_api_model
-                if settings.ai_backend_mode == "openai_api"
-                else settings.openclaw_assistant_model
-            ),
             history=history,
             source_documents=list(inputs.source_documents),
             candidate_confirmations=list(inputs.confirmations),
             session_scope=uuid4().hex,
-            max_prompt_chars=settings.openclaw_assistant_max_prompt_chars,
-            max_attempts=settings.ai_max_attempts_for(
-                settings.openclaw_assistant_max_attempts
-            ),
-            retry_backoff_seconds=settings.ai_retry_backoff_for(
-                settings.openclaw_assistant_retry_backoff_seconds
-            ),
-            backend=create_configured_ai_backend(
-                settings,
-                openclaw_include_cli_timeout=True,
-                openclaw_model_after_timeout=True,
-            ),
         )
         message, session_id, metrics, backend_name = unpack_assistant_run(
             run, fallback_backend=settings.ai_backend_mode
         )
-    except OpenClawAssistantTimeoutError as exc:
+    except AssistantTimeoutError as exc:
         fail_generation_artifact(db, generation_artifact)
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail=str(exc),
         ) from exc
-    except OpenClawAssistantError as exc:
+    except AssistantError as exc:
         fail_generation_artifact(db, generation_artifact)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -429,7 +439,11 @@ async def stream_chat_with_assistant(
 
     if not stream:
         history = load_compact_conversation_history(db, request.thread_id, settings)
-        inputs = load_authoritative_assistant_inputs(db, request)
+        inputs = load_authoritative_assistant_inputs(
+            db,
+            request,
+            generation_backend=settings.ai_backend_mode,
+        )
 
         stream = AssistantStreamState(
             request_id=request.request_id,
@@ -457,6 +471,7 @@ async def stream_chat_with_assistant(
                 application=inputs.application,
                 source_documents=list(inputs.source_documents),
                 candidate_confirmations=list(inputs.confirmations),
+                facade=create_assistant_ai_facade(settings),
                 settings=settings,
                 history=history,
                 history_bind=history_bind,
@@ -551,50 +566,31 @@ async def generate_assistant_stream(
     application: AssistantApplicationContext | None,
     source_documents: list[AssistantSourceDocument],
     candidate_confirmations: list[AssistantCandidateConfirmation],
+    facade: AssistantAIFacade,
     settings: Settings,
     history: dict[str, object],
     history_bind: Engine | Connection,
     assistant_message_id: str,
 ) -> None:
     try:
-        run = await run_openclaw_assistant(
+        run = await generate_assistant_with_facade(
+            facade=facade,
             thread_id=request.thread_id,
             message=request.message,
             context_kind=request.context_kind,
             profile=profile,
             job=job,
             application=application,
-            command=settings.openclaw_command,
-            agent_id=settings.openclaw_assistant_agent_id,
-            thinking=settings.ai_reasoning_for(settings.openclaw_assistant_thinking),
-            timeout_seconds=settings.ai_timeout_for(
-                settings.openclaw_assistant_timeout_seconds
-            ),
-            model=(
-                settings.openai_api_model
-                if settings.ai_backend_mode == "openai_api"
-                else settings.openclaw_assistant_model
-            ),
             history=history,
             source_documents=source_documents,
             candidate_confirmations=candidate_confirmations,
             session_scope=request.request_id,
-            max_prompt_chars=settings.openclaw_assistant_max_prompt_chars,
-            max_attempts=settings.ai_max_attempts_for(
-                settings.openclaw_assistant_max_attempts
-            ),
-            retry_backoff_seconds=settings.ai_retry_backoff_for(
-                settings.openclaw_assistant_retry_backoff_seconds
-            ),
-            backend=create_configured_ai_backend(
-                settings,
-                openclaw_include_cli_timeout=True,
-                openclaw_model_after_timeout=True,
-            ),
         )
         message, session_id, metrics, backend_name = unpack_assistant_run(
             run, fallback_backend=settings.ai_backend_mode
         )
+        # Deliberately sanitize the complete response before exposing simulated chunks.
+        # This prevents TASKO_ACTIONS_JSON from leaking into resumable SSE deltas.
         visible_message, actions = extract_assistant_action_previews(
             message,
             request_id=request.request_id,
@@ -638,7 +634,7 @@ async def generate_assistant_stream(
             source=settings.ai_backend_mode if stream.text else None,
         )
         update_stream_status(stream, "stopped")
-    except OpenClawAssistantTimeoutError as exc:
+    except AssistantTimeoutError as exc:
         stream.error = str(exc)
         persist_stream_history_safely(
             history_bind,
@@ -648,7 +644,7 @@ async def generate_assistant_stream(
             message_status="error",
         )
         update_stream_status(stream, "error")
-    except OpenClawAssistantError as exc:
+    except AssistantError as exc:
         stream.error = str(exc)
         persist_stream_history_safely(
             history_bind,
@@ -959,13 +955,13 @@ def load_compact_conversation_history(
 
 
 def unpack_assistant_run(
-    run: OpenClawAssistantRun | tuple[str, str],
+    run: AIAssistantRun | tuple[str, str],
     *,
     fallback_backend: str = "openclaw_codex",
 ) -> tuple[str, str, dict[str, object], str]:
     message, session_key = run
-    metrics = run.metrics.as_dict() if isinstance(run, OpenClawAssistantRun) else {}
-    backend = run.backend if isinstance(run, OpenClawAssistantRun) else fallback_backend
+    metrics = run.metrics.as_dict() if isinstance(run, AIAssistantRun) else {}
+    backend = run.backend if isinstance(run, AIAssistantRun) else fallback_backend
     return message, session_key, metrics, backend
 
 
@@ -980,6 +976,8 @@ def load_profile(db: Session) -> ProfilePayload:
 def load_authoritative_assistant_inputs(
     db: Session,
     request: AssistantChatRequest,
+    *,
+    generation_backend: str | None = None,
 ) -> AuthoritativeAssistantInputs:
     if request.generation_context is not None:
         reference = request.generation_context
@@ -997,6 +995,7 @@ def load_authoritative_assistant_inputs(
                 application_id=reference.application_id,
                 template_id=reference.template_id,
                 document_type=reference.document_type,
+                generation_backend=generation_backend,
             )
         except GenerationContextError as exc:
             raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc

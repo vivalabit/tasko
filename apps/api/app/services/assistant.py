@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from app.core.settings import Settings
 from app.models.assistant import (
     AddApplicationNoteProposal,
     AssistantActionFieldPreview,
@@ -31,6 +32,7 @@ from app.services.ai_backend import (
     AIRequest,
     AIResult,
     OpenClawCodexBackend,
+    create_configured_ai_backend,
 )
 from app.services.cover_letter_blocks import UnsupportedCoverLetterStructureError
 from app.services.document_analysis import (
@@ -56,7 +58,7 @@ from app.services.resume_blocks import UnsupportedResumeStructureError
 logger = logging.getLogger("uvicorn.error")
 
 
-class OpenClawAssistantError(RuntimeError):
+class AssistantError(RuntimeError):
     def __init__(
         self,
         message: str,
@@ -69,12 +71,12 @@ class OpenClawAssistantError(RuntimeError):
         self.retryable = retryable
 
 
-class OpenClawAssistantTimeoutError(OpenClawAssistantError):
+class AssistantTimeoutError(AssistantError):
     def __init__(self, message: str = "The assistant took too long to respond.") -> None:
         super().__init__(message, code="timeout", retryable=True)
 
 
-class SourceDocumentPreflightError(OpenClawAssistantError):
+class SourceDocumentPreflightError(AssistantError):
     def __init__(
         self,
         message: str,
@@ -136,6 +138,88 @@ class AIAssistantRun:
 
 # Backward-compatible name for callers that still import the OpenClaw-specific result.
 OpenClawAssistantRun = AIAssistantRun
+# Backward-compatible error names for the locked OpenClaw integration surface.
+OpenClawAssistantError = AssistantError
+OpenClawAssistantTimeoutError = AssistantTimeoutError
+
+
+@dataclass(frozen=True)
+class AssistantAIFacade:
+    """Selected AI backend plus the assistant-specific generation policy."""
+
+    backend: AIBackend
+    command: str
+    agent_id: str
+    model: str
+    thinking: str
+    timeout_seconds: int
+    max_prompt_chars: int
+    max_attempts: int
+    retry_backoff_seconds: float
+
+    async def generate(
+        self,
+        *,
+        thread_id: str,
+        message: str,
+        context_kind: str,
+        profile: ProfilePayload,
+        job: AssistantJobContext | None,
+        application: AssistantApplicationContext | None,
+        history: dict[str, Any] | None = None,
+        source_documents: list[AssistantSourceDocument] | None = None,
+        candidate_confirmations: list[AssistantCandidateConfirmation] | None = None,
+        session_scope: str = "",
+    ) -> AIAssistantRun:
+        return await run_ai_assistant(
+            thread_id=thread_id,
+            message=message,
+            context_kind=context_kind,
+            profile=profile,
+            job=job,
+            application=application,
+            command=self.command,
+            agent_id=self.agent_id,
+            thinking=self.thinking,
+            timeout_seconds=self.timeout_seconds,
+            model=self.model,
+            history=history,
+            source_documents=source_documents,
+            candidate_confirmations=candidate_confirmations,
+            session_scope=session_scope,
+            max_prompt_chars=self.max_prompt_chars,
+            max_attempts=self.max_attempts,
+            retry_backoff_seconds=self.retry_backoff_seconds,
+            backend=self.backend,
+        )
+
+
+def create_assistant_ai_facade(settings: Settings) -> AssistantAIFacade:
+    return AssistantAIFacade(
+        backend=create_configured_ai_backend(
+            settings,
+            openclaw_include_cli_timeout=True,
+            openclaw_model_after_timeout=True,
+        ),
+        command=settings.openclaw_command,
+        agent_id=settings.openclaw_assistant_agent_id,
+        model=(
+            settings.openai_api_model
+            if settings.ai_backend_mode == "openai_api"
+            else settings.openclaw_assistant_model
+        ),
+        thinking=settings.ai_reasoning_for(settings.openclaw_assistant_thinking),
+        timeout_seconds=settings.ai_timeout_for(
+            settings.openclaw_assistant_timeout_seconds
+        ),
+        max_prompt_chars=settings.openclaw_assistant_max_prompt_chars,
+        max_attempts=settings.ai_max_attempts_for(
+            settings.openclaw_assistant_max_attempts
+        ),
+        retry_backoff_seconds=settings.ai_retry_backoff_for(
+            settings.openclaw_assistant_retry_backoff_seconds
+        ),
+    )
 
 
 ACTION_BLOCK_PATTERN = re.compile(
@@ -223,14 +307,14 @@ async def run_ai_assistant(
     )
     started_at = time.perf_counter()
     attempts = max(1, max_attempts)
-    last_error: OpenClawAssistantError | None = None
+    last_error: AssistantError | None = None
 
     for attempt in range(1, attempts + 1):
         session_seed = f"{thread_id}:{session_scope or 'request'}:{attempt}"
         session_token = hashlib.sha256(session_seed.encode("utf-8")).hexdigest()[:24]
         session_key = f"agent:{agent_id}:tasko-assistant-{session_token}"
         try:
-            backend_result = await run_openclaw_attempt(
+            backend_result = await run_ai_attempt(
                 backend=selected_backend,
                 command=command,
                 agent_id=agent_id,
@@ -244,21 +328,25 @@ async def run_ai_assistant(
                 backend_result.raw_response
             )
             if not response:
-                raise OpenClawAssistantError(
+                raise AssistantError(
                     "The assistant returned an empty response. Please try again.",
                     code="empty_response",
                     retryable=True,
                 )
-            metrics = extract_assistant_run_metrics(
-                backend_result.raw_response,
-                fallback_model=backend_result.model or model,
+            metrics = assistant_run_metrics_from_result(
+                backend_result,
+                fallback_model=model,
                 prompt=prompt,
                 response=response,
                 latency_ms=round((time.perf_counter() - started_at) * 1000),
                 attempts=attempt,
             )
             log_assistant_event(
-                "assistant.openclaw.completed",
+                (
+                    "assistant.openclaw.completed"
+                    if backend_result.backend == "openclaw_codex"
+                    else "assistant.completed"
+                ),
                 thread_id=thread_id,
                 status="completed",
                 backend=backend_result.backend,
@@ -272,10 +360,14 @@ async def run_ai_assistant(
             )
         except asyncio.CancelledError:
             raise
-        except OpenClawAssistantError as exc:
+        except AssistantError as exc:
             last_error = exc
             log_assistant_event(
-                "assistant.openclaw.attempt_failed",
+                (
+                    "assistant.openclaw.attempt_failed"
+                    if selected_backend.name == "openclaw_codex"
+                    else "assistant.attempt_failed"
+                ),
                 thread_id=thread_id,
                 status="retrying" if exc.retryable and attempt < attempts else "failed",
                 error_code=exc.code,
@@ -290,7 +382,7 @@ async def run_ai_assistant(
                 raise
             await asyncio.sleep(retry_backoff_seconds * (2 ** (attempt - 1)))
 
-    raise last_error or OpenClawAssistantError("Assistant generation failed")
+    raise last_error or AssistantError("Assistant generation failed")
 
 
 async def run_openclaw_assistant(**kwargs: Any) -> AIAssistantRun:
@@ -298,7 +390,7 @@ async def run_openclaw_assistant(**kwargs: Any) -> AIAssistantRun:
     return await run_ai_assistant(**kwargs)
 
 
-async def run_openclaw_attempt(
+async def run_ai_attempt(
     *,
     backend: AIBackend,
     command: str,
@@ -322,65 +414,92 @@ async def run_openclaw_attempt(
         )
     except AIBackendError as exc:
         if exc.code == "timeout":
-            raise OpenClawAssistantTimeoutError(
+            raise AssistantTimeoutError(
                 "The assistant took too long to respond. Try a shorter request."
             ) from exc
         if exc.code in {"runtime_missing", "runtime_unavailable"}:
-            raise OpenClawAssistantError(
+            raise AssistantError(
                 "Assistant runtime is unavailable. Check the OpenClaw installation.",
                 code="runtime_missing",
             ) from exc
         if exc.code == "authentication":
-            raise OpenClawAssistantError(
+            raise AssistantError(
                 "Assistant authentication is unavailable. Check the model provider credentials.",
                 code="authentication",
             ) from exc
         if exc.code == "rate_limited":
-            raise OpenClawAssistantError(
+            raise AssistantError(
                 "The assistant is temporarily rate-limited. Please try again shortly.",
                 code="rate_limited",
                 retryable=True,
             ) from exc
         if exc.code == "provider_unreachable":
-            raise OpenClawAssistantError(
+            raise AssistantError(
                 "The assistant could not reach the model provider. Check the connection and retry.",
                 code="provider_unreachable",
                 retryable=True,
             ) from exc
         if exc.code == "invalid_request":
-            raise OpenClawAssistantError(
+            raise AssistantError(
                 "The assistant request was rejected by the model provider.",
                 code="invalid_request",
+            ) from exc
+        if exc.code == "permission_denied":
+            raise AssistantError(
+                "The configured model provider account cannot access this request.",
+                code="permission_denied",
+            ) from exc
+        if exc.code == "refusal":
+            raise AssistantError(
+                "The model provider declined to generate this response.",
+                code="refusal",
+            ) from exc
+        if exc.code == "incomplete_response":
+            raise AssistantError(
+                "The model provider returned an incomplete response. Please try again.",
+                code="incomplete_response",
+                retryable=exc.retryable,
+            ) from exc
+        if backend.name != "openclaw_codex":
+            raise AssistantError(
+                "The assistant service failed to generate a response. Please try again.",
+                code=exc.code or "provider_error",
+                retryable=exc.retryable,
             ) from exc
         raw_error = summarize_openclaw_error(str(exc))
         raise classify_openclaw_error(raw_error) from exc
     except FileNotFoundError as exc:
-        raise OpenClawAssistantError(
+        raise AssistantError(
             "Assistant runtime is unavailable. Check the OpenClaw installation.",
             code="runtime_missing",
         ) from exc
 
 
-def classify_openclaw_error(raw_error: str) -> OpenClawAssistantError:
+async def run_openclaw_attempt(**kwargs: Any) -> AIResult:
+    """Backward-compatible OpenClaw attempt entry point."""
+    return await run_ai_attempt(**kwargs)
+
+
+def classify_openclaw_error(raw_error: str) -> AssistantError:
     normalized = raw_error.lower()
     if any(marker in normalized for marker in ("auth", "credential", "api key", "unauthorized")):
-        return OpenClawAssistantError(
+        return AssistantError(
             "Assistant authentication is unavailable. Check the model provider credentials.",
             code="authentication",
         )
     if any(marker in normalized for marker in ("rate limit", "too many requests", "429")):
-        return OpenClawAssistantError(
+        return AssistantError(
             "The assistant is temporarily rate-limited. Please try again shortly.",
             code="rate_limited",
             retryable=True,
         )
     if any(marker in normalized for marker in ("connection", "network", "econn", "fetch failed")):
-        return OpenClawAssistantError(
+        return AssistantError(
             "The assistant could not reach the model provider. Check the connection and retry.",
             code="provider_unreachable",
             retryable=True,
         )
-    return OpenClawAssistantError(
+    return AssistantError(
         "The assistant service failed to generate a response. Please try again.",
         code="provider_error",
         retryable=True,
@@ -609,7 +728,7 @@ def build_source_document_context(
                     source.data_url,
                 ).strip()
         except (UnsupportedResumeStructureError, UnsupportedCoverLetterStructureError) as exc:
-            raise OpenClawAssistantError(
+            raise AssistantError(
                 f"Selected DOCX cannot be tailored safely. {exc}",
                 code="unsupported_document",
             ) from exc
@@ -882,6 +1001,45 @@ def extract_assistant_run_metrics(
         attempts=attempts,
         prompt_chars=len(prompt),
         response_chars=len(response),
+    )
+
+
+def assistant_run_metrics_from_result(
+    result: AIResult,
+    *,
+    fallback_model: str,
+    prompt: str,
+    response: str,
+    latency_ms: int,
+    attempts: int,
+) -> AssistantRunMetrics:
+    usage = result.usage
+    if (
+        usage.source != "unavailable"
+        or usage.input_tokens
+        or usage.output_tokens
+        or usage.total_tokens
+    ):
+        return AssistantRunMetrics(
+            latency_ms=latency_ms,
+            model=result.model or fallback_model or "configured-agent-model",
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            total_tokens=(
+                usage.total_tokens or usage.input_tokens + usage.output_tokens
+            ),
+            token_count_source=usage.source,
+            attempts=attempts,
+            prompt_chars=len(prompt),
+            response_chars=len(response),
+        )
+    return extract_assistant_run_metrics(
+        result.raw_response,
+        fallback_model=result.model or fallback_model,
+        prompt=prompt,
+        response=response,
+        latency_ms=latency_ms,
+        attempts=attempts,
     )
 
 

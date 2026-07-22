@@ -317,6 +317,7 @@ def load_authoritative_application_generation_context(
     db: Session,
     *,
     application_id: str,
+    generation_backend: str | None = None,
 ) -> AuthoritativeApplicationGenerationContext:
     application_record = db.get(StoredApplicationRecord, application_id)
     if not application_record:
@@ -402,7 +403,7 @@ def load_authoritative_application_generation_context(
     if language not in {"English", "German"}:
         language = detect_job_language(vacancy)
 
-    settings = get_settings()
+    selected_generation_backend = generation_backend or get_settings().ai_backend_mode
     return AuthoritativeApplicationGenerationContext(
         application_id=application_id,
         job_id=job_id,
@@ -415,7 +416,7 @@ def load_authoritative_application_generation_context(
         confirmations=tuple(confirmations),
         language=language,
         generation_date=date.today().isoformat(),
-        generation_backend=settings.ai_backend_mode,
+        generation_backend=selected_generation_backend,
     )
 
 
@@ -427,10 +428,12 @@ def load_authoritative_generation_context(
     document_type: str,
     expected_job_id: str | None = None,
     template_override: DocumentTemplateRecord | None = None,
+    generation_backend: str | None = None,
 ) -> AuthoritativeGenerationContext:
     application_context = load_authoritative_application_generation_context(
         db,
         application_id=application_id,
+        generation_backend=generation_backend,
     )
     if expected_job_id and expected_job_id != application_context.job_id:
         raise GenerationContextError(

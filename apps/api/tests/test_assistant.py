@@ -33,7 +33,10 @@ from app.models.conversations import ConversationRecord, MessageRecord
 from app.models.documents import DocumentGenerationArtifactRecord, DocumentTemplateRecord
 from app.models.jobs import JobMatchRecord, StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
+from app.services.ai_backend import AIBackendError, AIResult, AIUsage
 from app.services.assistant import (
+    AssistantAIFacade,
+    AssistantError,
     AssistantRunMetrics,
     OpenClawAssistantRun,
     OpenClawAssistantError,
@@ -112,7 +115,7 @@ def test_assistant_routes_openai_api_mode_through_neutral_backend(
 
     monkeypatch.setattr(
         assistant_api,
-        "run_openclaw_assistant",
+        "generate_assistant_with_facade",
         fake_run_ai_assistant,
     )
     app.dependency_overrides[get_settings] = lambda: Settings(
@@ -139,11 +142,12 @@ def test_assistant_routes_openai_api_mode_through_neutral_backend(
     assert response.status_code == 200
     assert response.json()["message"] == "Direct API response"
     assert response.json()["metadata"]["backend"] == "openai_api"
-    assert captured["backend"].name == "openai_api"
-    assert captured["thinking"] == "high"
-    assert captured["timeout_seconds"] == 75
-    assert captured["max_attempts"] == 3
-    assert captured["retry_backoff_seconds"] == 1.25
+    facade = captured["facade"]
+    assert facade.backend.name == "openai_api"
+    assert facade.thinking == "high"
+    assert facade.timeout_seconds == 75
+    assert facade.max_attempts == 3
+    assert facade.retry_backoff_seconds == 1.25
 
 
 def test_build_openclaw_assistant_prompt_only_includes_dynamic_context() -> None:
@@ -452,7 +456,9 @@ def test_source_docx_preflight_returns_all_unsupported_elements_before_ai(
         ai_calls += 1
         return "This must not run", "session-preflight"
 
-    monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
+    monkeypatch.setattr(
+        assistant_api, "generate_assistant_with_facade", fake_run_openclaw_assistant
+    )
     app.dependency_overrides[get_settings] = lambda: Settings(openclaw_assistant_enabled=True)
     assistant_api.assistant_streams.clear()
     client = TestClient(app)
@@ -830,6 +836,160 @@ def test_run_openclaw_assistant_kills_process_when_cancelled(
     assert process.waited is True
 
 
+def test_assistant_facade_propagates_direct_backend_cancellation() -> None:
+    class BlockingBackend:
+        name = "openai_api"
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.cancelled = False
+
+        def generate(self, _request: object) -> object:
+            raise AssertionError("sync generation must not be used")
+
+        async def agenerate(self, _request: object) -> object:
+            self.started.set()
+            try:
+                await asyncio.Future()
+            finally:
+                self.cancelled = True
+
+    async def cancel_generation() -> None:
+        backend = BlockingBackend()
+        facade = AssistantAIFacade(
+            backend=backend,
+            command="openclaw",
+            agent_id="tasko-assistant",
+            model="gpt-5.6-terra",
+            thinking="medium",
+            timeout_seconds=30,
+            max_prompt_chars=48_000,
+            max_attempts=2,
+            retry_backoff_seconds=0,
+        )
+        task = asyncio.create_task(
+            facade.generate(
+                thread_id="thread-direct-cancel",
+                message="Draft a cover letter",
+                context_kind="profile",
+                profile=ProfilePayload(name="Eduard"),
+                job=None,
+                application=None,
+            )
+        )
+        await backend.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert backend.cancelled is True
+
+    asyncio.run(cancel_generation())
+
+
+def test_assistant_facade_does_not_retry_direct_backend_refusal() -> None:
+    class RefusingBackend:
+        name = "openai_api"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def generate(self, _request: object) -> object:
+            raise AssertionError("sync generation must not be used")
+
+        async def agenerate(self, _request: object) -> object:
+            self.calls += 1
+            raise AIBackendError("Policy refusal", code="refusal", retryable=False)
+
+    backend = RefusingBackend()
+    facade = AssistantAIFacade(
+        backend=backend,
+        command="openclaw",
+        agent_id="tasko-assistant",
+        model="gpt-5.6-terra",
+        thinking="medium",
+        timeout_seconds=30,
+        max_prompt_chars=48_000,
+        max_attempts=3,
+        retry_backoff_seconds=0,
+    )
+
+    with pytest.raises(AssistantError) as exc_info:
+        asyncio.run(
+            facade.generate(
+                thread_id="thread-direct-refusal",
+                message="Draft a cover letter",
+                context_kind="profile",
+                profile=ProfilePayload(name="Eduard"),
+                job=None,
+                application=None,
+            )
+        )
+
+    assert backend.calls == 1
+    assert exc_info.value.code == "refusal"
+    assert exc_info.value.retryable is False
+
+
+def test_assistant_facade_uses_neutral_backend_result_metrics() -> None:
+    captured: dict[str, object] = {}
+
+    class CompletedBackend:
+        name = "openai_api"
+
+        def generate(self, _request: object) -> object:
+            raise AssertionError("sync generation must not be used")
+
+        async def agenerate(self, request: object) -> AIResult:
+            captured["request"] = request
+            return AIResult(
+                text="Direct response",
+                structured_data=None,
+                model="gpt-5.6-terra",
+                backend="openai_api",
+                usage=AIUsage(
+                    input_tokens=21,
+                    output_tokens=4,
+                    total_tokens=25,
+                    source="provider",
+                ),
+                latency_ms=14,
+                session_id="resp-direct",
+            )
+
+    facade = AssistantAIFacade(
+        backend=CompletedBackend(),
+        command="openclaw",
+        agent_id="tasko-assistant",
+        model="gpt-5.6-terra",
+        thinking="high",
+        timeout_seconds=75,
+        max_prompt_chars=48_000,
+        max_attempts=2,
+        retry_backoff_seconds=0,
+    )
+    run = asyncio.run(
+        facade.generate(
+            thread_id="thread-direct-result",
+            message="Review my profile",
+            context_kind="profile",
+            profile=ProfilePayload(name="Eduard"),
+            job=None,
+            application=None,
+        )
+    )
+
+    assert run.message == "Direct response"
+    assert run.session_key == "resp-direct"
+    assert run.backend == "openai_api"
+    assert run.metrics.model == "gpt-5.6-terra"
+    assert run.metrics.total_tokens == 25
+    assert run.metrics.token_count_source == "provider"
+    request = captured["request"]
+    assert request.model == "gpt-5.6-terra"
+    assert request.thinking == "high"
+    assert request.timeout_seconds == 75
+
+
 def test_assistant_chat_uses_stored_profile_and_job(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = create_engine(
         "sqlite://",
@@ -871,7 +1031,9 @@ def test_assistant_chat_uses_stored_profile_and_job(monkeypatch: pytest.MonkeyPa
         captured.update(kwargs)
         return "OpenClaw response", "session-123"
 
-    monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
+    monkeypatch.setattr(
+        assistant_api, "generate_assistant_with_facade", fake_run_openclaw_assistant
+    )
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_settings] = lambda: Settings(openclaw_assistant_enabled=True)
     client = TestClient(app)
@@ -1038,9 +1200,15 @@ def test_document_generation_uses_only_authoritative_server_context(
             db.commit()
         return "Generated", "session-authoritative"
 
-    monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
+    monkeypatch.setattr(
+        assistant_api, "generate_assistant_with_facade", fake_run_openclaw_assistant
+    )
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_assistant_enabled=True)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        ai_backend_mode="openai_api",
+        openai_api_key="test-key",
+        openclaw_assistant_enabled=True,
+    )
     client = TestClient(app)
     try:
         response = client.post(
@@ -1092,8 +1260,8 @@ def test_document_generation_uses_only_authoritative_server_context(
         assert artifact is not None
         assert artifact.status == "completed"
         assert artifact.result_content == "Generated"
-        assert artifact.generation_model == Settings().openclaw_assistant_model
-        assert artifact.generation_backend == "openclaw_codex"
+        assert artifact.generation_model == "gpt-5.6-terra"
+        assert artifact.generation_backend == "openai_api"
         assert artifact.input_versions["generationArtifact"]["id"] == artifact.id
         assert len(
             artifact.input_versions["generationArtifact"]["inputSnapshotSha256"]
@@ -1124,6 +1292,7 @@ def test_document_generation_uses_only_authoritative_server_context(
     assert confirmations[0].answer == "YES: Built production Python services."
     assert isinstance(sources, list)
     assert sources[0].title == "Server CV"
+    assert captured["facade"].backend.name == "openai_api"
     assert "Injected" not in repr(captured)
 
 
@@ -1131,7 +1300,9 @@ def test_assistant_chat_maps_openclaw_timeout(monkeypatch: pytest.MonkeyPatch) -
     async def fake_run_openclaw_assistant(**_: object) -> tuple[str, str]:
         raise OpenClawAssistantTimeoutError("OpenClaw assistant timed out")
 
-    monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
+    monkeypatch.setattr(
+        assistant_api, "generate_assistant_with_facade", fake_run_openclaw_assistant
+    )
     app.dependency_overrides[get_settings] = lambda: Settings(openclaw_assistant_enabled=True)
     client = TestClient(app)
 
@@ -1211,7 +1382,9 @@ def test_assistant_chat_stream_emits_resumable_sse(monkeypatch: pytest.MonkeyPat
             ),
         )
 
-    monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
+    monkeypatch.setattr(
+        assistant_api, "generate_assistant_with_facade", fake_run_openclaw_assistant
+    )
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -1325,7 +1498,9 @@ def test_assistant_chat_stream_returns_and_persists_action_preview(
             "session-actions",
         )
 
-    monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
+    monkeypatch.setattr(
+        assistant_api, "generate_assistant_with_facade", fake_run_openclaw_assistant
+    )
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -1347,7 +1522,11 @@ def test_assistant_chat_stream_returns_and_persists_action_preview(
         db.commit()
 
     assistant_api.assistant_streams.clear()
-    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_assistant_enabled=True)
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        ai_backend_mode="openai_api",
+        openai_api_key="test-key",
+        openclaw_assistant_enabled=True,
+    )
     app.dependency_overrides[get_db] = override_get_db
     client = TestClient(app)
     try:
@@ -1369,10 +1548,12 @@ def test_assistant_chat_stream_returns_and_persists_action_preview(
 
     assert response.status_code == 200
     assert streamed_text(response.text) == "Review this change before applying."
+    assert "TASKO_ACTIONS_JSON" not in response.text
     assert '"type":"update_profile_field"' in response.text
     assert stored_message is not None
     assert stored_message.content.startswith("Review this change before applying.")
     assert "<!--TASKO_ACTIONS:" in stored_message.content
+    assert stored_message.source == "openai_api"
 
 
 def streamed_text(sse_body: str) -> str:

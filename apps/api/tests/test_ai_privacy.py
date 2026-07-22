@@ -49,7 +49,7 @@ def test_ai_calls_require_current_server_side_consent(monkeypatch) -> None:
         calls += 1
         return "Generated response", "session-privacy"
 
-    monkeypatch.setattr(assistant_api, "run_openclaw_assistant", run_assistant)
+    monkeypatch.setattr(assistant_api, "generate_assistant_with_facade", run_assistant)
     client, testing_session_local = privacy_client()
     headers = {"X-Tasko-Owner-Id": "privacy-owner"}
     with testing_session_local() as db:
