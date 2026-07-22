@@ -4,6 +4,7 @@ import pytest
 
 from app.core.settings import Settings
 from app.models.profile import ProfilePayload
+from app.services import ai_match as ai_match_service
 from app.services import ai_match_jobs as ai_match_jobs_service
 from app.services.ai_match import OpenClawAiMatchError
 from app.services.ai_match_jobs import AiMatchJobManager
@@ -28,7 +29,7 @@ def test_bulk_ai_match_continues_after_one_vacancy_fails(
         return jobs
 
     monkeypatch.setattr(
-        ai_match_jobs_service,
+        ai_match_service,
         "calculate_ai_matches",
         fake_calculate_ai_matches,
     )
@@ -76,3 +77,68 @@ def test_bulk_ai_match_continues_after_one_vacancy_fails(
         ["job-invalid"],
         ["job-valid-2"],
     ]
+
+
+def test_background_match_pins_backend_and_model_before_thread_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deferred_threads: list[object] = []
+    captured: dict[str, object] = {}
+
+    class DeferredThread:
+        def __init__(self, *, target, kwargs, daemon: bool) -> None:
+            self.target = target
+            self.kwargs = kwargs
+            self.daemon = daemon
+            deferred_threads.append(self)
+
+        def start(self) -> None:
+            return None
+
+    def fake_calculate_ai_matches(
+        _profile: ProfilePayload,
+        jobs: list[dict],
+        **kwargs: object,
+    ) -> list[dict]:
+        captured.update(kwargs)
+        return jobs
+
+    monkeypatch.setattr(ai_match_jobs_service.threading, "Thread", DeferredThread)
+    monkeypatch.setattr(ai_match_service, "calculate_ai_matches", fake_calculate_ai_matches)
+    manager = AiMatchJobManager()
+    monkeypatch.setattr(
+        manager,
+        "_persist_job",
+        lambda _session_factory, job, _profile_hash: job,
+    )
+    settings = Settings(
+        ai_backend_mode="openai_api",
+        openai_api_key="launch-key",
+        openai_api_model="gpt-5.6-terra",
+        openai_api_reasoning_effort="high",
+        openclaw_ai_match_enabled=True,
+        openclaw_ai_match_max_jobs=2,
+    )
+
+    started, _ = manager.start(
+        owner_id="pinned-settings-owner",
+        profile=ProfilePayload(),
+        jobs=[{"id": "job-pinned"}],
+        profile_hash="a" * 64,
+        candidate_snapshot={},
+        settings=settings,
+        session_factory=lambda: None,
+        force=True,
+    )
+    assert started is True
+    assert len(deferred_threads) == 1
+
+    settings.ai_backend_mode = "openclaw_codex"
+    settings.openai_api_model = "changed-after-launch"
+    thread = deferred_threads[0]
+    thread.target(**thread.kwargs)
+
+    assert captured["backend"].name == "openai_api"
+    assert captured["model"] == "gpt-5.6-terra"
+    assert captured["thinking"] == "high"
+    assert manager.status("pinned-settings-owner").status == "completed"

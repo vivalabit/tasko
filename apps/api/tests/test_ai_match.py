@@ -24,6 +24,7 @@ from app.services.ai_match import (
     build_job_snapshot,
     build_openclaw_ai_match_prompt,
     calculate_ai_matches,
+    create_vacancy_matching_ai_facade,
     extract_openclaw_ai_match_payload,
     infer_seniority,
     parse_number,
@@ -657,9 +658,12 @@ def test_ai_match_retry_includes_validation_feedback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     correction_feedback: list[str | None] = []
+    backends: list[str] = []
 
     def fake_score_with_openclaw(*, jobs: list[dict], **kwargs: object) -> list[dict]:
         correction_feedback.append(kwargs.get("correction_feedback"))
+        backend = kwargs.get("backend")
+        backends.append(backend.name if backend is not None else "")
         if len(correction_feedback) == 1:
             raise OpenClawAiMatchError(
                 "applicationGuide.evidenceMatrix.1.importance must be required or preferred"
@@ -686,12 +690,37 @@ def test_ai_match_retry_includes_validation_feedback(
         openclaw_enabled=True,
         openclaw_max_jobs=1,
         max_attempts=2,
+        backend=OpenAIAPIBackend(api_key="test-key"),
     )
 
     assert correction_feedback == [
         None,
         "applicationGuide.evidenceMatrix.1.importance must be required or preferred",
     ]
+    assert backends == ["openai_api", "openai_api"]
+
+
+def test_matching_facade_uses_direct_api_configuration() -> None:
+    facade = create_vacancy_matching_ai_facade(
+        Settings(
+            ai_backend_mode="openai_api",
+            openai_api_key="test-key",
+            openai_api_model="gpt-5.6-terra",
+            openai_api_reasoning_effort="high",
+            openai_api_timeout_seconds=75,
+            openai_api_max_attempts=3,
+            openai_api_retry_backoff_seconds=1.25,
+            openclaw_ai_match_max_jobs=4,
+        )
+    )
+
+    assert facade.backend.name == "openai_api"
+    assert facade.model == "gpt-5.6-terra"
+    assert facade.thinking == "high"
+    assert facade.timeout_seconds == 75
+    assert facade.max_attempts == 3
+    assert facade.retry_backoff_seconds == 1.25
+    assert facade.max_jobs == 4
 
 
 def test_openclaw_candidate_snapshot_reads_top_level_payloads_text() -> None:

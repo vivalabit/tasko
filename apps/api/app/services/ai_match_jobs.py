@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 from uuid import uuid4
 
@@ -12,8 +13,11 @@ from app.core.identity import current_owner_id
 from app.core.settings import Settings
 from app.models.jobs import AiMatchJobFailure, AiMatchJobStatus, StoredJobPayload
 from app.models.profile import ProfilePayload
-from app.services.ai_backend import create_configured_ai_backend
-from app.services.ai_match import OpenClawAiMatchError, calculate_ai_matches
+from app.services.ai_match import (
+    AiMatchError,
+    VacancyMatchingAIFacade,
+    create_vacancy_matching_ai_facade,
+)
 from app.services.job_match_store import calibrate_job_with_feedback, hydrate_job_data, persist_job_and_match
 
 SessionFactory = Callable[[], Session]
@@ -36,6 +40,10 @@ class AiMatchJobManager:
         session_factory: SessionFactory,
         force: bool = False,
     ) -> tuple[bool, AiMatchJobStatus]:
+        # Capture backend, model and retry policy before the worker starts. Settings cache
+        # changes can only affect subsequently launched jobs.
+        facade = create_vacancy_matching_ai_facade(settings)
+        facade = replace(facade, max_jobs=max(1, facade.max_jobs))
         with self._lock:
             owner_status = self._statuses.get(owner_id, AiMatchJobStatus())
             if owner_status.status in {"queued", "running"}:
@@ -59,7 +67,7 @@ class AiMatchJobManager:
                 "jobs": jobs,
                 "profile_hash": profile_hash,
                 "candidate_snapshot": candidate_snapshot,
-                "settings": settings,
+                "facade": facade,
                 "session_factory": session_factory,
                 "force": force,
             },
@@ -81,7 +89,7 @@ class AiMatchJobManager:
         jobs: list[dict[str, Any]],
         profile_hash: str,
         candidate_snapshot: dict[str, Any],
-        settings: Settings,
+        facade: VacancyMatchingAIFacade,
         session_factory: SessionFactory,
         force: bool,
     ) -> None:
@@ -89,7 +97,7 @@ class AiMatchJobManager:
         self._update(owner_id, run_id, status="running")
 
         try:
-            batch_size = max(1, settings.openclaw_ai_match_max_jobs)
+            batch_size = max(1, facade.max_jobs)
             for start in range(0, len(jobs), batch_size):
                 batch = jobs[start : start + batch_size]
                 self._process_batch(
@@ -99,7 +107,7 @@ class AiMatchJobManager:
                     batch=batch,
                     profile_hash=profile_hash,
                     candidate_snapshot=candidate_snapshot,
-                    settings=settings,
+                    facade=facade,
                     session_factory=session_factory,
                     force=force,
                 )
@@ -119,36 +127,18 @@ class AiMatchJobManager:
         batch: list[dict[str, Any]],
         profile_hash: str,
         candidate_snapshot: dict[str, Any],
-        settings: Settings,
+        facade: VacancyMatchingAIFacade,
         session_factory: SessionFactory,
         force: bool,
     ) -> None:
         try:
-            matched_jobs = calculate_ai_matches(
+            matched_jobs = facade.match(
                 profile,
                 batch,
-                command=settings.openclaw_command,
-                agent_id=settings.openclaw_agent_id,
-                thinking=settings.ai_reasoning_for(settings.openclaw_ai_match_thinking),
-                timeout_seconds=settings.ai_timeout_for(
-                    settings.openclaw_ai_match_timeout_seconds
-                ),
-                openclaw_enabled=settings.openclaw_ai_match_enabled,
-                openclaw_max_jobs=max(1, settings.openclaw_ai_match_max_jobs),
-                model=(
-                    settings.openai_api_model
-                    if settings.ai_backend_mode == "openai_api"
-                    else settings.openclaw_ai_match_model
-                ),
-                max_attempts=settings.ai_max_attempts_for(
-                    settings.openclaw_ai_match_max_attempts
-                ),
-                retry_backoff_seconds=settings.ai_retry_backoff_for(0),
                 force=force,
                 candidate_snapshot=candidate_snapshot,
-                backend=create_configured_ai_backend(settings),
             )
-        except OpenClawAiMatchError as exc:
+        except AiMatchError as exc:
             if len(batch) > 1:
                 for job in batch:
                     self._process_batch(
@@ -158,7 +148,7 @@ class AiMatchJobManager:
                         batch=[job],
                         profile_hash=profile_hash,
                         candidate_snapshot=candidate_snapshot,
-                        settings=settings,
+                        facade=facade,
                         session_factory=session_factory,
                         force=force,
                     )
@@ -175,17 +165,17 @@ class AiMatchJobManager:
         }
         for job in batch:
             job_id = str(job.get("id") or "")
-            openclaw_job = matched_by_id.get(job_id)
-            if not openclaw_job:
+            matched_job = matched_by_id.get(job_id)
+            if not matched_job:
                 self._append_failure(
                     owner_id,
                     run_id,
                     job_id or "unknown",
-                    "OpenClaw did not return a result for this vacancy",
+                    "AI backend did not return a result for this vacancy",
                 )
                 continue
 
-            hydrated_job = self._persist_job(session_factory, openclaw_job, profile_hash)
+            hydrated_job = self._persist_job(session_factory, matched_job, profile_hash)
             self._append_update(owner_id, run_id, hydrated_job)
 
     def _persist_job(
@@ -243,7 +233,7 @@ class AiMatchJobManager:
     ) -> None:
         failure = AiMatchJobFailure(
             id=job_id,
-            error=(error.strip() or "OpenClaw AI analysis failed")[:240],
+            error=(error.strip() or "AI vacancy analysis failed")[:240],
         )
         with self._lock:
             owner_status = self._statuses.get(owner_id)

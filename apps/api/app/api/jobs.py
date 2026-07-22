@@ -18,10 +18,13 @@ from app.models.jobs import (
     StoredJobsRequest,
 )
 from app.models.profile import ProfilePayload, ProfileRecord
-from app.services.ai_match import JOB_ADDED_AT_FIELDS, OpenClawAiMatchError, calculate_ai_matches
+from app.services.ai_match import (
+    JOB_ADDED_AT_FIELDS,
+    AiMatchError,
+    create_vacancy_matching_ai_facade,
+)
 from app.services.ai_match_jobs import ai_match_jobs
 from app.services.candidate_snapshot import CandidateSnapshotError, get_candidate_match_snapshot
-from app.services.ai_backend import create_configured_ai_backend
 from app.services.ai_privacy import require_current_ai_consent
 from app.services.job_match_store import (
     calibrate_job_with_feedback,
@@ -134,29 +137,11 @@ def match_jobs(
             )
             for job in jobs_to_match
         ]
-        matched_jobs = calculate_ai_matches(
+        matched_jobs = create_vacancy_matching_ai_facade(settings).match(
             profile,
             jobs_to_match,
-            command=settings.openclaw_command,
-            agent_id=settings.openclaw_agent_id,
-            thinking=settings.ai_reasoning_for(settings.openclaw_ai_match_thinking),
-            timeout_seconds=settings.ai_timeout_for(
-                settings.openclaw_ai_match_timeout_seconds
-            ),
-            openclaw_enabled=settings.openclaw_ai_match_enabled,
-            openclaw_max_jobs=settings.openclaw_ai_match_max_jobs,
-            model=(
-                settings.openai_api_model
-                if settings.ai_backend_mode == "openai_api"
-                else settings.openclaw_ai_match_model
-            ),
-            max_attempts=settings.ai_max_attempts_for(
-                settings.openclaw_ai_match_max_attempts
-            ),
-            retry_backoff_seconds=settings.ai_retry_backoff_for(0),
             force=force,
             candidate_snapshot=candidate_snapshot.data,
-            backend=create_configured_ai_backend(settings),
         )
 
         calibrated_jobs: list[dict[str, Any]] = []
@@ -180,7 +165,7 @@ def match_jobs(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Jobs database is unavailable",
         ) from exc
-    except OpenClawAiMatchError as exc:
+    except AiMatchError as exc:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

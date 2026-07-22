@@ -6,13 +6,21 @@ import re
 import subprocess
 import time
 import unicodedata
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
 
+from app.core.settings import Settings
 from app.models.profile import ProfilePayload
-from app.services.ai_backend import AIBackend, AIBackendError, AIRequest, OpenClawCodexBackend
+from app.services.ai_backend import (
+    AIBackend,
+    AIBackendError,
+    AIRequest,
+    OpenClawCodexBackend,
+    create_configured_ai_backend,
+)
 from app.services.experience_evidence import build_atomic_experience_evidence
 from app.services.resume_import import (
     extract_json_objects,
@@ -109,8 +117,12 @@ SENIORITY_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
-class OpenClawAiMatchError(RuntimeError):
+class AiMatchError(RuntimeError):
     pass
+
+
+# Backward-compatible name for the locked OpenClaw matching surface.
+OpenClawAiMatchError = AiMatchError
 
 
 StrictText = Annotated[
@@ -233,7 +245,7 @@ class AiMatchApplicationGuide(StrictAiMatchModel):
         return self
 
 
-class OpenClawAiMatchResult(StrictAiMatchModel):
+class AiMatchResult(StrictAiMatchModel):
     id: StrictText
     score: int = Field(ge=0, le=100)
     confidence: Literal["low", "medium", "high"]
@@ -243,15 +255,82 @@ class OpenClawAiMatchResult(StrictAiMatchModel):
     application_guide: AiMatchApplicationGuide = Field(alias="applicationGuide")
 
     @model_validator(mode="after")
-    def validate_score_consistency(self) -> "OpenClawAiMatchResult":
+    def validate_score_consistency(self) -> "AiMatchResult":
         breakdown_total = sum(self.breakdown.model_dump().values())
         if abs(self.score - breakdown_total) > 20:
             raise ValueError("score differs from the breakdown total by more than 20 points")
         return self
 
 
-class OpenClawAiMatchPayload(StrictAiMatchModel):
-    matches: list[OpenClawAiMatchResult] = Field(min_length=1)
+class AiMatchPayload(StrictAiMatchModel):
+    matches: list[AiMatchResult] = Field(min_length=1)
+
+
+# Compatibility aliases for existing integrations and tests.
+OpenClawAiMatchResult = AiMatchResult
+OpenClawAiMatchPayload = AiMatchPayload
+
+
+@dataclass(frozen=True)
+class VacancyMatchingAIFacade:
+    backend: AIBackend
+    command: str
+    agent_id: str
+    thinking: str
+    timeout_seconds: int
+    enabled: bool
+    max_jobs: int
+    model: str
+    max_attempts: int
+    retry_backoff_seconds: float
+
+    def match(
+        self,
+        profile: ProfilePayload,
+        jobs: list[dict[str, Any]],
+        *,
+        force: bool = False,
+        candidate_snapshot: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        return calculate_ai_matches(
+            profile,
+            jobs,
+            command=self.command,
+            agent_id=self.agent_id,
+            thinking=self.thinking,
+            timeout_seconds=self.timeout_seconds,
+            openclaw_enabled=self.enabled,
+            openclaw_max_jobs=self.max_jobs,
+            model=self.model,
+            max_attempts=self.max_attempts,
+            retry_backoff_seconds=self.retry_backoff_seconds,
+            force=force,
+            candidate_snapshot=candidate_snapshot,
+            backend=self.backend,
+        )
+
+
+def create_vacancy_matching_ai_facade(settings: Settings) -> VacancyMatchingAIFacade:
+    return VacancyMatchingAIFacade(
+        backend=create_configured_ai_backend(settings),
+        command=settings.openclaw_command,
+        agent_id=settings.openclaw_agent_id,
+        thinking=settings.ai_reasoning_for(settings.openclaw_ai_match_thinking),
+        timeout_seconds=settings.ai_timeout_for(
+            settings.openclaw_ai_match_timeout_seconds
+        ),
+        enabled=settings.openclaw_ai_match_enabled,
+        max_jobs=settings.openclaw_ai_match_max_jobs,
+        model=(
+            settings.openai_api_model
+            if settings.ai_backend_mode == "openai_api"
+            else settings.openclaw_ai_match_model
+        ),
+        max_attempts=settings.ai_max_attempts_for(
+            settings.openclaw_ai_match_max_attempts
+        ),
+        retry_backoff_seconds=settings.ai_retry_backoff_for(0),
+    )
 
 
 def calculate_ai_matches(
@@ -272,9 +351,9 @@ def calculate_ai_matches(
     backend: AIBackend | None = None,
 ) -> list[dict[str, Any]]:
     if not openclaw_enabled:
-        raise OpenClawAiMatchError("OpenClaw AI match is required but disabled")
+        raise AiMatchError("AI vacancy matching is required but disabled")
     if openclaw_max_jobs <= 0:
-        raise OpenClawAiMatchError("OpenClaw AI match requires a positive job batch size")
+        raise AiMatchError("AI vacancy matching requires a positive job batch size")
 
     profile_snapshot = candidate_snapshot or build_candidate_snapshot(profile)
     backend_source = backend.name if backend is not None else "openclaw_codex"
@@ -350,7 +429,9 @@ def calculate_ai_matches(
     scored_ids = {job_snapshot["id"] for _, job_snapshot, _ in jobs_to_score}
     missing_ids = sorted(scored_ids - set(by_id))
     if missing_ids:
-        raise OpenClawAiMatchError(f"OpenClaw did not return matches for: {', '.join(missing_ids[:8])}")
+        raise AiMatchError(
+            f"AI backend did not return matches for: {', '.join(missing_ids[:8])}"
+        )
 
     return [
         item
@@ -538,25 +619,34 @@ def score_with_openclaw(
                 thinking=thinking,
                 timeout_seconds=timeout_seconds,
                 structured=True,
-                response_model=OpenClawAiMatchPayload,
+                response_model=AiMatchPayload,
             )
         )
     except AIBackendError as exc:
         if exc.code == "runtime_missing":
-            raise OpenClawAiMatchError(
-                f"OpenClaw command was not found: {command}. Install OpenClaw or set "
-                "OPENCLAW_COMMAND to the executable path."
-            ) from exc
+            if selected_backend.name == "openclaw_codex":
+                message = (
+                    f"OpenClaw command was not found: {command}. Install OpenClaw or set "
+                    "OPENCLAW_COMMAND to the executable path."
+                )
+            else:
+                message = "The configured AI runtime is unavailable"
+            raise AiMatchError(message) from exc
         if exc.code == "timeout":
-            raise OpenClawAiMatchError("OpenClaw AI match timed out") from exc
-        raise OpenClawAiMatchError(summarize_openclaw_error(str(exc))) from exc
+            raise AiMatchError("AI vacancy matching timed out") from exc
+        message = (
+            summarize_openclaw_error(str(exc))
+            if selected_backend.name == "openclaw_codex"
+            else "AI vacancy matching failed"
+        )
+        raise AiMatchError(message) from exc
 
     raw_payload = coerce_openclaw_ai_match_payload(result.structured_data)
     if raw_payload is None:
         raw_payload = extract_openclaw_ai_match_payload(result.raw_response)
     payload = normalize_openclaw_ai_match_payload(raw_payload)
     try:
-        validated = OpenClawAiMatchPayload.model_validate(payload)
+        validated = AiMatchPayload.model_validate(payload)
     except ValidationError as exc:
         raise invalid_openclaw_response(exc) from exc
     return [match.model_dump(by_alias=True) for match in validated.matches]
