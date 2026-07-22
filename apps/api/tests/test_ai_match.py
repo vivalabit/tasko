@@ -20,6 +20,7 @@ from app.services import ai_match as ai_match_service
 from app.services.ai_match import (
     OpenClawAiMatchPayload,
     OpenClawAiMatchError,
+    build_cache_key,
     build_job_snapshot,
     build_openclaw_ai_match_prompt,
     calculate_ai_matches,
@@ -203,6 +204,24 @@ def test_parse_number_reads_spaced_salary_values() -> None:
     assert parse_number("$120k - $160k") == 160000
 
 
+def test_ai_match_cache_key_separates_backends() -> None:
+    profile_snapshot = {"skills": ["Python"]}
+    job_snapshot = {"id": "job-cache", "skills": ["Python"]}
+
+    openclaw_key = build_cache_key(
+        profile_snapshot,
+        job_snapshot,
+        backend="openclaw_codex",
+    )
+    openai_key = build_cache_key(
+        profile_snapshot,
+        job_snapshot,
+        backend="openai_api",
+    )
+
+    assert openclaw_key != openai_key
+
+
 def test_openclaw_ai_match_scores_relevant_job_higher(monkeypatch: pytest.MonkeyPatch) -> None:
     install_openclaw_fakes(monkeypatch)
     profile = ProfilePayload(
@@ -261,7 +280,8 @@ def test_openclaw_ai_match_scores_relevant_job_higher(monkeypatch: pytest.Monkey
     )
 
     assert matched[0]["match"] > matched[1]["match"]
-    assert matched[0]["aiMatch"]["source"] == "openclaw"
+    assert matched[0]["aiMatch"]["source"] == "openclaw_codex"
+    assert matched[0]["aiMatch"]["backend"] == "openclaw_codex"
     assert matched[0]["aiMatch"]["reasons"]
 
 
@@ -294,7 +314,8 @@ def test_ai_match_v1_is_migrated_to_application_guide_v3(
         "aiMatch": {
             "version": "ai-match-v1",
             "cacheKey": "legacy-cache-key",
-            "source": "openclaw",
+            "source": "openclaw_codex",
+            "backend": "openclaw_codex",
             "score": 97,
             "confidence": "high",
             "breakdown": {},
@@ -796,14 +817,14 @@ def test_candidate_snapshot_caches_successful_openclaw_normalization(
 
     assert calls == 1
     assert first == second
-    assert first.source == "openclaw"
+    assert first.source == "openclaw_codex"
     assert first.data["roles"] == ["Senior Python Engineer"]
     assert first.data["skills"] == ["Python", "FastAPI"]
     assert len(records) == 1
     assert records[0].profile_input_hash == build_profile_input_hash(profile)
 
 
-def test_candidate_snapshot_records_local_fallback_and_truncated_openclaw_error(
+def test_candidate_snapshot_records_local_fallback_and_truncated_provider_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     internal_error = "provider unavailable: " + "x" * 400
@@ -833,9 +854,9 @@ def test_candidate_snapshot_records_local_fallback_and_truncated_openclaw_error(
     assert snapshot.source == "local"
     assert snapshot.data["roles"] == ["Python Engineer"]
     assert snapshot.data["skills"] == ["Python", "FastAPI"]
-    assert snapshot.openclaw_error == internal_error[:240]
+    assert snapshot.provider_error == internal_error[:240]
     assert record.source == "local"
-    assert record.openclaw_error == internal_error[:240]
+    assert record.provider_error == internal_error[:240]
 
 
 def test_candidate_snapshot_records_selected_backend(
@@ -1219,7 +1240,7 @@ def test_ai_match_endpoint_ignores_cached_local_candidate_snapshot(
                     matcher_version="ai-match-v1",
                     source="local",
                     data={"roles": ["cached local role"], "skills": []},
-                    openclaw_error="previous fallback",
+                    provider_error="previous fallback",
                     created_at=datetime.now(UTC),
                 )
             )
@@ -1254,7 +1275,7 @@ def test_ai_match_endpoint_ignores_cached_local_candidate_snapshot(
                 for record in db.query(CandidateMatchSnapshotRecord).all()
             ]
             assert snapshot_sources.count("local") == 1
-            assert snapshot_sources.count("openclaw") == 1
+            assert snapshot_sources.count("openclaw_codex") == 1
     finally:
         app.dependency_overrides.clear()
 
@@ -1416,7 +1437,8 @@ def test_ai_match_endpoint_updates_and_persists_job_scores(monkeypatch: pytest.M
         assert response.status_code == 200
         payload = response.json()[0]["data"]
         assert payload["match"] != 50
-        assert payload["aiMatch"]["source"] == "openclaw"
+        assert payload["aiMatch"]["source"] == "openclaw_codex"
+        assert payload["aiMatch"]["backend"] == "openclaw_codex"
         assert payload["aiMatch"]["cacheKey"]
         assert payload["aiMatch"]["applicationGuide"]["language"] == "English"
         assert payload["aiMatch"]["applicationGuide"]["cvImprovements"]
@@ -1454,12 +1476,13 @@ def test_ai_match_endpoint_updates_and_persists_job_scores(monkeypatch: pytest.M
             assert stored_job is not None
             assert "aiMatch" not in stored_job.data
             assert len(snapshot_records) == 1
-            assert snapshot_records[0].source == "openclaw"
+            assert snapshot_records[0].source == "openclaw_codex"
             assert len(match_records) == 2
             assert len(feedback_records) == 1
             assert {record.profile_hash for record in match_records} == {snapshot_records[0].profile_hash}
             assert rerun_payload["match"] in {record.score for record in match_records}
-            assert all(record.source == "openclaw" for record in match_records)
+            assert all(record.source == "openclaw_codex" for record in match_records)
+            assert all(record.backend == "openclaw_codex" for record in match_records)
             assert all(record.breakdown for record in match_records)
             assert all("_applicationGuide" in record.breakdown for record in match_records)
     finally:
@@ -1641,7 +1664,7 @@ def test_ai_match_run_endpoint_updates_status_and_persists_job_scores(monkeypatc
         assert status_payload["processed"] == status_payload["total"] == 1
         payload = status_payload["updatedJobs"][0]["data"]
         assert payload["match"] != 50
-        assert payload["aiMatch"]["source"] == "openclaw"
+        assert payload["aiMatch"]["source"] == "openclaw_codex"
 
         read_response = client.get("/jobs")
         assert read_response.json()[0]["data"]["aiMatch"]["score"] == payload["match"]

@@ -29,7 +29,7 @@ def test_conversations_are_stored_archived_restored_and_deleted() -> None:
         "title": "Prepare for Figma interview",
         "contextKind": "job",
         "contextId": "job-figma",
-        "openClawSessionKey": "agent:tasko-assistant:session-one",
+        "providerSessionId": "agent:tasko-assistant:session-one",
         "messages": [
             {
                 "id": "message-user-one",
@@ -41,7 +41,7 @@ def test_conversations_are_stored_archived_restored_and_deleted() -> None:
                 "id": "message-assistant-one",
                 "role": "assistant",
                 "content": "Start with the role requirements.",
-                "source": "openclaw",
+                "source": "openclaw_codex",
                 "status": "complete",
                 "createdAt": "2026-07-15T10:00:01Z",
             },
@@ -60,7 +60,7 @@ def test_conversations_are_stored_archived_restored_and_deleted() -> None:
             json={
                 "role": "assistant",
                 "content": "Updated interview plan.",
-                "source": "openclaw",
+                "source": "openclaw_codex",
                 "status": "complete",
             },
         )
@@ -82,7 +82,7 @@ def test_conversations_are_stored_archived_restored_and_deleted() -> None:
         app.dependency_overrides.clear()
 
     assert created.status_code == 200
-    assert created.json()["openClawSessionKey"] == "agent:tasko-assistant:session-one"
+    assert created.json()["providerSessionId"] == "agent:tasko-assistant:session-one"
     assert [message["role"] for message in created.json()["messages"]] == ["user", "assistant"]
     assert listed.status_code == 200
     assert listed.json()[0]["title"] == "Prepare for Figma interview"

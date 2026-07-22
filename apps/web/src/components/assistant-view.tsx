@@ -96,7 +96,7 @@ type AssistantMessage = {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
-  source?: "openclaw" | "local";
+  source?: "openclaw_codex" | "openai_api" | "local";
   status?: "generating" | "complete" | "stopped" | "error";
   actions?: AssistantActionPreview[];
 };
@@ -134,7 +134,7 @@ type AssistantThread = {
   title: string;
   contextKind: AssistantContextKind;
   contextId: string;
-  openClawSessionKey?: string | null;
+  providerSessionId?: string | null;
   archived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -388,7 +388,7 @@ function normalizeThreads(value: unknown): AssistantThread[] {
         ...candidate,
         archived: Boolean(candidate.archived),
         createdAt: candidate.createdAt || candidate.updatedAt,
-        openClawSessionKey: candidate.openClawSessionKey ?? null,
+        providerSessionId: candidate.providerSessionId ?? null,
         messages: candidate.messages.flatMap((message): AssistantMessage[] => {
           if (
             !message ||
@@ -1172,6 +1172,7 @@ export function AssistantView({
     let completed = false;
     let terminalError = "";
     let completedActions: AssistantActionPreview[] = [];
+    let streamBackend: AssistantMessage["source"] = "openclaw_codex";
     const requestPayload = {
       requestId,
       threadId,
@@ -1249,7 +1250,7 @@ export function AssistantView({
             if (event === "delta" && typeof data.text === "string" && typeof data.offset === "number") {
               streamedContent += data.text;
               offset = data.offset;
-              updateAssistantMessage(streamedContent, "openclaw");
+              updateAssistantMessage(streamedContent, streamBackend);
               return;
             }
             if (event === "error") {
@@ -1258,10 +1259,13 @@ export function AssistantView({
             }
             if (event === "done" && data.metadata && typeof data.metadata === "object") {
               const metadata = data.metadata as Record<string, unknown>;
+              if (metadata.backend === "openclaw_codex" || metadata.backend === "openai_api") {
+                streamBackend = metadata.backend;
+              }
               if (typeof metadata.sessionKey === "string") {
                 setThreads((currentThreads) => currentThreads.map((thread) =>
                   thread.id === threadId
-                    ? { ...thread, openClawSessionKey: metadata.sessionKey as string }
+                    ? { ...thread, providerSessionId: metadata.sessionKey as string }
                     : thread,
                 ));
               }
@@ -1271,7 +1275,7 @@ export function AssistantView({
 
           if (terminalEvent === "done") {
             completed = true;
-            updateAssistantMessage(streamedContent.trim(), "openclaw", completedActions);
+            updateAssistantMessage(streamedContent.trim(), streamBackend, completedActions);
           } else if (terminalEvent === "stopped") {
             completed = true;
           } else if (terminalEvent === "error") {
@@ -1301,7 +1305,7 @@ export function AssistantView({
         setAssistantError(errorMessage);
         updateAssistantMessage(
           streamedContent || errorMessage,
-          streamedContent ? "openclaw" : undefined,
+          streamedContent ? streamBackend : undefined,
           undefined,
           "error",
         );

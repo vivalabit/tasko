@@ -1,4 +1,5 @@
 from datetime import UTC, date, datetime
+from dataclasses import replace
 import hashlib
 import json
 
@@ -92,7 +93,7 @@ def generation_context_session(*, include_confirmation: bool = True) -> Session:
             matcher_version=MATCHER_VERSION,
             cache_key="cache-context",
             score=88,
-            source="openclaw",
+            source="openclaw_codex",
             confidence="high",
             breakdown={
                 APPLICATION_GUIDE_STORAGE_KEY: {
@@ -284,11 +285,15 @@ def test_computes_stable_provenance_from_authoritative_context() -> None:
 
         assert first == second
         assert len(first.generation_fingerprint) == 64
-        assert first.input_versions["fingerprintVersion"] == "generation-fingerprint-v3"
+        assert first.input_versions["fingerprintVersion"] == "generation-fingerprint-v4"
+        assert first.input_versions["backend"] == "openclaw_codex"
         assert first.input_versions["analysisRevision"] == "match-context"
         assert first.input_versions["analysisFingerprint"] == context.analysis_fingerprint
         assert first.input_versions["sourceDocument"]["id"] == "template-context"
         assert len(first.input_versions["sourceDocument"]["contentSha256"]) == 64
+        assert replace(context, generation_backend="openai_api").provenance().generation_fingerprint != (
+            first.generation_fingerprint
+        )
 
 
 def test_rejects_generation_when_stored_profile_changes() -> None:

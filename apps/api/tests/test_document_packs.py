@@ -104,7 +104,7 @@ def pack_client() -> Generator[tuple[TestClient, sessionmaker[Session]], None, N
                     matcher_version=MATCHER_VERSION,
                     cache_key="cache-pack",
                     score=90,
-                    source="openclaw",
+                    source="openclaw_codex",
                     confidence="high",
                     breakdown={
                         APPLICATION_GUIDE_STORAGE_KEY: {
@@ -304,7 +304,7 @@ def test_atomic_pack_commits_both_documents_and_retry_is_idempotent(
         for document in created.json()["documents"]
     )
     assert all(
-        document["inputVersions"]["fingerprintVersion"] == "generation-fingerprint-v3"
+        document["inputVersions"]["fingerprintVersion"] == "generation-fingerprint-v4"
         for document in created.json()["documents"]
     )
     assert [stage["status"] for stage in created.json()["stages"]] == [

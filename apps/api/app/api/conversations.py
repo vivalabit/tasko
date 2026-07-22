@@ -66,7 +66,7 @@ def upsert_conversation(
             record.context_kind = request.context_kind
             record.context_id = request.context_id
             record.archived = request.archived
-            record.openclaw_session_key = request.openclaw_session_key
+            record.provider_session_id = request.provider_session_id
             record.updated_at = request.updated_at or now
         else:
             record = ConversationRecord(
@@ -75,7 +75,7 @@ def upsert_conversation(
                 context_kind=request.context_kind,
                 context_id=request.context_id,
                 archived=request.archived,
-                openclaw_session_key=request.openclaw_session_key,
+                provider_session_id=request.provider_session_id,
                 created_at=request.created_at or now,
                 updated_at=request.updated_at or now,
             )
@@ -278,7 +278,7 @@ def conversation_payload(record: ConversationRecord) -> ConversationPayload:
         title=record.title,
         context_kind=record.context_kind,
         context_id=record.context_id,
-        openclaw_session_key=record.openclaw_session_key,
+        provider_session_id=record.provider_session_id,
         archived=record.archived,
         created_at=record.created_at,
         updated_at=record.updated_at,

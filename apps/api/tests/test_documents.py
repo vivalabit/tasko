@@ -289,6 +289,7 @@ def test_document_versions_download_and_application_attachments() -> None:
     assert created.json()["applicationIds"] == ["application-one"]
     assert created.json()["generationFingerprint"] is None
     assert created.json()["generationModel"] is None
+    assert created.json()["generationBackend"] is None
     assert created.json()["inputVersions"] == {}
     assert created.json()["versions"][0]["hasRenderedDocx"] is False
     assert updated.status_code == 200
@@ -298,6 +299,7 @@ def test_document_versions_download_and_application_attachments() -> None:
     assert updated.json()["applicationIds"] == ["application-one"]
     assert updated.json()["generationFingerprint"] is None
     assert updated.json()["generationModel"] is None
+    assert updated.json()["generationBackend"] is None
     assert restored.status_code == 200
     assert restored.json()["id"] == document_id
     assert restored.json()["currentVersion"] == 3
@@ -754,7 +756,7 @@ def test_generated_cover_letter_skips_blocking_validation(monkeypatch) -> None:
                     matcher_version=MATCHER_VERSION,
                     cache_key="cache-validated",
                     score=90,
-                    source="openclaw",
+                    source="openclaw_codex",
                     confidence="high",
                     breakdown={
                         APPLICATION_GUIDE_STORAGE_KEY: {
@@ -927,7 +929,7 @@ def test_generated_cover_letter_skips_blocking_validation(monkeypatch) -> None:
         "currentGenerationFingerprint"
     ]
     assert created.json()["inputVersions"]["fingerprintVersion"] == (
-        "generation-fingerprint-v3"
+        "generation-fingerprint-v4"
     )
     assert created.json()["inputVersions"]["sourceDocument"]["id"] == uploaded.json()["id"]
     assert created.json()["inputVersions"]["profile"] != "profile-v1"

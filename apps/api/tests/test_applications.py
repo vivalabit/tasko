@@ -169,7 +169,7 @@ def test_applications_expose_the_generators_authoritative_analysis_revision() ->
                     matcher_version=MATCHER_VERSION,
                     cache_key=f"cache-{revision}",
                     score=92,
-                    source="openclaw",
+                    source="openclaw_codex",
                     confidence="high",
                     breakdown={
                         APPLICATION_GUIDE_STORAGE_KEY: {
@@ -309,7 +309,7 @@ def test_candidate_confirmations_are_structured_validated_and_persisted() -> Non
                     matcher_version=MATCHER_VERSION,
                     cache_key="cache-confirmations",
                     score=80,
-                    source="openclaw",
+                    source="openclaw_codex",
                     confidence="high",
                     breakdown={
                         APPLICATION_GUIDE_STORAGE_KEY: {

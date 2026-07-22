@@ -898,7 +898,7 @@ def test_assistant_chat_uses_stored_profile_and_job(monkeypatch: pytest.MonkeyPa
 
     assert response.status_code == 200
     assert response.json()["message"] == "OpenClaw response"
-    assert response.json()["source"] == "openclaw"
+    assert response.json()["source"] == "openclaw_codex"
     assert isinstance(captured["profile"], ProfilePayload)
     assert captured["profile"].name == "Eduard"
     assert isinstance(captured["job"], AssistantJobContext)
@@ -976,7 +976,7 @@ def test_document_generation_uses_only_authoritative_server_context(
                     matcher_version=MATCHER_VERSION,
                     cache_key="cache-key",
                     score=91,
-                    source="openclaw",
+                    source="openclaw_codex",
                     confidence="high",
                     breakdown={
                         APPLICATION_GUIDE_STORAGE_KEY: {
@@ -1093,6 +1093,7 @@ def test_document_generation_uses_only_authoritative_server_context(
         assert artifact.status == "completed"
         assert artifact.result_content == "Generated"
         assert artifact.generation_model == Settings().openclaw_assistant_model
+        assert artifact.generation_backend == "openclaw_codex"
         assert artifact.input_versions["generationArtifact"]["id"] == artifact.id
         assert len(
             artifact.input_versions["generationArtifact"]["inputSnapshotSha256"]
@@ -1280,13 +1281,13 @@ def test_assistant_chat_stream_emits_resumable_sse(monkeypatch: pytest.MonkeyPat
     }
     assert conversation is not None
     assert conversation.title == "Profile review"
-    assert conversation.openclaw_session_key == "session-stream"
+    assert conversation.provider_session_id == "session-stream"
     assert [(message.role, message.content) for message in messages] == [
         ("user", "Review my profile"),
         ("assistant", "A streamed Tasko response."),
     ]
     assert messages[1].status == "complete"
-    assert messages[1].source == "openclaw"
+    assert messages[1].source == "openclaw_codex"
 
 
 def test_assistant_chat_stream_rejects_missing_resume_state() -> None:

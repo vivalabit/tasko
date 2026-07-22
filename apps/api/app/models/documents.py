@@ -111,6 +111,9 @@ class DocumentGenerationProvenanceRecord(Base):
     )
     generation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     generation_model: Mapped[str] = mapped_column(String(160), nullable=False)
+    generation_backend: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="openclaw_codex"
+    )
     input_versions: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     document: Mapped[DocumentRecord] = relationship(back_populates="generation_provenance")
@@ -127,6 +130,9 @@ class DocumentVersionGenerationProvenanceRecord(Base):
     version: Mapped[int] = mapped_column(Integer, primary_key=True)
     generation_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     generation_model: Mapped[str] = mapped_column(String(160), nullable=False)
+    generation_backend: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="openclaw_codex"
+    )
     input_versions: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     document: Mapped[DocumentRecord] = relationship(
@@ -243,6 +249,9 @@ class DocumentGenerationArtifactRecord(OwnerScoped, Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     result_content: Mapped[str | None] = mapped_column(Text, nullable=True)
     generation_model: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    generation_backend: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="openclaw_codex"
+    )
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -268,6 +277,7 @@ def prevent_generation_artifact_input_mutation(
         "template_content",
         "input_snapshot",
         "generation_fingerprint",
+        "generation_backend",
         "input_versions",
         "validation_evidence",
         "expires_at",
@@ -399,6 +409,7 @@ class DocumentPayload(BaseModel):
         alias="currentGenerationFingerprint",
     )
     generation_model: str | None = Field(default=None, alias="generationModel")
+    generation_backend: str | None = Field(default=None, alias="generationBackend")
     input_versions: dict[str, Any] = Field(default_factory=dict, alias="inputVersions")
     versions: list[DocumentVersionPayload]
     versions_total: int = Field(alias="versionsTotal")

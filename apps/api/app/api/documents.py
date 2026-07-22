@@ -1373,6 +1373,7 @@ def set_current_generation_provenance(
         record.generation_provenance = provenance
     provenance.generation_fingerprint = generation_fingerprint
     provenance.generation_model = generation_model.strip()
+    provenance.generation_backend = generation_backend_from_input_versions(input_versions)
     provenance.input_versions = input_versions
     provenance.created_at = created_at
 
@@ -1391,10 +1392,27 @@ def append_version_generation_provenance(
             version=version,
             generation_fingerprint=generation_fingerprint,
             generation_model=generation_model.strip(),
+            generation_backend=generation_backend_from_input_versions(input_versions),
             input_versions=input_versions,
             created_at=created_at,
         )
     )
+
+
+def generation_backend_from_input_versions(input_versions: dict[str, object]) -> str:
+    backend = input_versions.get("backend")
+    if isinstance(backend, str) and backend in {"openclaw_codex", "openai_api", "local"}:
+        return backend
+    generation_artifact = input_versions.get("generationArtifact")
+    if isinstance(generation_artifact, dict):
+        backend = generation_artifact.get("backend")
+        if isinstance(backend, str) and backend in {
+            "openclaw_codex",
+            "openai_api",
+            "local",
+        }:
+            return backend
+    return "openclaw_codex"
 
 
 def validate_document_or_422(
@@ -2207,6 +2225,7 @@ def document_payload(
         generation_fingerprint=provenance.generation_fingerprint if provenance else None,
         current_generation_fingerprint=current_generation_fingerprint,
         generation_model=provenance.generation_model if provenance else None,
+        generation_backend=provenance.generation_backend if provenance else None,
         input_versions=provenance.input_versions if provenance else {},
         versions=document_version_payloads(
             paged_versions,

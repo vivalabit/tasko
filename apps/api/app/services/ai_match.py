@@ -277,7 +277,7 @@ def calculate_ai_matches(
         raise OpenClawAiMatchError("OpenClaw AI match requires a positive job batch size")
 
     profile_snapshot = candidate_snapshot or build_candidate_snapshot(profile)
-    backend_source = "openclaw" if backend is None or backend.name == "openclaw_codex" else backend.name
+    backend_source = backend.name if backend is not None else "openclaw_codex"
     evidence_catalog = build_ai_match_evidence_catalog(profile)
     ordered_jobs: list[dict[str, Any] | tuple[dict[str, Any], dict[str, Any], str]] = []
     now = datetime.now(UTC).isoformat()
@@ -294,6 +294,7 @@ def calculate_ai_matches(
             model=model,
             prompt_version=MATCH_PROMPT_VERSION,
             evidence_sources=list(evidence_catalog.values()),
+            backend=backend_source,
         )
         cached_match = job.get("aiMatch")
         if not force and is_cached_match_valid(cached_match, cache_key) and cached_match.get("source") == backend_source:
@@ -806,7 +807,7 @@ def normalize_openclaw_result(
     current_job: dict[str, Any],
     *,
     evidence_catalog: dict[str, dict[str, str]] | None = None,
-    backend_source: str = "openclaw",
+    backend_source: str = "openclaw_codex",
 ) -> dict[str, Any]:
     fallback = current_job.get("aiMatch", {}) if isinstance(current_job.get("aiMatch"), dict) else {}
     validated = validate_openclaw_result(result, current_job)
@@ -821,6 +822,7 @@ def normalize_openclaw_result(
     return {
         "score": normalized["score"],
         "source": backend_source,
+        "backend": backend_source,
         "confidence": normalized["confidence"],
         "breakdown": normalized["breakdown"],
         "reasons": normalized["reasons"],
@@ -935,9 +937,10 @@ def apply_match_result(
         "profileHash": profile_hash,
         "vacancyHash": vacancy_hash,
         "model": model,
+        "backend": result.get("backend", result.get("source", "openclaw_codex")),
         "promptVersion": prompt_version,
         "cacheKey": cache_key,
-        "source": result.get("source", "openclaw"),
+        "source": result.get("source", "openclaw_codex"),
         "score": score,
         "confidence": normalize_confidence(result.get("confidence", "low")),
         "breakdown": result.get("breakdown", {}),
@@ -1007,12 +1010,14 @@ def build_cache_key(
     model: str = DEFAULT_AI_MATCH_MODEL,
     prompt_version: str = MATCH_PROMPT_VERSION,
     evidence_sources: list[dict[str, str]] | None = None,
+    backend: str = "openclaw_codex",
 ) -> str:
     payload = json.dumps(
         {
             "version": MATCHER_VERSION,
             "promptVersion": prompt_version,
             "model": model,
+            "backend": backend,
             "candidate": profile_snapshot,
             "candidateEvidenceSources": evidence_sources or [],
             "job": job_snapshot,

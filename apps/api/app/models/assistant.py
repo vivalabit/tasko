@@ -106,7 +106,7 @@ class AssistantStreamRequest(AssistantChatRequest):
 
 class AssistantChatResponse(BaseModel):
     message: str
-    source: Literal["openclaw"] = "openclaw"
+    source: Literal["openclaw_codex", "openai_api", "local"] = "openclaw_codex"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 

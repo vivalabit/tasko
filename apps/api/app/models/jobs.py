@@ -31,6 +31,9 @@ class JobMatchRecord(OwnerScoped, Base):
     profile_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     vacancy_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False, default="")
     model: Mapped[str] = mapped_column(String(160), index=True, nullable=False, default="")
+    backend: Mapped[str] = mapped_column(
+        String(32), index=True, nullable=False, default="openclaw_codex"
+    )
     prompt_version: Mapped[str] = mapped_column(String(64), index=True, nullable=False, default="")
     matcher_version: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     cache_key: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
@@ -41,7 +44,7 @@ class JobMatchRecord(OwnerScoped, Base):
     reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     gaps: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     heuristic_score: Mapped[int] = mapped_column(Integer, nullable=False)
-    openclaw_error: Mapped[str | None] = mapped_column(String(240), nullable=True)
+    provider_error: Mapped[str | None] = mapped_column(String(240), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),

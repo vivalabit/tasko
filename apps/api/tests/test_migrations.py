@@ -104,7 +104,7 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "20260722_0010"
+            assert revision == "20260722_0011"
     finally:
         engine.dispose()
 
@@ -116,6 +116,118 @@ def test_upgrade_database_can_run_again_at_head(tmp_path) -> None:
 
     upgrade_database(database_url)
     upgrade_database(database_url)
+
+
+def test_backend_neutral_provenance_migration_preserves_legacy_ai_data(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'backend-provenance.sqlite'}"
+    config = get_alembic_config(database_url)
+    command.upgrade(config, "20260722_0010")
+    now = datetime.now(UTC).isoformat()
+
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO conversations "
+                    "(id, title, context_kind, context_id, openclaw_session_key, archived, "
+                    "created_at, updated_at, owner_id) VALUES "
+                    "('legacy-chat', 'Legacy', 'profile', '', 'legacy-session', 0, :now, :now, "
+                    "'local-owner')"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO messages "
+                    "(id, conversation_id, sequence, role, content, source, status, created_at) "
+                    "VALUES ('legacy-message', 'legacy-chat', 0, 'assistant', 'hello', "
+                    "'openclaw', 'complete', :now)"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO candidate_match_snapshots "
+                    "(id, profile_input_hash, profile_hash, matcher_version, source, data, "
+                    "openclaw_error, created_at, owner_id) VALUES "
+                    "('legacy-snapshot', :hash, :hash, 'ai-match-v3', 'openclaw', '{}', "
+                    "'snapshot error', :now, 'local-owner')"
+                ),
+                {"hash": "a" * 64, "now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO job_matches "
+                    "(id, job_id, profile_hash, vacancy_hash, model, prompt_version, "
+                    "matcher_version, cache_key, score, source, confidence, breakdown, reasons, "
+                    "gaps, heuristic_score, openclaw_error, created_at, owner_id) VALUES "
+                    "('legacy-match', 'job', :hash, :hash, 'legacy-model', 'prompt-v1', "
+                    "'ai-match-v3', :hash, 80, 'openclaw', 'high', '{}', '[]', '[]', 75, "
+                    "'match error', :now, 'local-owner')"
+                ),
+                {"hash": "b" * 64, "now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO documents "
+                    "(id, type, title, job_id, current_version, created_at, updated_at, owner_id) "
+                    "VALUES ('legacy-document', 'tailored_resume', 'Legacy document', NULL, 1, "
+                    ":now, :now, 'local-owner')"
+                ),
+                {"now": now},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO document_generation_provenance "
+                    "(document_id, generation_fingerprint, generation_model, input_versions, "
+                    "created_at) VALUES ('legacy-document', :hash, 'legacy-model', '{}', :now)"
+                ),
+                {"hash": "c" * 64, "now": now},
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    try:
+        columns = {
+            table: {column["name"] for column in inspect(engine).get_columns(table)}
+            for table in ("conversations", "candidate_match_snapshots", "job_matches")
+        }
+        assert "provider_session_id" in columns["conversations"]
+        assert "openclaw_session_key" not in columns["conversations"]
+        assert "provider_error" in columns["candidate_match_snapshots"]
+        assert "provider_error" in columns["job_matches"]
+        assert "backend" in columns["job_matches"]
+        with engine.connect() as connection:
+            assert connection.execute(
+                text("SELECT provider_session_id FROM conversations WHERE id = 'legacy-chat'")
+            ).scalar_one() == "legacy-session"
+            assert connection.execute(
+                text("SELECT source FROM messages WHERE id = 'legacy-message'")
+            ).scalar_one() == "openclaw_codex"
+            assert connection.execute(
+                text(
+                    "SELECT source, provider_error FROM candidate_match_snapshots "
+                    "WHERE id = 'legacy-snapshot'"
+                )
+            ).one() == ("openclaw_codex", "snapshot error")
+            assert connection.execute(
+                text(
+                    "SELECT source, backend, provider_error FROM job_matches "
+                    "WHERE id = 'legacy-match'"
+                )
+            ).one() == ("openclaw_codex", "openclaw_codex", "match error")
+            assert connection.execute(
+                text(
+                    "SELECT generation_backend FROM document_generation_provenance "
+                    "WHERE document_id = 'legacy-document'"
+                )
+            ).scalar_one() == "openclaw_codex"
+    finally:
+        engine.dispose()
 
 
 def test_storage_foreign_key_migration_removes_existing_orphans(tmp_path) -> None:
@@ -239,7 +351,7 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260722_0010"
+        assert revision == "20260722_0011"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))

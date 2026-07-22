@@ -153,6 +153,7 @@ def begin_generation_artifact(
                 if settings.ai_backend_mode == "openai_api"
                 else settings.openclaw_assistant_model
             ),
+            "backend": provenance.generation_backend,
         },
     }
     artifact = DocumentGenerationArtifactRecord(
@@ -169,6 +170,7 @@ def begin_generation_artifact(
         status="generating",
         result_content=None,
         generation_model=None,
+        generation_backend=provenance.generation_backend,
         consumed_at=None,
         expires_at=now + GENERATION_ARTIFACT_TTL,
         created_at=now,
@@ -192,6 +194,7 @@ def complete_generation_artifact(
     *,
     content: str,
     model: str,
+    backend: str,
 ) -> None:
     if not content.strip():
         fail_generation_artifact(db, artifact)
@@ -202,6 +205,7 @@ def complete_generation_artifact(
     artifact.status = "completed"
     artifact.result_content = content
     artifact.generation_model = model.strip() or "unknown"
+    artifact.generation_backend = backend
     artifact.completed_at = utc_now()
     try:
         db.commit()
@@ -352,6 +356,7 @@ async def chat_with_assistant(
                         else settings.openclaw_assistant_model
                     )
                 ),
+                backend=backend_name,
             )
     except HTTPException:
         if generation_artifact is not None and generation_artifact.status != "failed":
@@ -362,6 +367,7 @@ async def chat_with_assistant(
         raise
     return AssistantChatResponse(
         message=visible_message,
+        source=backend_name,
         metadata={
             "sessionId": session_id,
             "contextKind": request.context_kind,
@@ -618,8 +624,8 @@ async def generate_assistant_stream(
             assistant_message_id=assistant_message_id,
             text=encode_message_actions(stream.text, actions),
             message_status="complete",
-            source="openclaw",
-            openclaw_session_key=session_id,
+            source=backend_name,
+            provider_session_id=session_id,
         )
         update_stream_status(stream, "complete")
     except asyncio.CancelledError:
@@ -629,7 +635,7 @@ async def generate_assistant_stream(
             assistant_message_id=assistant_message_id,
             text=stream.text,
             message_status="stopped",
-            source="openclaw" if stream.text else None,
+            source=settings.ai_backend_mode if stream.text else None,
         )
         update_stream_status(stream, "stopped")
     except OpenClawAssistantTimeoutError as exc:
@@ -843,7 +849,7 @@ def persist_stream_history(
     text: str,
     message_status: str,
     source: str | None = None,
-    openclaw_session_key: str | None = None,
+    provider_session_id: str | None = None,
 ) -> None:
     with Session(bind=bind) as db:
         conversation = db.get(ConversationRecord, conversation_id)
@@ -856,8 +862,8 @@ def persist_stream_history(
             message.content = text
             message.status = message_status
             message.source = source
-        if openclaw_session_key:
-            conversation.openclaw_session_key = openclaw_session_key
+        if provider_session_id:
+            conversation.provider_session_id = provider_session_id
         conversation.updated_at = utc_now()
         db.commit()
 
@@ -870,7 +876,7 @@ def persist_stream_history_safely(
     text: str,
     message_status: str,
     source: str | None = None,
-    openclaw_session_key: str | None = None,
+    provider_session_id: str | None = None,
 ) -> None:
     try:
         persist_stream_history(
@@ -880,7 +886,7 @@ def persist_stream_history_safely(
             text=text,
             message_status=message_status,
             source=source,
-            openclaw_session_key=openclaw_session_key,
+            provider_session_id=provider_session_id,
         )
     except Exception:
         pass

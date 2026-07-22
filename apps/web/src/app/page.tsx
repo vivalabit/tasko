@@ -77,7 +77,8 @@ type AiMatchMetadata = {
   revision?: string;
   fingerprint?: string;
   cacheKey: string;
-  source: "local" | "openclaw" | "openai_api";
+  source: "local" | "openclaw_codex" | "openai_api";
+  backend?: "local" | "openclaw_codex" | "openai_api";
   score: number;
   confidence: "low" | "medium" | "high";
   breakdown: Record<string, number>;
@@ -131,7 +132,7 @@ type AiMatchMetadata = {
   rawExplanation?: string;
   heuristicScore?: number;
   updatedAt?: string;
-  openclawError?: string;
+  providerError?: string;
   feedback?: MatchFeedback;
   calibration?: {
     feedback: MatchFeedback;
@@ -2153,7 +2154,7 @@ function getAiMatchBreakdownItems(job: Job) {
 }
 
 function getAiMatchSourceLabel(job: Job) {
-  if (job.aiMatch?.source === "openclaw") return "Openclaw";
+  if (job.aiMatch?.source === "openclaw_codex") return "OpenClaw Codex";
   if (job.aiMatch?.source === "openai_api") return "OpenAI API";
   if (job.aiMatch?.source === "local") return "Legacy local score";
   if (isImportedJob(job)) return "Not scored";
@@ -2162,8 +2163,8 @@ function getAiMatchSourceLabel(job: Job) {
 }
 
 function getAiMatchSourceStatus(job: Job) {
-  if (!job.aiMatch?.openclawError) return "";
-  return "Openclaw fallback/error";
+  if (!job.aiMatch?.providerError) return "";
+  return "Provider fallback/error";
 }
 
 function getAiMatchSourceDisplay(job: Job) {
@@ -2180,7 +2181,7 @@ function formatConfidence(value?: AiMatchMetadata["confidence"]) {
 function buildAiMatchRawExplanation(job: Job) {
   if (job.aiMatch?.rawExplanation) return job.aiMatch.rawExplanation;
   if (job.aiMatch?.explanation) return job.aiMatch.explanation;
-  if (job.aiMatch?.openclawError) return `Openclaw fallback: ${job.aiMatch.openclawError}`;
+  if (job.aiMatch?.providerError) return `Provider fallback: ${job.aiMatch.providerError}`;
   if (!hasDisplayableMatch(job)) return "AI match has not been calculated for this vacancy yet.";
 
   const source = getAiMatchSourceLabel(job);
@@ -2225,7 +2226,7 @@ function isUserManagedJob(job: Job) {
 }
 
 function hasAiBackendMatch(job: Job) {
-  return job.aiMatch?.source === "openclaw" || job.aiMatch?.source === "openai_api";
+  return job.aiMatch?.source === "openclaw_codex" || job.aiMatch?.source === "openai_api";
 }
 
 function hasDisplayableMatch(job: Job) {
@@ -8428,7 +8429,7 @@ function ApplicationAiInfoDialog({
         <div className="job-scroll mt-5 min-h-0 flex-1 overflow-y-auto pr-1">
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 2xl:gap-3">
             <InfoStat label="AI match" value={isAnalyzing ? "Analyzing..." : formatMatchValue(job)} />
-            <InfoStat label="Source" value={sourceDisplay} title={job.aiMatch?.openclawError} />
+            <InfoStat label="Source" value={sourceDisplay} title={job.aiMatch?.providerError} />
             <InfoStat label="Confidence" value={formatConfidence(job.aiMatch?.confidence)} />
             <InfoStat label="Updated" value={formatAiMatchTimestamp(job.aiMatch?.updatedAt)} />
           </div>
@@ -12069,7 +12070,7 @@ function JobMainPanel({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="text-base font-bold 2xl:text-lg">AI Match Analysis</h3>
-            <p className="mt-1 text-xs font-semibold text-muted 2xl:text-sm" title={job.aiMatch?.openclawError}>
+            <p className="mt-1 text-xs font-semibold text-muted 2xl:text-sm" title={job.aiMatch?.providerError}>
               {sourceDisplay}
               {job.aiMatch?.confidence ? ` · ${job.aiMatch.confidence}` : ""}
               {" · "}
@@ -12081,7 +12082,7 @@ function JobMainPanel({
 
         <div className="mt-4 grid gap-2 sm:grid-cols-3 2xl:mt-5 2xl:gap-3">
           <InfoStat label="Overall score" value={formatMatchValue(job)} />
-          <InfoStat label="Source" value={sourceDisplay} title={job.aiMatch?.openclawError} />
+          <InfoStat label="Source" value={sourceDisplay} title={job.aiMatch?.providerError} />
           <InfoStat label="Confidence" value={formatConfidence(job.aiMatch?.confidence)} />
         </div>
 
@@ -12267,7 +12268,7 @@ function MatchPanel({
     <article className="panel p-4 2xl:p-5">
       <div className="flex items-start justify-between gap-3">
         <h3 className="text-base font-bold 2xl:text-lg">AI Match Score</h3>
-        <div className="rounded-md border border-border bg-white/[0.035] px-2 py-1 text-[10px] font-bold uppercase text-muted 2xl:text-xs" title={job.aiMatch?.openclawError}>
+        <div className="rounded-md border border-border bg-white/[0.035] px-2 py-1 text-[10px] font-bold uppercase text-muted 2xl:text-xs" title={job.aiMatch?.providerError}>
           {sourceDisplay}
           {job.aiMatch?.confidence ? ` · ${job.aiMatch.confidence}` : ""}
         </div>

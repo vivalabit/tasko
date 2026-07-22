@@ -256,6 +256,7 @@ type GeneratedDocument = {
   generationFingerprint: string | null;
   currentGenerationFingerprint: string | null;
   generationModel: string | null;
+  generationBackend?: string | null;
   inputVersions: Record<string, unknown>;
   versions: GeneratedDocumentVersion[];
   versionsTotal?: number;

@@ -45,7 +45,7 @@ class CandidateMatchSnapshot:
     profile_hash: str
     source: str
     data: dict[str, Any]
-    openclaw_error: str | None = None
+    provider_error: str | None = None
 
 
 LIST_FIELDS = {
@@ -85,9 +85,13 @@ def get_candidate_match_snapshot(
     strict_openclaw: bool = False,
 ) -> CandidateMatchSnapshot:
     profile_input_hash = build_profile_input_hash(profile)
-    existing_record = latest_snapshot_record(db, profile_input_hash=profile_input_hash)
-    expected_source = backend_snapshot_source(settings.ai_backend_mode) if settings else "openclaw"
-    if existing_record and (not strict_openclaw or existing_record.source == expected_source):
+    expected_source = backend_snapshot_source(settings.ai_backend_mode) if settings else "local"
+    existing_record = latest_snapshot_record(
+        db,
+        profile_input_hash=profile_input_hash,
+        source=expected_source if settings else None,
+    )
+    if existing_record and (settings is None or existing_record.source == expected_source):
         return record_to_snapshot(existing_record)
 
     fallback_snapshot = empty_candidate_snapshot() if strict_openclaw else build_candidate_snapshot(profile)
@@ -105,19 +109,19 @@ def get_candidate_match_snapshot(
                 backend=backend,
             )
             source = backend_snapshot_source(backend.name)
-            openclaw_error = None
+            provider_error = None
         except CandidateSnapshotError as exc:
             if strict_openclaw:
                 raise
             snapshot_data = fallback_snapshot
             source = "local"
-            openclaw_error = str(exc)[:240]
+            provider_error = str(exc)[:240]
     elif strict_openclaw:
         raise CandidateSnapshotError("OpenClaw candidate snapshot is required but disabled")
     else:
         snapshot_data = fallback_snapshot
         source = "local"
-        openclaw_error = None
+        provider_error = None
 
     snapshot_data = normalize_candidate_snapshot(snapshot_data, fallback_snapshot)
     profile_hash = build_candidate_snapshot_hash(snapshot_data)
@@ -126,7 +130,7 @@ def get_candidate_match_snapshot(
         profile_hash=profile_hash,
         source=source,
         data=snapshot_data,
-        openclaw_error=openclaw_error,
+        provider_error=provider_error,
     )
 
     if allow_openclaw:
@@ -175,13 +179,16 @@ def latest_snapshot_record(
     db: Session,
     *,
     profile_input_hash: str,
+    source: str | None = None,
 ) -> CandidateMatchSnapshotRecord | None:
+    query = db.query(CandidateMatchSnapshotRecord).filter(
+        CandidateMatchSnapshotRecord.profile_input_hash == profile_input_hash,
+        CandidateMatchSnapshotRecord.matcher_version == MATCHER_VERSION,
+    )
+    if source is not None:
+        query = query.filter(CandidateMatchSnapshotRecord.source == source)
     return (
-        db.query(CandidateMatchSnapshotRecord)
-        .filter(
-            CandidateMatchSnapshotRecord.profile_input_hash == profile_input_hash,
-            CandidateMatchSnapshotRecord.matcher_version == MATCHER_VERSION,
-        )
+        query
         .order_by(CandidateMatchSnapshotRecord.created_at.desc(), CandidateMatchSnapshotRecord.id.desc())
         .first()
     )
@@ -195,7 +202,7 @@ def snapshot_to_record(snapshot: CandidateMatchSnapshot) -> CandidateMatchSnapsh
         matcher_version=MATCHER_VERSION,
         source=snapshot.source,
         data=snapshot.data,
-        openclaw_error=snapshot.openclaw_error,
+        provider_error=snapshot.provider_error,
         created_at=datetime.now(UTC),
     )
 
@@ -206,7 +213,7 @@ def record_to_snapshot(record: CandidateMatchSnapshotRecord) -> CandidateMatchSn
         profile_hash=record.profile_hash,
         source=record.source,
         data=record.data,
-        openclaw_error=record.openclaw_error,
+        provider_error=record.provider_error,
     )
 
 
@@ -288,7 +295,7 @@ def build_snapshot_with_openclaw(
 
 
 def backend_snapshot_source(backend: str) -> str:
-    return "openclaw" if backend == "openclaw_codex" else backend
+    return backend
 
 
 def build_openclaw_candidate_snapshot_prompt(

@@ -31,7 +31,7 @@ from app.services.job_match_store import (
     match_record_to_ai_match,
 )
 
-GENERATION_FINGERPRINT_VERSION = "generation-fingerprint-v3"
+GENERATION_FINGERPRINT_VERSION = "generation-fingerprint-v4"
 PROFILE_EVIDENCE_FIELDS = (
     "name",
     "current_role",
@@ -104,6 +104,7 @@ class AuthoritativeConfirmation:
 @dataclass(frozen=True)
 class AuthoritativeGenerationProvenance:
     generation_fingerprint: str
+    generation_backend: str
     input_versions: dict[str, Any]
 
 
@@ -120,6 +121,7 @@ class AuthoritativeApplicationGenerationContext:
     confirmations: tuple[AuthoritativeConfirmation, ...]
     language: str
     generation_date: str
+    generation_backend: str
 
     def with_template(
         self,
@@ -137,6 +139,7 @@ class AuthoritativeApplicationGenerationContext:
             confirmations=self.confirmations,
             language=self.language,
             generation_date=self.generation_date,
+            generation_backend=self.generation_backend,
             template=template,
         )
 
@@ -147,6 +150,7 @@ class AuthoritativeApplicationGenerationContext:
         confirmations = [asdict(confirmation) for confirmation in self.confirmations]
         fingerprint_inputs = {
             "fingerprintVersion": GENERATION_FINGERPRINT_VERSION,
+            "backend": self.generation_backend,
             "vacancy": self.vacancy,
             "profile": self.profile,
             "applicationGuide": self.application_guide,
@@ -158,6 +162,7 @@ class AuthoritativeApplicationGenerationContext:
         }
         input_versions: dict[str, Any] = {
             "fingerprintVersion": GENERATION_FINGERPRINT_VERSION,
+            "backend": self.generation_backend,
             "vacancy": canonical_hash(self.vacancy),
             "profile": canonical_hash(self.profile),
             "applicationGuide": canonical_hash(self.application_guide),
@@ -172,6 +177,7 @@ class AuthoritativeApplicationGenerationContext:
         }
         return AuthoritativeGenerationProvenance(
             generation_fingerprint=canonical_hash(fingerprint_inputs),
+            generation_backend=self.generation_backend,
             input_versions=input_versions,
         )
 
@@ -195,6 +201,7 @@ class AuthoritativeGenerationContext(AuthoritativeApplicationGenerationContext):
                 "confirmations": [asdict(confirmation) for confirmation in self.confirmations],
                 "language": self.language,
                 "generationDate": self.generation_date,
+                "generationBackend": self.generation_backend,
                 "sourceDocument": {
                     "id": self.template.id,
                     "name": self.template.name,
@@ -395,6 +402,7 @@ def load_authoritative_application_generation_context(
     if language not in {"English", "German"}:
         language = detect_job_language(vacancy)
 
+    settings = get_settings()
     return AuthoritativeApplicationGenerationContext(
         application_id=application_id,
         job_id=job_id,
@@ -407,6 +415,7 @@ def load_authoritative_application_generation_context(
         confirmations=tuple(confirmations),
         language=language,
         generation_date=date.today().isoformat(),
+        generation_backend=settings.ai_backend_mode,
     )
 
 
@@ -456,8 +465,8 @@ def current_authoritative_match_record(
     profile: ProfilePayload,
     vacancy: dict[str, Any],
 ) -> JobMatchRecord | None:
-    candidate_snapshot = get_candidate_match_snapshot(db, profile=profile)
     settings = get_settings()
+    candidate_snapshot = get_candidate_match_snapshot(db, profile=profile, settings=settings)
     return authoritative_match_record(
         db,
         owner_id=current_owner_id.get() or DEFAULT_OWNER_ID,
@@ -469,6 +478,7 @@ def current_authoritative_match_record(
             if settings.ai_backend_mode == "openai_api"
             else settings.openclaw_ai_match_model
         ),
+        backend=settings.ai_backend_mode,
         prompt_version=MATCH_PROMPT_VERSION,
         matcher_version=MATCHER_VERSION,
     )

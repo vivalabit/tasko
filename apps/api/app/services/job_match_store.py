@@ -51,7 +51,7 @@ def latest_match_record(db: Session, *, job_id: str, profile_hash: str) -> JobMa
             JobMatchRecord.job_id == job_id,
             JobMatchRecord.profile_hash == profile_hash,
             JobMatchRecord.matcher_version == MATCHER_VERSION,
-            JobMatchRecord.source.in_(("openclaw", "openai_api")),
+            JobMatchRecord.source.in_(("openclaw_codex", "openai_api", "local")),
         )
         .order_by(JobMatchRecord.created_at.desc(), JobMatchRecord.id.desc())
         .first()
@@ -66,6 +66,7 @@ def authoritative_match_record(
     profile_hash: str,
     vacancy_hash: str,
     model: str,
+    backend: str,
     prompt_version: str,
     matcher_version: str,
 ) -> JobMatchRecord | None:
@@ -77,6 +78,7 @@ def authoritative_match_record(
             JobMatchRecord.profile_hash == profile_hash,
             JobMatchRecord.vacancy_hash == vacancy_hash,
             JobMatchRecord.model == model,
+            JobMatchRecord.backend == backend,
             JobMatchRecord.prompt_version == prompt_version,
             JobMatchRecord.matcher_version == matcher_version,
         )
@@ -254,6 +256,7 @@ def build_match_record(job_id: str, profile_hash: str, ai_match: dict[str, Any])
         profile_hash=profile_hash,
         vacancy_hash=normalized["vacancyHash"],
         model=normalized["model"],
+        backend=normalized["backend"],
         prompt_version=normalized["promptVersion"],
         matcher_version=normalized["version"],
         cache_key=normalized["cacheKey"],
@@ -264,7 +267,7 @@ def build_match_record(job_id: str, profile_hash: str, ai_match: dict[str, Any])
         reasons=normalized["reasons"],
         gaps=normalized["gaps"],
         heuristic_score=normalized["heuristicScore"],
-        openclaw_error=normalized.get("openclawError"),
+        provider_error=normalized.get("providerError"),
         created_at=parse_match_updated_at(ai_match) or datetime.now(UTC),
     )
 
@@ -278,14 +281,21 @@ def normalize_ai_match(
         str(ai_match.get("updatedAt") or "").strip()
         or (fallback_updated_at or datetime.now(UTC)).isoformat()
     )
+    source = str(ai_match.get("source") or "openclaw_codex")
+    if source not in {"openclaw_codex", "openai_api", "local"}:
+        source = "local"
+    backend = str(ai_match.get("backend") or source)
+    if backend not in {"openclaw_codex", "openai_api", "local"}:
+        backend = source
     normalized = {
         "version": str(ai_match.get("version") or MATCHER_VERSION),
         "profileHash": str(ai_match.get("profileHash") or ""),
         "vacancyHash": str(ai_match.get("vacancyHash") or ""),
         "model": str(ai_match.get("model") or ""),
+        "backend": backend,
         "promptVersion": str(ai_match.get("promptVersion") or ""),
         "cacheKey": str(ai_match.get("cacheKey") or ""),
-        "source": str(ai_match.get("source") or "openclaw"),
+        "source": source,
         "score": score,
         "confidence": str(ai_match.get("confidence") or "low"),
         "breakdown": ai_match.get("breakdown") if isinstance(ai_match.get("breakdown"), dict) else {},
@@ -296,8 +306,9 @@ def normalize_ai_match(
     }
     if isinstance(ai_match.get("applicationGuide"), dict):
         normalized["applicationGuide"] = ai_match["applicationGuide"]
-    if ai_match.get("openclawError"):
-        normalized["openclawError"] = str(ai_match["openclawError"])[:240]
+    provider_error = ai_match.get("providerError")
+    if provider_error:
+        normalized["providerError"] = str(provider_error)[:240]
     return normalized
 
 
@@ -309,6 +320,7 @@ def match_record_to_ai_match(record: JobMatchRecord) -> dict[str, Any]:
         "profileHash": record.profile_hash,
         "vacancyHash": record.vacancy_hash,
         "model": record.model,
+        "backend": record.backend,
         "promptVersion": record.prompt_version,
         "cacheKey": record.cache_key,
         "source": record.source,
@@ -322,8 +334,8 @@ def match_record_to_ai_match(record: JobMatchRecord) -> dict[str, Any]:
     }
     if isinstance(application_guide, dict):
         ai_match["applicationGuide"] = application_guide
-    if record.openclaw_error:
-        ai_match["openclawError"] = record.openclaw_error
+    if record.provider_error:
+        ai_match["providerError"] = record.provider_error
     return ai_match
 
 

@@ -19,7 +19,7 @@ class ConversationRecord(OwnerScoped, Base):
     title: Mapped[str] = mapped_column(String(240), nullable=False)
     context_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="profile")
     context_id: Mapped[str] = mapped_column(String(160), nullable=False, default="")
-    openclaw_session_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    provider_session_id: Mapped[str | None] = mapped_column(String(500), nullable=True)
     archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -68,7 +68,7 @@ class MessageRecord(Base):
 
 ContextKind = Literal["profile", "job", "application"]
 MessageRole = Literal["user", "assistant"]
-MessageSource = Literal["openclaw", "local"]
+MessageSource = Literal["openclaw_codex", "openai_api", "local"]
 MessageStatus = Literal["generating", "complete", "stopped", "error"]
 
 
@@ -88,7 +88,7 @@ class ConversationPayload(BaseModel):
     title: str
     context_kind: ContextKind = Field(alias="contextKind")
     context_id: str = Field(alias="contextId")
-    openclaw_session_key: str | None = Field(default=None, alias="openClawSessionKey")
+    provider_session_id: str | None = Field(default=None, alias="providerSessionId")
     archived: bool
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")
@@ -101,10 +101,10 @@ class ConversationUpsertRequest(BaseModel):
     title: str = Field(min_length=1, max_length=240)
     context_kind: ContextKind = Field(default="profile", alias="contextKind")
     context_id: str = Field(default="", max_length=160, alias="contextId")
-    openclaw_session_key: str | None = Field(
+    provider_session_id: str | None = Field(
         default=None,
         max_length=500,
-        alias="openClawSessionKey",
+        alias="providerSessionId",
     )
     archived: bool = False
     created_at: datetime | None = Field(default=None, alias="createdAt")
