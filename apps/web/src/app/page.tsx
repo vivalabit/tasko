@@ -3177,6 +3177,7 @@ export default function HomePage() {
 
   useEffect(() => {
     const abortController = new AbortController();
+    let locallyDeletedJobIds: string[] = [];
 
     try {
       const rawArchivedJobIds = window.localStorage.getItem(archivedJobIdsStorageKey);
@@ -3187,7 +3188,8 @@ export default function HomePage() {
 
     try {
       const rawDeletedJobIds = window.localStorage.getItem(deletedJobIdsStorageKey);
-      setDeletedJobIds(normalizeStoredJobIds(rawDeletedJobIds ? JSON.parse(rawDeletedJobIds) : []));
+      locallyDeletedJobIds = normalizeStoredJobIds(rawDeletedJobIds ? JSON.parse(rawDeletedJobIds) : []);
+      setDeletedJobIds(locallyDeletedJobIds);
     } catch {
       window.localStorage.removeItem(deletedJobIdsStorageKey);
     }
@@ -3217,6 +3219,30 @@ export default function HomePage() {
         const storedUserJobs = keepStoredUserJobs(normalizeStoredJobs(storedJobs.map((job) => job.data)));
         setJobList((currentJobs) => [...storedUserJobs, ...currentJobs.filter((job) => !isUserManagedJob(job))]);
         window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(storedUserJobs));
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+      }
+    }
+
+    async function loadDismissedJobIds() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/jobs/dismissed-ids`, {
+          method: locallyDeletedJobIds.length > 0 ? "PUT" : "GET",
+          headers: locallyDeletedJobIds.length > 0 ? { "Content-Type": "application/json" } : undefined,
+          body: locallyDeletedJobIds.length > 0
+            ? JSON.stringify({ job_ids: locallyDeletedJobIds })
+            : undefined,
+          cache: "no-store",
+          signal: abortController.signal,
+        });
+        if (!response.ok) return;
+
+        const serverIds = normalizeStoredJobIds(await response.json());
+        setDeletedJobIds((currentIds) => {
+          const nextIds = Array.from(new Set([...currentIds, ...serverIds]));
+          window.localStorage.setItem(deletedJobIdsStorageKey, JSON.stringify(nextIds));
+          return nextIds;
+        });
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
       }
@@ -3322,6 +3348,7 @@ export default function HomePage() {
     }
 
     loadStoredJobs();
+    loadDismissedJobIds();
     loadStoredApplications();
     loadStoredApplicationEvents();
     loadProfile();
@@ -5021,6 +5048,7 @@ export default function HomePage() {
 
       const startedStatus = (await response.json()) as AiMatchJobStatus;
       applyAiMatchStatus(startedStatus);
+      if (startedStatus.status === "completed") return true;
 
       const completedStatus = await pollAiMatchStatus();
       return Boolean(completedStatus && (completedStatus.failedJobs?.length ?? 0) === 0);
@@ -5141,7 +5169,9 @@ export default function HomePage() {
   }
 
   function addParsedJobsToList(parsedJobs: ParsedJob[]) {
-    const importedJobs = parsedJobs.map((job, index) => mapParsedJobToJob(job, index));
+    const importedJobs = parsedJobs
+      .map((job, index) => mapParsedJobToJob(job, index))
+      .filter((job) => !deletedJobIds.includes(job.id));
 
     if (importedJobs.length > 0) {
       const existingJobIds = new Set(jobList.map((job) => job.id));

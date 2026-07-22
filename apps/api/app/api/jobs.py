@@ -11,6 +11,7 @@ from app.core.identity import RequestIdentity, bind_request_identity, get_reques
 from app.core.settings import Settings, get_settings
 from app.models.jobs import (
     AiMatchJobStatus,
+    DismissedJobIdsRequest,
     JobMatchFeedbackRequest,
     StoredJobPayload,
     StoredJobRecord,
@@ -22,7 +23,6 @@ from app.services.ai_match_jobs import ai_match_jobs
 from app.services.candidate_snapshot import CandidateSnapshotError, get_candidate_match_snapshot
 from app.services.job_match_store import (
     calibrate_job_with_feedback,
-    delete_job_matches,
     hydrate_job_data,
     persist_job_and_match,
     persist_match_feedback,
@@ -32,13 +32,21 @@ from app.services.ai_privacy import require_current_ai_consent
 
 router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
+ACTIVE_JOB_STATUS = "active"
+DISMISSED_JOB_STATUS = "dismissed"
+
 
 @router.get("", response_model=list[StoredJobPayload])
 def list_jobs(db: Session = Depends(get_db)) -> list[StoredJobPayload]:
     try:
         profile = get_current_profile(db)
         candidate_snapshot = get_candidate_match_snapshot(db, profile=profile)
-        records = db.query(StoredJobRecord).order_by(StoredJobRecord.id.desc()).all()
+        records = (
+            db.query(StoredJobRecord)
+            .filter(StoredJobRecord.status == ACTIVE_JOB_STATUS)
+            .order_by(StoredJobRecord.id.desc())
+            .all()
+        )
         return [
             StoredJobPayload(
                 id=record.id,
@@ -64,11 +72,21 @@ def upsert_jobs(request: StoredJobsRequest, db: Session = Depends(get_db)) -> li
         now = datetime.now(UTC).isoformat()
         for job in request.jobs:
             record = db.get(StoredJobRecord, job.id)
+            if record and record.status == DISMISSED_JOB_STATUS:
+                continue
             job_data = prepare_job_data(job.data, record, now)
             if record:
                 record.data = strip_ai_match(job_data)
+                record.status = ACTIVE_JOB_STATUS
+                record.dismissed_at = None
             else:
-                db.add(StoredJobRecord(id=job.id, data=strip_ai_match(job_data)))
+                db.add(
+                    StoredJobRecord(
+                        id=job.id,
+                        data=strip_ai_match(job_data),
+                        status=ACTIVE_JOB_STATUS,
+                    )
+                )
 
         db.commit()
         return list_jobs(db)
@@ -90,10 +108,14 @@ def match_jobs(
 ) -> list[StoredJobPayload]:
     try:
         now = datetime.now(UTC).isoformat()
-        jobs_to_match = [
-            prepare_job_data(job.data, db.get(StoredJobRecord, job.id), now)
-            for job in request.jobs
-        ]
+        jobs_to_match = []
+        for job in request.jobs:
+            record = db.get(StoredJobRecord, job.id)
+            if record and record.status == DISMISSED_JOB_STATUS:
+                continue
+            jobs_to_match.append(prepare_job_data(job.data, record, now))
+        if not jobs_to_match:
+            return []
         profile = get_current_profile(db)
         candidate_snapshot = get_candidate_match_snapshot(
             db,
@@ -172,10 +194,14 @@ def run_match_jobs(
 ) -> AiMatchJobStatus:
     try:
         now = datetime.now(UTC).isoformat()
-        jobs_to_match = [
-            prepare_job_data(job.data, db.get(StoredJobRecord, job.id), now)
-            for job in request.jobs
-        ]
+        jobs_to_match = []
+        for job in request.jobs:
+            record = db.get(StoredJobRecord, job.id)
+            if record and record.status == DISMISSED_JOB_STATUS:
+                continue
+            jobs_to_match.append(prepare_job_data(job.data, record, now))
+        if not jobs_to_match:
+            return AiMatchJobStatus(status="completed")
         profile = get_current_profile(db)
         candidate_snapshot = get_candidate_match_snapshot(
             db,
@@ -275,6 +301,57 @@ def first_added_at(job_data: dict[str, Any]) -> str:
     return ""
 
 
+@router.get("/dismissed-ids", response_model=list[str])
+def list_dismissed_job_ids(db: Session = Depends(get_db)) -> list[str]:
+    try:
+        return [
+            job_id
+            for (job_id,) in db.query(StoredJobRecord.id)
+            .filter(StoredJobRecord.status == DISMISSED_JOB_STATUS)
+            .order_by(StoredJobRecord.id.asc())
+            .all()
+        ]
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Jobs database is unavailable",
+        ) from exc
+
+
+@router.put("/dismissed-ids", response_model=list[str])
+def import_dismissed_job_ids(
+    request: DismissedJobIdsRequest,
+    db: Session = Depends(get_db),
+) -> list[str]:
+    try:
+        dismissed_at = datetime.now(UTC)
+        for job_id in dict.fromkeys(request.job_ids):
+            normalized_job_id = job_id.strip()
+            if not normalized_job_id or len(normalized_job_id) > 160:
+                continue
+            record = db.get(StoredJobRecord, normalized_job_id)
+            if not record:
+                db.add(
+                    StoredJobRecord(
+                        id=normalized_job_id,
+                        data={"id": normalized_job_id},
+                        status=DISMISSED_JOB_STATUS,
+                        dismissed_at=dismissed_at,
+                    )
+                )
+            elif record.status != DISMISSED_JOB_STATUS:
+                record.status = DISMISSED_JOB_STATUS
+                record.dismissed_at = dismissed_at
+        db.commit()
+        return list_dismissed_job_ids(db)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Jobs database is unavailable",
+        ) from exc
+
+
 @router.post("/{job_id}/match-feedback", response_model=StoredJobPayload)
 def save_match_feedback(
     job_id: str,
@@ -283,7 +360,7 @@ def save_match_feedback(
 ) -> StoredJobPayload:
     try:
         record = db.get(StoredJobRecord, job_id)
-        if not record:
+        if not record or record.status == DISMISSED_JOB_STATUS:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Job was not found",
@@ -322,10 +399,16 @@ def delete_job(job_id: str, db: Session = Depends(get_db)) -> None:
     try:
         record = db.get(StoredJobRecord, job_id)
         if not record:
-            return None
-
-        db.delete(record)
-        delete_job_matches(db, job_id=job_id)
+            record = StoredJobRecord(
+                id=job_id,
+                data={"id": job_id},
+                status=DISMISSED_JOB_STATUS,
+                dismissed_at=datetime.now(UTC),
+            )
+            db.add(record)
+        else:
+            record.status = DISMISSED_JOB_STATUS
+            record.dismissed_at = datetime.now(UTC)
         db.commit()
         return None
     except SQLAlchemyError as exc:

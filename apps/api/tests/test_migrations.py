@@ -104,7 +104,7 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "20260720_0009"
+            assert revision == "20260722_0010"
     finally:
         engine.dispose()
 
@@ -239,10 +239,44 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260720_0009"
+        assert revision == "20260722_0010"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))
+
+
+def test_job_soft_delete_migration_preserves_existing_jobs(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'job-soft-delete.sqlite'}"
+    config = get_alembic_config(database_url)
+    command.upgrade(config, "20260720_0009")
+
+    engine = create_engine(database_url)
+    original_data = '{"id":"legacy-job","title":"Legacy vacancy"}'
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text("INSERT INTO stored_jobs (id, data) VALUES ('legacy-job', :data)"),
+                {"data": original_data},
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT data, status, dismissed_at FROM stored_jobs "
+                    "WHERE id = 'legacy-job'"
+                )
+            ).one()
+            assert row.status == "active"
+            assert row.dismissed_at is None
+            assert row.data == original_data
+    finally:
+        engine.dispose()
 
 
 def test_upgrade_database_rejects_unknown_unversioned_schema(tmp_path) -> None:

@@ -164,6 +164,63 @@ it("searches LinkedIn, Indeed, and jobs.ch together when all sources are selecte
   await waitFor(() => expect(requestUrls).toContain("/jobs/ai-match/run?force=true"));
 });
 
+it("does not re-add a vacancy whose deleted id was synchronized with the server", async () => {
+  window.history.replaceState(null, "", "#jobs");
+  const dismissedId = "linkedin-https-www-linkedin-com-jobs-view-123";
+  window.localStorage.setItem("tasko.deletedJobIds.v1", JSON.stringify([dismissedId]));
+  const requests: Array<{ path: string; method: string }> = [];
+  const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+    const requestUrl = typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url;
+    const url = new URL(requestUrl, "http://localhost");
+    const method = init?.method ?? "GET";
+    requests.push({ path: url.pathname, method });
+
+    if (url.pathname === "/parser-search-configs.local.json") return Response.json([]);
+    if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
+    if (url.pathname === "/jobs/dismissed-ids" && method === "PUT") {
+      return Response.json([dismissedId]);
+    }
+    if (url.pathname === "/applications" && method === "GET") return Response.json([]);
+    if (url.pathname === "/applications/events" && method === "GET") return Response.json([]);
+    if (url.pathname === "/profile" && method === "GET") return Response.json({});
+    if (url.pathname === "/settings" && method === "GET") {
+      return Response.json({ has_brightdata_api_key: true, brightdata_api_key_preview: "test...key" });
+    }
+    if (url.pathname === "/parsers/linkedin/search" && method === "POST") {
+      return Response.json({
+        parser: "linkedin",
+        status: "completed",
+        jobs: [{
+          source: "linkedin",
+          title: "Product Designer",
+          company: "Figma",
+          location: "Remote",
+          url: "https://www.linkedin.com/jobs/view/123",
+        }],
+      });
+    }
+
+    throw new Error(`Unhandled request: ${method} ${url.pathname}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<HomePage />);
+
+  await waitFor(() => {
+    expect(requests).toContainEqual({ path: "/jobs/dismissed-ids", method: "PUT" });
+  });
+  fireEvent.click(await screen.findByRole("button", { name: "Search vacancies" }));
+  fireEvent.click(screen.getByRole("button", { name: "Start search" }));
+
+  expect(await screen.findByText("No vacancies returned from LinkedIn")).toBeInTheDocument();
+  expect(requests).not.toContainEqual({ path: "/jobs", method: "PUT" });
+  expect(requests).not.toContainEqual({ path: "/jobs/ai-match/run", method: "POST" });
+});
+
 it("keeps only entry-level IT vacancies for the Entry IT config", async () => {
   window.history.replaceState(null, "", "#jobs");
   const persistedTitles: string[] = [];

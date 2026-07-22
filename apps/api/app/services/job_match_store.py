@@ -134,6 +134,8 @@ def persist_job_and_match(db: Session, *, job: dict[str, Any], profile_hash: str
 
     job_data = strip_ai_match(job)
     record = db.get(StoredJobRecord, job_id)
+    if record and record.status == "dismissed":
+        return
     if record:
         record.data = job_data
     else:
@@ -142,11 +144,6 @@ def persist_job_and_match(db: Session, *, job: dict[str, Any], profile_hash: str
     ai_match = job.get("aiMatch")
     if isinstance(ai_match, dict) and should_insert_match_record(db, job_id, profile_hash, ai_match):
         db.add(build_match_record(job_id=job_id, profile_hash=profile_hash, ai_match=ai_match))
-
-
-def delete_job_matches(db: Session, *, job_id: str) -> None:
-    db.query(JobMatchRecord).filter(JobMatchRecord.job_id == job_id).delete()
-    db.query(JobMatchFeedbackRecord).filter(JobMatchFeedbackRecord.job_id == job_id).delete()
 
 
 def persist_match_feedback(

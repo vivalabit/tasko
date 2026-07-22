@@ -13,6 +13,14 @@ class StoredJobRecord(Base):
 
     id: Mapped[str] = mapped_column(String(160), primary_key=True)
     data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default="active",
+        server_default="active",
+        index=True,
+    )
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class JobMatchRecord(OwnerScoped, Base):
@@ -63,6 +71,10 @@ class StoredJobPayload(BaseModel):
 
 class StoredJobsRequest(BaseModel):
     jobs: list[StoredJobPayload] = Field(default_factory=list)
+
+
+class DismissedJobIdsRequest(BaseModel):
+    job_ids: list[str] = Field(default_factory=list, max_length=10_000)
 
 
 class JobMatchFeedbackRequest(BaseModel):
