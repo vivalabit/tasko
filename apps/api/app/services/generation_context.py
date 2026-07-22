@@ -464,7 +464,11 @@ def current_authoritative_match_record(
         job_id=job_id,
         profile_hash=candidate_snapshot.profile_hash,
         vacancy_hash=build_job_snapshot_hash(build_job_snapshot(vacancy)),
-        model=settings.openclaw_ai_match_model,
+        model=(
+            settings.openai_api_model
+            if settings.ai_backend_mode == "openai_api"
+            else settings.openclaw_ai_match_model
+        ),
         prompt_version=MATCH_PROMPT_VERSION,
         matcher_version=MATCHER_VERSION,
     )

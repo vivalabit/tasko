@@ -6,13 +6,18 @@ services:
       context: .
       dockerfile: apps/api/Dockerfile
     command: >-
-      sh -c "python -m app.core.openclaw_state &&
+      sh -c "if [ \"$$AI_BACKEND_MODE\" = \"openclaw_codex\" ]; then
+      python -m app.core.openclaw_state; fi &&
       exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     environment:
       APP_ENV: local
       DATABASE_URL: postgresql+psycopg://tasko:tasko@postgres:5432/tasko
       REDIS_URL: redis://redis:6379/0
       CORS_ORIGINS: '["http://localhost:3000","http://127.0.0.1:3000"]'
+      AI_BACKEND_MODE: ${AI_BACKEND_MODE:-openclaw_codex}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_BASE_URL: ${OPENAI_API_BASE_URL:-https://api.openai.com/v1}
+      OPENAI_API_MODEL: ${OPENAI_API_MODEL:-gpt-5.6-terra}
       OPENCLAW_COMMAND: openclaw
       OPENCLAW_AGENT_ID: tasko-assistant
       OPENCLAW_ASSISTANT_AGENT_ID: tasko-assistant

@@ -21,6 +21,8 @@ from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.ai_match import JOB_ADDED_AT_FIELDS, OpenClawAiMatchError, calculate_ai_matches
 from app.services.ai_match_jobs import ai_match_jobs
 from app.services.candidate_snapshot import CandidateSnapshotError, get_candidate_match_snapshot
+from app.services.ai_backend import create_configured_ai_backend
+from app.services.ai_privacy import require_current_ai_consent
 from app.services.job_match_store import (
     calibrate_job_with_feedback,
     hydrate_job_data,
@@ -28,7 +30,6 @@ from app.services.job_match_store import (
     persist_match_feedback,
     strip_ai_match,
 )
-from app.services.ai_privacy import require_current_ai_consent
 
 router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
@@ -142,10 +143,15 @@ def match_jobs(
             timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
             openclaw_enabled=settings.openclaw_ai_match_enabled,
             openclaw_max_jobs=settings.openclaw_ai_match_max_jobs,
-            model=settings.openclaw_ai_match_model,
+            model=(
+                settings.openai_api_model
+                if settings.ai_backend_mode == "openai_api"
+                else settings.openclaw_ai_match_model
+            ),
             max_attempts=settings.openclaw_ai_match_max_attempts,
             force=force,
             candidate_snapshot=candidate_snapshot.data,
+            backend=create_configured_ai_backend(settings),
         )
 
         calibrated_jobs: list[dict[str, Any]] = []

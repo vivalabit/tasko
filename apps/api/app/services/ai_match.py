@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import shutil
 import subprocess
 import unicodedata
 from datetime import UTC, datetime
@@ -12,6 +11,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
 
 from app.models.profile import ProfilePayload
+from app.services.ai_backend import AIBackend, AIBackendError, AIRequest, OpenClawCodexBackend
 from app.services.experience_evidence import build_atomic_experience_evidence
 from app.services.resume_import import (
     extract_json_objects,
@@ -267,6 +267,7 @@ def calculate_ai_matches(
     max_attempts: int = DEFAULT_AI_MATCH_MAX_ATTEMPTS,
     force: bool = False,
     candidate_snapshot: dict[str, Any] | None = None,
+    backend: AIBackend | None = None,
 ) -> list[dict[str, Any]]:
     if not openclaw_enabled:
         raise OpenClawAiMatchError("OpenClaw AI match is required but disabled")
@@ -274,6 +275,7 @@ def calculate_ai_matches(
         raise OpenClawAiMatchError("OpenClaw AI match requires a positive job batch size")
 
     profile_snapshot = candidate_snapshot or build_candidate_snapshot(profile)
+    backend_source = "openclaw" if backend is None or backend.name == "openclaw_codex" else backend.name
     evidence_catalog = build_ai_match_evidence_catalog(profile)
     ordered_jobs: list[dict[str, Any] | tuple[dict[str, Any], dict[str, Any], str]] = []
     now = datetime.now(UTC).isoformat()
@@ -292,7 +294,7 @@ def calculate_ai_matches(
             evidence_sources=list(evidence_catalog.values()),
         )
         cached_match = job.get("aiMatch")
-        if not force and is_cached_match_valid(cached_match, cache_key) and cached_match.get("source") == "openclaw":
+        if not force and is_cached_match_valid(cached_match, cache_key) and cached_match.get("source") == backend_source:
             ordered_jobs.append(job)
             continue
 
@@ -320,6 +322,7 @@ def calculate_ai_matches(
                     model=model,
                     evidence_sources=list(evidence_catalog.values()),
                     correction_feedback=correction_feedback,
+                    backend=backend,
                 )
                 openclaw_results = validate_openclaw_batch(
                     openclaw_results,
@@ -353,6 +356,7 @@ def calculate_ai_matches(
                 by_id[item[1]["id"]],
                 item[0],
                 evidence_catalog=evidence_catalog,
+                backend_source=backend_source,
             ),
             item[2],
             now,
@@ -505,52 +509,46 @@ def score_with_openclaw(
     model: str = DEFAULT_AI_MATCH_MODEL,
     evidence_sources: list[dict[str, str]] | None = None,
     correction_feedback: str | None = None,
+    backend: AIBackend | None = None,
 ) -> list[dict[str, Any]]:
     if not jobs:
         return []
 
-    executable = shutil.which(command) or command
     prompt = build_openclaw_ai_match_prompt(
         profile_snapshot,
         jobs,
         evidence_sources=evidence_sources or [],
         correction_feedback=correction_feedback,
     )
-    try:
-        result = subprocess.run(
-            [
-                executable,
-                "agent",
-                "--local",
-                "--agent",
-                agent_id,
-                "--message",
-                prompt,
-                "--model",
-                model,
-                "--thinking",
-                thinking,
-                "--json",
-            ],
-            capture_output=True,
-            check=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except FileNotFoundError as exc:
-        raise OpenClawAiMatchError(
-            f"OpenClaw command was not found: {command}. Install OpenClaw or set "
-            "OPENCLAW_COMMAND to the executable path."
-        ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise OpenClawAiMatchError("OpenClaw AI match timed out") from exc
-    except subprocess.CalledProcessError as exc:
-        error_output = (exc.stderr or exc.stdout or "OpenClaw command failed").strip()
-        raise OpenClawAiMatchError(summarize_openclaw_error(error_output)) from exc
-
-    payload = normalize_openclaw_ai_match_payload(
-        extract_openclaw_ai_match_payload(result.stdout)
+    selected_backend = backend or OpenClawCodexBackend(
+        command=command,
+        sync_runner=subprocess.run,
     )
+    try:
+        result = selected_backend.generate(
+            AIRequest(
+                prompt=prompt,
+                model=model,
+                agent_id=agent_id,
+                thinking=thinking,
+                timeout_seconds=timeout_seconds,
+                structured=True,
+            )
+        )
+    except AIBackendError as exc:
+        if exc.code == "runtime_missing":
+            raise OpenClawAiMatchError(
+                f"OpenClaw command was not found: {command}. Install OpenClaw or set "
+                "OPENCLAW_COMMAND to the executable path."
+            ) from exc
+        if exc.code == "timeout":
+            raise OpenClawAiMatchError("OpenClaw AI match timed out") from exc
+        raise OpenClawAiMatchError(summarize_openclaw_error(str(exc))) from exc
+
+    raw_payload = coerce_openclaw_ai_match_payload(result.structured_data)
+    if raw_payload is None:
+        raw_payload = extract_openclaw_ai_match_payload(result.raw_response)
+    payload = normalize_openclaw_ai_match_payload(raw_payload)
     try:
         validated = OpenClawAiMatchPayload.model_validate(payload)
     except ValidationError as exc:
@@ -803,6 +801,7 @@ def normalize_openclaw_result(
     current_job: dict[str, Any],
     *,
     evidence_catalog: dict[str, dict[str, str]] | None = None,
+    backend_source: str = "openclaw",
 ) -> dict[str, Any]:
     fallback = current_job.get("aiMatch", {}) if isinstance(current_job.get("aiMatch"), dict) else {}
     validated = validate_openclaw_result(result, current_job)
@@ -816,7 +815,7 @@ def normalize_openclaw_result(
         ]
     return {
         "score": normalized["score"],
-        "source": "openclaw",
+        "source": backend_source,
         "confidence": normalized["confidence"],
         "breakdown": normalized["breakdown"],
         "reasons": normalized["reasons"],

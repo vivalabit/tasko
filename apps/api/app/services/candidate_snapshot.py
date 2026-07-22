@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -14,6 +12,12 @@ from sqlalchemy.orm import Session
 
 from app.core.settings import Settings
 from app.models.profile import CandidateMatchSnapshotRecord, ProfilePayload
+from app.services.ai_backend import (
+    AIBackend,
+    AIBackendError,
+    AIRequest,
+    create_configured_ai_backend,
+)
 from app.services.ai_match import (
     MATCHER_VERSION,
     build_candidate_snapshot,
@@ -81,18 +85,25 @@ def get_candidate_match_snapshot(
 ) -> CandidateMatchSnapshot:
     profile_input_hash = build_profile_input_hash(profile)
     existing_record = latest_snapshot_record(db, profile_input_hash=profile_input_hash)
-    if existing_record and (not strict_openclaw or existing_record.source == "openclaw"):
+    expected_source = backend_snapshot_source(settings.ai_backend_mode) if settings else "openclaw"
+    if existing_record and (not strict_openclaw or existing_record.source == expected_source):
         return record_to_snapshot(existing_record)
 
     fallback_snapshot = empty_candidate_snapshot() if strict_openclaw else build_candidate_snapshot(profile)
     if allow_openclaw and settings and settings.openclaw_ai_match_enabled:
         try:
+            backend = create_configured_ai_backend(
+                settings,
+                sync_runner=subprocess.run,
+                openclaw_prompt_transport="file",
+            )
             snapshot_data = build_snapshot_with_openclaw(
                 profile=profile,
                 fallback_snapshot=fallback_snapshot,
                 settings=settings,
+                backend=backend,
             )
-            source = "openclaw"
+            source = backend_snapshot_source(backend.name)
             openclaw_error = None
         except CandidateSnapshotError as exc:
             if strict_openclaw:
@@ -212,48 +223,58 @@ def build_snapshot_with_openclaw(
     profile: ProfilePayload,
     fallback_snapshot: dict[str, Any],
     settings: Settings,
+    backend: AIBackend | None = None,
 ) -> dict[str, Any]:
-    executable = shutil.which(settings.openclaw_command) or settings.openclaw_command
     prompt = build_openclaw_candidate_snapshot_prompt(profile, fallback_snapshot)
+    selected_backend = backend or create_configured_ai_backend(
+        settings,
+        sync_runner=subprocess.run,
+        openclaw_prompt_transport="file",
+    )
     try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", suffix=".txt") as prompt_file:
-            prompt_file.write(prompt)
-            prompt_file.flush()
-            result = subprocess.run(
-                [
-                    executable,
-                    "agent",
-                    "--local",
-                    "--agent",
-                    settings.openclaw_agent_id,
-                    "--message-file",
-                    prompt_file.name,
-                    "--thinking",
-                    settings.openclaw_ai_match_thinking,
-                    "--json",
-                ],
-                capture_output=True,
-                check=True,
-                text=True,
-                timeout=settings.openclaw_ai_match_timeout_seconds,
+        result = selected_backend.generate(
+            AIRequest(
+                prompt=prompt,
+                model=(
+                    settings.openai_api_model
+                    if selected_backend.name == "openai_api"
+                    else ""
+                ),
+                agent_id=settings.openclaw_agent_id,
+                thinking=settings.openclaw_ai_match_thinking,
+                timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
+                structured=True,
             )
+        )
+    except AIBackendError as exc:
+        if exc.code == "runtime_missing":
+            raise CandidateSnapshotError(
+                f"OpenClaw command was not found: {settings.openclaw_command}. Install OpenClaw or "
+                "set OPENCLAW_COMMAND to the executable path."
+            ) from exc
+        if exc.code == "timeout":
+            raise CandidateSnapshotError("OpenClaw candidate snapshot timed out") from exc
+        raise CandidateSnapshotError(summarize_openclaw_error(str(exc))) from exc
     except FileNotFoundError as exc:
         raise CandidateSnapshotError(
             f"OpenClaw command was not found: {settings.openclaw_command}. Install OpenClaw or "
             "set OPENCLAW_COMMAND to the executable path."
         ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise CandidateSnapshotError("OpenClaw candidate snapshot timed out") from exc
-    except subprocess.CalledProcessError as exc:
-        error_output = (exc.stderr or exc.stdout or "OpenClaw command failed").strip()
-        raise CandidateSnapshotError(summarize_openclaw_error(error_output)) from exc
-    except OSError as exc:
-        raise CandidateSnapshotError(f"OpenClaw command could not start: {exc}") from exc
 
-    snapshot = extract_openclaw_candidate_snapshot_payload(result.stdout)
+    snapshot = (
+        result.structured_data
+        if isinstance(result.structured_data, dict)
+        else extract_openclaw_candidate_snapshot_payload(result.raw_response)
+    )
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("candidate"), dict):
+        snapshot = snapshot["candidate"]
     if not snapshot:
         raise CandidateSnapshotError("OpenClaw did not return a candidate snapshot")
     return snapshot
+
+
+def backend_snapshot_source(backend: str) -> str:
+    return "openclaw" if backend == "openclaw_codex" else backend
 
 
 def build_openclaw_candidate_snapshot_prompt(

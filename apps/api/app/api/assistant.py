@@ -51,6 +51,8 @@ from app.models.documents import (
 )
 from app.models.jobs import StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
+from app.services.ai_backend import create_configured_ai_backend
+from app.services.ai_privacy import require_current_ai_consent
 from app.services.assistant import (
     OpenClawAssistantRun,
     OpenClawAssistantError,
@@ -60,7 +62,7 @@ from app.services.assistant import (
     encode_message_actions,
     extract_assistant_action_previews,
     preflight_source_documents,
-    run_openclaw_assistant,
+    run_ai_assistant as run_openclaw_assistant,
 )
 from app.services.generation_context import (
     AuthoritativeGenerationContext,
@@ -74,7 +76,6 @@ from app.services.job_match_store import (
     match_record_to_ai_match,
 )
 from app.services.profile_versions import record_profile_version
-from app.services.ai_privacy import require_current_ai_consent
 
 router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
@@ -124,7 +125,12 @@ def begin_generation_artifact(
     artifact_id = str(uuid4())
     snapshot = context.input_snapshot(prompt=prompt)
     snapshot["assistant"] = {
-        "model": settings.openclaw_assistant_model,
+        "model": (
+            settings.openai_api_model
+            if settings.ai_backend_mode == "openai_api"
+            else settings.openclaw_assistant_model
+        ),
+        "backend": settings.ai_backend_mode,
         "thinking": settings.openclaw_assistant_thinking,
         "agentId": settings.openclaw_assistant_agent_id,
         "history": history,
@@ -142,7 +148,11 @@ def begin_generation_artifact(
         "generationArtifact": {
             "id": artifact_id,
             "inputSnapshotSha256": snapshot_hash,
-            "model": settings.openclaw_assistant_model,
+            "model": (
+                settings.openai_api_model
+                if settings.ai_backend_mode == "openai_api"
+                else settings.openclaw_assistant_model
+            ),
         },
     }
     artifact = DocumentGenerationArtifactRecord(
@@ -269,7 +279,11 @@ async def chat_with_assistant(
             agent_id=settings.openclaw_assistant_agent_id,
             thinking=settings.openclaw_assistant_thinking,
             timeout_seconds=settings.openclaw_assistant_timeout_seconds,
-            model=settings.openclaw_assistant_model,
+            model=(
+                settings.openai_api_model
+                if settings.ai_backend_mode == "openai_api"
+                else settings.openclaw_assistant_model
+            ),
             history=history,
             source_documents=list(inputs.source_documents),
             candidate_confirmations=list(inputs.confirmations),
@@ -277,8 +291,15 @@ async def chat_with_assistant(
             max_prompt_chars=settings.openclaw_assistant_max_prompt_chars,
             max_attempts=settings.openclaw_assistant_max_attempts,
             retry_backoff_seconds=settings.openclaw_assistant_retry_backoff_seconds,
+            backend=create_configured_ai_backend(
+                settings,
+                openclaw_include_cli_timeout=True,
+                openclaw_model_after_timeout=True,
+            ),
         )
-        message, session_id, metrics = unpack_assistant_run(run)
+        message, session_id, metrics, backend_name = unpack_assistant_run(
+            run, fallback_backend=settings.ai_backend_mode
+        )
     except OpenClawAssistantTimeoutError as exc:
         fail_generation_artifact(db, generation_artifact)
         raise HTTPException(
@@ -317,7 +338,14 @@ async def chat_with_assistant(
                 db,
                 generation_artifact,
                 content=visible_message,
-                model=str(metrics.get("model") or settings.openclaw_assistant_model),
+                model=str(
+                    metrics.get("model")
+                    or (
+                        settings.openai_api_model
+                        if settings.ai_backend_mode == "openai_api"
+                        else settings.openclaw_assistant_model
+                    )
+                ),
             )
     except HTTPException:
         if generation_artifact is not None and generation_artifact.status != "failed":
@@ -333,6 +361,7 @@ async def chat_with_assistant(
             "contextKind": request.context_kind,
             "contextId": request.context_id,
             "providerName": settings.ai_provider_name,
+            "backend": backend_name,
             "metrics": metrics,
             **(
                 {"generationArtifactId": generation_artifact.id}
@@ -527,7 +556,11 @@ async def generate_assistant_stream(
             agent_id=settings.openclaw_assistant_agent_id,
             thinking=settings.openclaw_assistant_thinking,
             timeout_seconds=settings.openclaw_assistant_timeout_seconds,
-            model=settings.openclaw_assistant_model,
+            model=(
+                settings.openai_api_model
+                if settings.ai_backend_mode == "openai_api"
+                else settings.openclaw_assistant_model
+            ),
             history=history,
             source_documents=source_documents,
             candidate_confirmations=candidate_confirmations,
@@ -535,8 +568,15 @@ async def generate_assistant_stream(
             max_prompt_chars=settings.openclaw_assistant_max_prompt_chars,
             max_attempts=settings.openclaw_assistant_max_attempts,
             retry_backoff_seconds=settings.openclaw_assistant_retry_backoff_seconds,
+            backend=create_configured_ai_backend(
+                settings,
+                openclaw_include_cli_timeout=True,
+                openclaw_model_after_timeout=True,
+            ),
         )
-        message, session_id, metrics = unpack_assistant_run(run)
+        message, session_id, metrics, backend_name = unpack_assistant_run(
+            run, fallback_backend=settings.ai_backend_mode
+        )
         visible_message, actions = extract_assistant_action_previews(
             message,
             request_id=request.request_id,
@@ -552,6 +592,7 @@ async def generate_assistant_stream(
             "contextKind": request.context_kind,
             "contextId": request.context_id,
             "providerName": settings.ai_provider_name,
+            "backend": backend_name,
             "metrics": metrics,
             "actions": [action.model_dump(by_alias=True, mode="json") for action in actions],
         }
@@ -901,10 +942,13 @@ def load_compact_conversation_history(
 
 def unpack_assistant_run(
     run: OpenClawAssistantRun | tuple[str, str],
-) -> tuple[str, str, dict[str, object]]:
+    *,
+    fallback_backend: str = "openclaw_codex",
+) -> tuple[str, str, dict[str, object], str]:
     message, session_key = run
     metrics = run.metrics.as_dict() if isinstance(run, OpenClawAssistantRun) else {}
-    return message, session_key, metrics
+    backend = run.backend if isinstance(run, OpenClawAssistantRun) else fallback_backend
+    return message, session_key, metrics, backend
 
 
 def load_profile(db: Session) -> ProfilePayload:

@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,6 +12,10 @@ class Settings(BaseSettings):
     app_env: str = "local"
     database_url: str = "postgresql+psycopg://tasko:tasko@localhost:5432/tasko"
     redis_url: str = "redis://localhost:6379/0"
+    ai_backend_mode: Literal["openclaw_codex", "openai_api"] = "openclaw_codex"
+    openai_api_key: str = ""
+    openai_api_base_url: str = "https://api.openai.com/v1"
+    openai_api_model: str = "gpt-5.6-terra"
     openclaw_resume_import_enabled: bool = True
     openclaw_command: str = "openclaw"
     openclaw_agent_id: str = "tasko-assistant"

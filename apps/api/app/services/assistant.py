@@ -5,7 +5,6 @@ import hashlib
 import json
 import logging
 import re
-import shutil
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -26,6 +25,13 @@ from app.models.assistant import (
     UpdateProfileFieldProposal,
 )
 from app.models.profile import ProfilePayload
+from app.services.ai_backend import (
+    AIBackend,
+    AIBackendError,
+    AIRequest,
+    AIResult,
+    OpenClawCodexBackend,
+)
 from app.services.cover_letter_blocks import UnsupportedCoverLetterStructureError
 from app.services.document_analysis import (
     DocumentAnalysisResult,
@@ -116,15 +122,20 @@ class AssistantRunMetrics:
 
 
 @dataclass(frozen=True)
-class OpenClawAssistantRun:
+class AIAssistantRun:
     message: str
     session_key: str
     metrics: AssistantRunMetrics
+    backend: str = "openclaw_codex"
 
     def __iter__(self):
         # Keep the existing two-value unpacking API compatible.
         yield self.message
         yield self.session_key
+
+
+# Backward-compatible name for callers that still import the OpenClaw-specific result.
+OpenClawAssistantRun = AIAssistantRun
 
 
 ACTION_BLOCK_PATTERN = re.compile(
@@ -170,7 +181,7 @@ SECURITY_BOUNDARY = (
 )
 
 
-async def run_openclaw_assistant(
+async def run_ai_assistant(
     *,
     thread_id: str,
     message: str,
@@ -190,8 +201,14 @@ async def run_openclaw_assistant(
     max_prompt_chars: int = 48_000,
     max_attempts: int = 1,
     retry_backoff_seconds: float = 0,
-) -> OpenClawAssistantRun:
-    executable = shutil.which(command) or command
+    backend: AIBackend | None = None,
+) -> AIAssistantRun:
+    selected_backend = backend or OpenClawCodexBackend(
+        command=command,
+        async_process_factory=asyncio.create_subprocess_exec,
+        include_cli_timeout=True,
+        model_after_timeout=True,
+    )
     prompt = await asyncio.to_thread(
         build_openclaw_assistant_prompt,
         message=message,
@@ -213,8 +230,8 @@ async def run_openclaw_assistant(
         session_token = hashlib.sha256(session_seed.encode("utf-8")).hexdigest()[:24]
         session_key = f"agent:{agent_id}:tasko-assistant-{session_token}"
         try:
-            stdout = await run_openclaw_attempt(
-                executable=executable,
+            backend_result = await run_openclaw_attempt(
+                backend=selected_backend,
                 command=command,
                 agent_id=agent_id,
                 session_key=session_key,
@@ -223,7 +240,9 @@ async def run_openclaw_assistant(
                 timeout_seconds=timeout_seconds,
                 model=model,
             )
-            response = extract_openclaw_assistant_text(stdout)
+            response = backend_result.text or extract_openclaw_assistant_text(
+                backend_result.raw_response
+            )
             if not response:
                 raise OpenClawAssistantError(
                     "The assistant returned an empty response. Please try again.",
@@ -231,8 +250,8 @@ async def run_openclaw_assistant(
                     retryable=True,
                 )
             metrics = extract_assistant_run_metrics(
-                stdout,
-                fallback_model=model,
+                backend_result.raw_response,
+                fallback_model=backend_result.model or model,
                 prompt=prompt,
                 response=response,
                 latency_ms=round((time.perf_counter() - started_at) * 1000),
@@ -242,12 +261,14 @@ async def run_openclaw_assistant(
                 "assistant.openclaw.completed",
                 thread_id=thread_id,
                 status="completed",
+                backend=backend_result.backend,
                 metrics=metrics,
             )
-            return OpenClawAssistantRun(
+            return AIAssistantRun(
                 message=response,
-                session_key=session_key,
+                session_key=backend_result.session_id or session_key,
                 metrics=metrics,
+                backend=backend_result.backend,
             )
         except asyncio.CancelledError:
             raise
@@ -262,6 +283,7 @@ async def run_openclaw_assistant(
                 max_attempts=attempts,
                 latency_ms=round((time.perf_counter() - started_at) * 1000),
                 model=model,
+                backend=selected_backend.name,
                 prompt_chars=len(prompt),
             )
             if not exc.retryable or attempt >= attempts:
@@ -271,9 +293,14 @@ async def run_openclaw_assistant(
     raise last_error or OpenClawAssistantError("Assistant generation failed")
 
 
+async def run_openclaw_assistant(**kwargs: Any) -> AIAssistantRun:
+    """Backward-compatible entry point routed through the configured AI backend."""
+    return await run_ai_assistant(**kwargs)
+
+
 async def run_openclaw_attempt(
     *,
-    executable: str,
+    backend: AIBackend,
     command: str,
     agent_id: str,
     session_key: str,
@@ -281,61 +308,57 @@ async def run_openclaw_attempt(
     thinking: str,
     timeout_seconds: int,
     model: str,
-) -> str:
-    arguments = [
-        executable,
-        "agent",
-        "--local",
-        "--agent",
-        agent_id,
-        "--session-key",
-        session_key,
-        "--message",
-        prompt,
-        "--thinking",
-        thinking,
-        "--timeout",
-        str(timeout_seconds),
-    ]
-    if model:
-        arguments.extend(["--model", model])
-    arguments.append("--json")
+) -> AIResult:
     try:
-        process = await asyncio.create_subprocess_exec(
-            *arguments,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        return await backend.agenerate(
+            AIRequest(
+                prompt=prompt,
+                model=model,
+                agent_id=agent_id,
+                thinking=thinking,
+                timeout_seconds=timeout_seconds,
+                session_id=session_key,
+            )
         )
+    except AIBackendError as exc:
+        if exc.code == "timeout":
+            raise OpenClawAssistantTimeoutError(
+                "The assistant took too long to respond. Try a shorter request."
+            ) from exc
+        if exc.code in {"runtime_missing", "runtime_unavailable"}:
+            raise OpenClawAssistantError(
+                "Assistant runtime is unavailable. Check the OpenClaw installation.",
+                code="runtime_missing",
+            ) from exc
+        if exc.code == "authentication":
+            raise OpenClawAssistantError(
+                "Assistant authentication is unavailable. Check the model provider credentials.",
+                code="authentication",
+            ) from exc
+        if exc.code == "rate_limited":
+            raise OpenClawAssistantError(
+                "The assistant is temporarily rate-limited. Please try again shortly.",
+                code="rate_limited",
+                retryable=True,
+            ) from exc
+        if exc.code == "provider_unreachable":
+            raise OpenClawAssistantError(
+                "The assistant could not reach the model provider. Check the connection and retry.",
+                code="provider_unreachable",
+                retryable=True,
+            ) from exc
+        if exc.code == "invalid_request":
+            raise OpenClawAssistantError(
+                "The assistant request was rejected by the model provider.",
+                code="invalid_request",
+            ) from exc
+        raw_error = summarize_openclaw_error(str(exc))
+        raise classify_openclaw_error(raw_error) from exc
     except FileNotFoundError as exc:
         raise OpenClawAssistantError(
             "Assistant runtime is unavailable. Check the OpenClaw installation.",
             code="runtime_missing",
         ) from exc
-
-    try:
-        stdout_bytes, stderr_bytes = await asyncio.wait_for(
-            process.communicate(),
-            timeout=timeout_seconds + 5,
-        )
-    except asyncio.CancelledError:
-        process.kill()
-        await process.wait()
-        raise
-    except TimeoutError as exc:
-        process.kill()
-        await process.wait()
-        raise OpenClawAssistantTimeoutError(
-            "The assistant took too long to respond. Try a shorter request."
-        ) from exc
-
-    stdout = stdout_bytes.decode("utf-8", errors="replace")
-    stderr = stderr_bytes.decode("utf-8", errors="replace")
-    if process.returncode != 0:
-        raw_error = summarize_openclaw_error(
-            (stderr or stdout or "OpenClaw command failed").strip()
-        )
-        raise classify_openclaw_error(raw_error)
-    return stdout
 
 
 def classify_openclaw_error(raw_error: str) -> OpenClawAssistantError:

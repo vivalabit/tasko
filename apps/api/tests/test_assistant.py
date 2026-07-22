@@ -101,6 +101,44 @@ def test_assistant_config_exposes_provider_and_consent_version() -> None:
     }
 
 
+def test_assistant_routes_openai_api_mode_through_neutral_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_backend = ""
+
+    async def fake_run_ai_assistant(**kwargs: object) -> tuple[str, str]:
+        nonlocal captured_backend
+        captured_backend = kwargs["backend"].name
+        return "Direct API response", "resp-direct-api"
+
+    monkeypatch.setattr(
+        assistant_api,
+        "run_openclaw_assistant",
+        fake_run_ai_assistant,
+    )
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        ai_backend_mode="openai_api",
+        openai_api_key="test-key",
+        openclaw_assistant_enabled=True,
+    )
+    try:
+        response = TestClient(app).post(
+            "/assistant/chat",
+            json={
+                "threadId": "thread-openai-api",
+                "message": "Review my profile",
+                "contextKind": "profile",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["message"] == "Direct API response"
+    assert response.json()["metadata"]["backend"] == "openai_api"
+    assert captured_backend == "openai_api"
+
+
 def test_build_openclaw_assistant_prompt_only_includes_dynamic_context() -> None:
     prompt = build_openclaw_assistant_prompt(
         message="Tailor my resume",

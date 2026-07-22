@@ -51,7 +51,7 @@ def latest_match_record(db: Session, *, job_id: str, profile_hash: str) -> JobMa
             JobMatchRecord.job_id == job_id,
             JobMatchRecord.profile_hash == profile_hash,
             JobMatchRecord.matcher_version == MATCHER_VERSION,
-            JobMatchRecord.source == "openclaw",
+            JobMatchRecord.source.in_(("openclaw", "openai_api")),
         )
         .order_by(JobMatchRecord.created_at.desc(), JobMatchRecord.id.desc())
         .first()

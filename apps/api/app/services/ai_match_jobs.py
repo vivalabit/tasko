@@ -12,6 +12,7 @@ from app.core.identity import current_owner_id
 from app.core.settings import Settings
 from app.models.jobs import AiMatchJobFailure, AiMatchJobStatus, StoredJobPayload
 from app.models.profile import ProfilePayload
+from app.services.ai_backend import create_configured_ai_backend
 from app.services.ai_match import OpenClawAiMatchError, calculate_ai_matches
 from app.services.job_match_store import calibrate_job_with_feedback, hydrate_job_data, persist_job_and_match
 
@@ -132,10 +133,15 @@ class AiMatchJobManager:
                 timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
                 openclaw_enabled=settings.openclaw_ai_match_enabled,
                 openclaw_max_jobs=max(1, settings.openclaw_ai_match_max_jobs),
-                model=settings.openclaw_ai_match_model,
+                model=(
+                    settings.openai_api_model
+                    if settings.ai_backend_mode == "openai_api"
+                    else settings.openclaw_ai_match_model
+                ),
                 max_attempts=settings.openclaw_ai_match_max_attempts,
                 force=force,
                 candidate_snapshot=candidate_snapshot,
+                backend=create_configured_ai_backend(settings),
             )
         except OpenClawAiMatchError as exc:
             if len(batch) > 1:

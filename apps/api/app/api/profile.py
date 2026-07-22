@@ -21,11 +21,12 @@ from app.services.resume_import import (
     parse_experience_with_openclaw,
     parse_skills_with_openclaw,
 )
+from app.services.ai_backend import create_configured_ai_backend
+from app.services.ai_privacy import require_current_ai_consent
 from app.services.profile_versions import (
     is_suspicious_profile_replacement,
     record_profile_version,
 )
-from app.services.ai_privacy import require_current_ai_consent
 
 router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
@@ -157,6 +158,8 @@ def import_experience_from_resume(
             agent_id=settings.openclaw_agent_id,
             thinking=settings.openclaw_resume_import_thinking,
             timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
+            model=settings.openai_api_model if settings.ai_backend_mode == "openai_api" else "",
+            backend=create_configured_ai_backend(settings),
         )
     except OpenClawResumeImportError as exc:
         raise HTTPException(
@@ -202,6 +205,8 @@ def import_education_from_resume(
             agent_id=settings.openclaw_agent_id,
             thinking=settings.openclaw_resume_import_thinking,
             timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
+            model=settings.openai_api_model if settings.ai_backend_mode == "openai_api" else "",
+            backend=create_configured_ai_backend(settings),
         )
     except OpenClawResumeImportError as exc:
         raise HTTPException(
@@ -247,6 +252,8 @@ def import_skills_from_resume(
             agent_id=settings.openclaw_agent_id,
             thinking=settings.openclaw_resume_import_thinking,
             timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
+            model=settings.openai_api_model if settings.ai_backend_mode == "openai_api" else "",
+            backend=create_configured_ai_backend(settings),
         )
     except OpenClawResumeImportError as exc:
         raise HTTPException(

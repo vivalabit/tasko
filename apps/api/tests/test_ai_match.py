@@ -27,6 +27,7 @@ from app.services.ai_match import (
     parse_number,
 )
 from app.services.ai_privacy import require_current_ai_consent
+from app.services.ai_backend import OpenAIAPIBackend
 from app.services.candidate_snapshot import (
     CandidateSnapshotError,
     build_openclaw_candidate_snapshot_prompt,
@@ -554,6 +555,38 @@ def test_incomplete_ai_match_is_retried_and_never_synthetically_completed(
     ]
 
 
+def test_ai_match_records_provider_neutral_backend_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ai_match_service,
+        "score_with_openclaw",
+        lambda **_: [valid_match_result("job-openai-api")],
+    )
+
+    matched = calculate_ai_matches(
+        ProfilePayload(skills="Python"),
+        [
+            {
+                "id": "job-openai-api",
+                "title": "Python Engineer",
+                "company": "Acme",
+                "requirements": ["Python"],
+                "skills": ["Python"],
+            }
+        ],
+        command="openclaw",
+        agent_id="main",
+        thinking="low",
+        timeout_seconds=1,
+        openclaw_enabled=True,
+        openclaw_max_jobs=1,
+        backend=OpenAIAPIBackend(api_key="test-key"),
+    )
+
+    assert matched[0]["aiMatch"]["source"] == "openai_api"
+
+
 def test_ai_match_retry_includes_validation_feedback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -758,6 +791,36 @@ def test_candidate_snapshot_records_local_fallback_and_truncated_openclaw_error(
     assert snapshot.openclaw_error == internal_error[:240]
     assert record.source == "local"
     assert record.openclaw_error == internal_error[:240]
+
+
+def test_candidate_snapshot_records_selected_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        lambda *, fallback_snapshot, **_: {
+            **fallback_snapshot,
+            "roles": ["Python Engineer"],
+        },
+    )
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(bind=engine)
+
+    with Session(engine) as db:
+        snapshot = get_candidate_match_snapshot(
+            db,
+            profile=ProfilePayload(current_role="Python Engineer"),
+            settings=Settings(
+                ai_backend_mode="openai_api",
+                openai_api_key="test-key",
+                openclaw_ai_match_enabled=True,
+            ),
+            allow_openclaw=True,
+            strict_openclaw=True,
+        )
+
+    assert snapshot.source == "openai_api"
+    assert snapshot.data["roles"] == ["Python Engineer"]
 
 
 def test_openclaw_ai_match_reads_top_level_payloads_text() -> None:

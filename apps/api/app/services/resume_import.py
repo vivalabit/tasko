@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import re
-import shutil
 import subprocess
 import zipfile
 from dataclasses import dataclass
@@ -12,6 +11,7 @@ from uuid import uuid4
 from xml.etree import ElementTree
 
 from app.models.profile import ImportedEducationEntry, ImportedExperienceEntry
+from app.services.ai_backend import AIBackend, AIBackendError, AIRequest, OpenClawCodexBackend
 from app.services.resume_headings import (
     ALL_RESUME_HEADINGS,
     CERTIFICATION_HEADINGS as RESUME_CERTIFICATION_HEADINGS,
@@ -328,43 +328,24 @@ def parse_experience_with_openclaw(
     agent_id: str,
     thinking: str,
     timeout_seconds: int,
+    model: str = "",
+    backend: AIBackend | None = None,
 ) -> list[ImportedExperienceEntry]:
     resume_text = text.strip()
     if not resume_text:
         return []
 
-    executable = shutil.which(command) or command
     prompt = build_openclaw_resume_prompt(resume_text[:50000])
-    try:
-        result = subprocess.run(
-            [
-                executable,
-                "agent",
-                "--local",
-                "--agent",
-                agent_id,
-                "--session-key",
-                f"agent:{agent_id}:resume-import-{uuid4().hex}",
-                "--message",
-                prompt,
-                "--thinking",
-                thinking,
-                "--json",
-            ],
-            capture_output=True,
-            check=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except FileNotFoundError as exc:
-        raise OpenClawResumeImportError(f"OpenClaw command was not found: {command}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise OpenClawResumeImportError("OpenClaw resume import timed out") from exc
-    except subprocess.CalledProcessError as exc:
-        error_output = (exc.stderr or exc.stdout or "OpenClaw command failed").strip()
-        raise OpenClawResumeImportError(summarize_openclaw_error(error_output)) from exc
-
-    parsed = extract_openclaw_experience_payload(result.stdout)
+    parsed = run_resume_ai_backend(
+        prompt=prompt,
+        command=command,
+        agent_id=agent_id,
+        thinking=thinking,
+        timeout_seconds=timeout_seconds,
+        model=model,
+        backend=backend,
+        payload_extractor=extract_openclaw_experience_payload,
+    )
     entries = parsed.get("experience", [])
     if not isinstance(entries, list):
         return []
@@ -382,43 +363,24 @@ def parse_education_with_openclaw(
     agent_id: str,
     thinking: str,
     timeout_seconds: int,
+    model: str = "",
+    backend: AIBackend | None = None,
 ) -> list[ImportedEducationEntry]:
     resume_text = text.strip()
     if not resume_text:
         return []
 
-    executable = shutil.which(command) or command
     prompt = build_openclaw_education_prompt(resume_text[:50000])
-    try:
-        result = subprocess.run(
-            [
-                executable,
-                "agent",
-                "--local",
-                "--agent",
-                agent_id,
-                "--session-key",
-                f"agent:{agent_id}:resume-import-{uuid4().hex}",
-                "--message",
-                prompt,
-                "--thinking",
-                thinking,
-                "--json",
-            ],
-            capture_output=True,
-            check=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except FileNotFoundError as exc:
-        raise OpenClawResumeImportError(f"OpenClaw command was not found: {command}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise OpenClawResumeImportError("OpenClaw resume import timed out") from exc
-    except subprocess.CalledProcessError as exc:
-        error_output = (exc.stderr or exc.stdout or "OpenClaw command failed").strip()
-        raise OpenClawResumeImportError(summarize_openclaw_error(error_output)) from exc
-
-    parsed = extract_openclaw_education_payload(result.stdout)
+    parsed = run_resume_ai_backend(
+        prompt=prompt,
+        command=command,
+        agent_id=agent_id,
+        thinking=thinking,
+        timeout_seconds=timeout_seconds,
+        model=model,
+        backend=backend,
+        payload_extractor=extract_openclaw_education_payload,
+    )
     entries = parsed.get("education", [])
     if not isinstance(entries, list):
         return []
@@ -436,48 +398,68 @@ def parse_skills_with_openclaw(
     agent_id: str,
     thinking: str,
     timeout_seconds: int,
+    model: str = "",
+    backend: AIBackend | None = None,
 ) -> list[str]:
     resume_text = text.strip()
     if not resume_text:
         return []
 
-    executable = shutil.which(command) or command
     prompt = build_openclaw_skills_prompt(resume_text[:50000])
-    try:
-        result = subprocess.run(
-            [
-                executable,
-                "agent",
-                "--local",
-                "--agent",
-                agent_id,
-                "--session-key",
-                f"agent:{agent_id}:resume-import-{uuid4().hex}",
-                "--message",
-                prompt,
-                "--thinking",
-                thinking,
-                "--json",
-            ],
-            capture_output=True,
-            check=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-    except FileNotFoundError as exc:
-        raise OpenClawResumeImportError(f"OpenClaw command was not found: {command}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise OpenClawResumeImportError("OpenClaw resume import timed out") from exc
-    except subprocess.CalledProcessError as exc:
-        error_output = (exc.stderr or exc.stdout or "OpenClaw command failed").strip()
-        raise OpenClawResumeImportError(summarize_openclaw_error(error_output)) from exc
-
-    parsed = extract_openclaw_skills_payload(result.stdout)
+    parsed = run_resume_ai_backend(
+        prompt=prompt,
+        command=command,
+        agent_id=agent_id,
+        thinking=thinking,
+        timeout_seconds=timeout_seconds,
+        model=model,
+        backend=backend,
+        payload_extractor=extract_openclaw_skills_payload,
+    )
     skills = parsed.get("skills", [])
     if not isinstance(skills, list):
         return []
 
     return normalize_skill_list([skill for skill in skills if isinstance(skill, str)])
+
+
+def run_resume_ai_backend(
+    *,
+    prompt: str,
+    command: str,
+    agent_id: str,
+    thinking: str,
+    timeout_seconds: int,
+    model: str,
+    backend: AIBackend | None,
+    payload_extractor,
+) -> dict[str, object]:
+    selected_backend = backend or OpenClawCodexBackend(
+        command=command,
+        sync_runner=subprocess.run,
+    )
+    try:
+        result = selected_backend.generate(
+            AIRequest(
+                prompt=prompt,
+                model=model,
+                agent_id=agent_id,
+                thinking=thinking,
+                timeout_seconds=timeout_seconds,
+                session_id=f"agent:{agent_id}:resume-import-{uuid4().hex}",
+                structured=True,
+            )
+        )
+    except AIBackendError as exc:
+        if exc.code == "runtime_missing":
+            raise OpenClawResumeImportError(f"OpenClaw command was not found: {command}") from exc
+        if exc.code == "timeout":
+            raise OpenClawResumeImportError("OpenClaw resume import timed out") from exc
+        raise OpenClawResumeImportError(summarize_openclaw_error(str(exc))) from exc
+
+    if isinstance(result.structured_data, dict):
+        return result.structured_data
+    return payload_extractor(result.raw_response)
 
 
 def summarize_openclaw_error(error_output: str) -> str:

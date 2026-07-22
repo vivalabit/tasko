@@ -1,9 +1,11 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from app.api.settings import format_env_value, mask_secret, upsert_env_value
-from app.core.settings import get_settings
+from app.core.settings import Settings, get_settings
 from app.main import app
 
 
@@ -49,3 +51,19 @@ def test_get_brightdata_api_key_returns_full_key(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"brightdata_api_key": "full-secret-key"}
+
+
+def test_ai_backend_mode_accepts_only_supported_transports() -> None:
+    settings = Settings(
+        ai_backend_mode="openai_api",
+        openai_api_key="test-key",
+        openai_api_base_url="https://api.openai.test/v1",
+        openai_api_model="gpt-test",
+    )
+
+    assert settings.ai_backend_mode == "openai_api"
+    assert settings.openai_api_key == "test-key"
+    assert Settings().ai_backend_mode == "openclaw_codex"
+
+    with pytest.raises(ValidationError):
+        Settings(ai_backend_mode="unsupported")

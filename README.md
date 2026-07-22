@@ -92,6 +92,16 @@ The reliability budget can be adjusted with these API environment variables:
 - `OPENCLAW_ASSISTANT_MAX_HISTORY_MESSAGES`
 - `OPENCLAW_ASSISTANT_MAX_HISTORY_CHARS`
 
+AI transport is selected with `AI_BACKEND_MODE`:
+
+- `openclaw_codex` (default) preserves the existing isolated OpenClaw CLI flow.
+- `openai_api` sends the same prompts through the OpenAI Responses API. Set
+  `OPENAI_API_KEY`; optionally override `OPENAI_API_BASE_URL` and
+  `OPENAI_API_MODEL`.
+
+Both modes return the same internal result contract: text, structured data,
+model, backend, token usage, latency, and session/response ID.
+
 Assistant history is stored in PostgreSQL in normalized `conversations` and
 `messages` tables. `GET /assistant/conversations` returns active conversations;
 pass `archived=true` for the archive. Conversation context, title, timestamps,

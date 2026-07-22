@@ -77,7 +77,7 @@ type AiMatchMetadata = {
   revision?: string;
   fingerprint?: string;
   cacheKey: string;
-  source: "local" | "openclaw";
+  source: "local" | "openclaw" | "openai_api";
   score: number;
   confidence: "low" | "medium" | "high";
   breakdown: Record<string, number>;
@@ -2119,6 +2119,7 @@ function getAiMatchBreakdownItems(job: Job) {
 
 function getAiMatchSourceLabel(job: Job) {
   if (job.aiMatch?.source === "openclaw") return "Openclaw";
+  if (job.aiMatch?.source === "openai_api") return "OpenAI API";
   if (job.aiMatch?.source === "local") return "Legacy local score";
   if (isImportedJob(job)) return "Not scored";
   if (isManualJob(job)) return "Not scored";
@@ -2188,12 +2189,12 @@ function isUserManagedJob(job: Job) {
   return isImportedJob(job) || isManualJob(job);
 }
 
-function hasOpenclawMatch(job: Job) {
-  return job.aiMatch?.source === "openclaw";
+function hasAiBackendMatch(job: Job) {
+  return job.aiMatch?.source === "openclaw" || job.aiMatch?.source === "openai_api";
 }
 
 function hasDisplayableMatch(job: Job) {
-  return (!isImportedJob(job) && !isManualJob(job)) || hasOpenclawMatch(job);
+  return (!isImportedJob(job) && !isManualJob(job)) || hasAiBackendMatch(job);
 }
 
 function formatMatchValue(job: Job) {
