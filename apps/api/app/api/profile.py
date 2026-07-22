@@ -7,6 +7,8 @@ from app.core.database import get_db
 from app.core.identity import bind_request_identity
 from app.core.settings import Settings, get_settings
 from app.models.profile import (
+    ImportedEducationEntry,
+    ImportedExperienceEntry,
     ProfilePayload,
     ProfileRecord,
     ResumeEducationImportResponse,
@@ -15,13 +17,10 @@ from app.models.profile import (
     ResumeSkillsImportResponse,
 )
 from app.services.resume_import import (
-    OpenClawResumeImportError,
+    ResumeImportError,
+    create_resume_import_ai_facade,
     extract_resume_text,
-    parse_education_with_openclaw,
-    parse_experience_with_openclaw,
-    parse_skills_with_openclaw,
 )
-from app.services.ai_backend import create_configured_ai_backend
 from app.services.ai_privacy import require_current_ai_consent
 from app.services.profile_versions import (
     is_suspicious_profile_replacement,
@@ -48,6 +47,27 @@ legacy_default_profile = {
     "portfolio": "alexjohnson.design",
     "personal_site": "alexjohnson.com",
 }
+
+
+def parse_resume_experience_with_selected_backend(
+    text: str,
+    settings: Settings,
+) -> list[ImportedExperienceEntry]:
+    return create_resume_import_ai_facade(settings).parse_experience(text)
+
+
+def parse_resume_education_with_selected_backend(
+    text: str,
+    settings: Settings,
+) -> list[ImportedEducationEntry]:
+    return create_resume_import_ai_facade(settings).parse_education(text)
+
+
+def parse_resume_skills_with_selected_backend(
+    text: str,
+    settings: Settings,
+) -> list[str]:
+    return create_resume_import_ai_facade(settings).parse_skills(text)
 
 
 def normalize_profile_record(profile: ProfileRecord, db: Session) -> ProfilePayload:
@@ -152,20 +172,8 @@ def import_experience_from_resume(
         )
 
     try:
-        experience = parse_experience_with_openclaw(
-            text=text,
-            command=settings.openclaw_command,
-            agent_id=settings.openclaw_agent_id,
-            thinking=settings.ai_reasoning_for(settings.openclaw_resume_import_thinking),
-            timeout_seconds=settings.ai_timeout_for(
-                settings.openclaw_resume_import_timeout_seconds
-            ),
-            model=settings.openai_api_model if settings.ai_backend_mode == "openai_api" else "",
-            backend=create_configured_ai_backend(settings),
-            max_attempts=settings.ai_max_attempts_for(1),
-            retry_backoff_seconds=settings.ai_retry_backoff_for(0),
-        )
-    except OpenClawResumeImportError as exc:
+        experience = parse_resume_experience_with_selected_backend(text, settings)
+    except ResumeImportError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="AI resume analysis is temporarily unavailable. Please try again.",
@@ -203,20 +211,8 @@ def import_education_from_resume(
         )
 
     try:
-        education = parse_education_with_openclaw(
-            text=text,
-            command=settings.openclaw_command,
-            agent_id=settings.openclaw_agent_id,
-            thinking=settings.ai_reasoning_for(settings.openclaw_resume_import_thinking),
-            timeout_seconds=settings.ai_timeout_for(
-                settings.openclaw_resume_import_timeout_seconds
-            ),
-            model=settings.openai_api_model if settings.ai_backend_mode == "openai_api" else "",
-            backend=create_configured_ai_backend(settings),
-            max_attempts=settings.ai_max_attempts_for(1),
-            retry_backoff_seconds=settings.ai_retry_backoff_for(0),
-        )
-    except OpenClawResumeImportError as exc:
+        education = parse_resume_education_with_selected_backend(text, settings)
+    except ResumeImportError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="AI resume analysis is temporarily unavailable. Please try again.",
@@ -254,20 +250,8 @@ def import_skills_from_resume(
         )
 
     try:
-        skills = parse_skills_with_openclaw(
-            text=text,
-            command=settings.openclaw_command,
-            agent_id=settings.openclaw_agent_id,
-            thinking=settings.ai_reasoning_for(settings.openclaw_resume_import_thinking),
-            timeout_seconds=settings.ai_timeout_for(
-                settings.openclaw_resume_import_timeout_seconds
-            ),
-            model=settings.openai_api_model if settings.ai_backend_mode == "openai_api" else "",
-            backend=create_configured_ai_backend(settings),
-            max_attempts=settings.ai_max_attempts_for(1),
-            retry_backoff_seconds=settings.ai_retry_backoff_for(0),
-        )
-    except OpenClawResumeImportError as exc:
+        skills = parse_resume_skills_with_selected_backend(text, settings)
+    except ResumeImportError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="AI resume analysis is temporarily unavailable. Please try again.",

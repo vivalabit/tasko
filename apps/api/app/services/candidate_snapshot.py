@@ -44,6 +44,7 @@ class CandidateMatchSnapshot:
     profile_input_hash: str
     profile_hash: str
     source: str
+    model: str
     data: dict[str, Any]
     provider_error: str | None = None
 
@@ -83,44 +84,47 @@ def get_candidate_match_snapshot(
     settings: Settings | None = None,
     allow_openclaw: bool = False,
     strict_openclaw: bool = False,
+    allow_ai: bool | None = None,
+    strict_ai: bool | None = None,
 ) -> CandidateMatchSnapshot:
+    ai_enabled = allow_openclaw if allow_ai is None else allow_ai
+    ai_required = strict_openclaw if strict_ai is None else strict_ai
     profile_input_hash = build_profile_input_hash(profile)
     expected_source = backend_snapshot_source(settings.ai_backend_mode) if settings else "local"
+    expected_model = candidate_snapshot_model(settings) if settings else "local"
     existing_record = latest_snapshot_record(
         db,
         profile_input_hash=profile_input_hash,
         source=expected_source if settings else None,
+        model=expected_model if settings else None,
     )
-    if existing_record and (settings is None or existing_record.source == expected_source):
+    if existing_record:
         return record_to_snapshot(existing_record)
 
-    fallback_snapshot = empty_candidate_snapshot() if strict_openclaw else build_candidate_snapshot(profile)
-    if allow_openclaw and settings and settings.openclaw_ai_match_enabled:
+    fallback_snapshot = empty_candidate_snapshot() if ai_required else build_candidate_snapshot(profile)
+    if ai_enabled and settings and settings.openclaw_ai_match_enabled:
         try:
-            backend = create_configured_ai_backend(
-                settings,
-                sync_runner=subprocess.run,
-                openclaw_prompt_transport="file",
-            )
-            snapshot_data = build_snapshot_with_openclaw(
+            facade = create_candidate_snapshot_ai_facade(settings)
+            snapshot_data = facade.build(
                 profile=profile,
                 fallback_snapshot=fallback_snapshot,
-                settings=settings,
-                backend=backend,
             )
-            source = backend_snapshot_source(backend.name)
+            source = backend_snapshot_source(facade.backend.name)
+            model = facade.model
             provider_error = None
         except CandidateSnapshotError as exc:
-            if strict_openclaw:
+            if ai_required:
                 raise
             snapshot_data = fallback_snapshot
             source = "local"
+            model = "local"
             provider_error = str(exc)[:240]
-    elif strict_openclaw:
-        raise CandidateSnapshotError("OpenClaw candidate snapshot is required but disabled")
+    elif ai_required:
+        raise CandidateSnapshotError("AI candidate snapshot is required but disabled")
     else:
         snapshot_data = fallback_snapshot
         source = "local"
+        model = "local"
         provider_error = None
 
     snapshot_data = normalize_candidate_snapshot(snapshot_data, fallback_snapshot)
@@ -129,11 +133,12 @@ def get_candidate_match_snapshot(
         profile_input_hash=profile_input_hash,
         profile_hash=profile_hash,
         source=source,
+        model=model,
         data=snapshot_data,
         provider_error=provider_error,
     )
 
-    if allow_openclaw:
+    if ai_enabled:
         db.add(snapshot_to_record(snapshot))
 
     return snapshot
@@ -180,6 +185,7 @@ def latest_snapshot_record(
     *,
     profile_input_hash: str,
     source: str | None = None,
+    model: str | None = None,
 ) -> CandidateMatchSnapshotRecord | None:
     query = db.query(CandidateMatchSnapshotRecord).filter(
         CandidateMatchSnapshotRecord.profile_input_hash == profile_input_hash,
@@ -187,6 +193,8 @@ def latest_snapshot_record(
     )
     if source is not None:
         query = query.filter(CandidateMatchSnapshotRecord.source == source)
+    if model is not None:
+        query = query.filter(CandidateMatchSnapshotRecord.model == model)
     return (
         query
         .order_by(CandidateMatchSnapshotRecord.created_at.desc(), CandidateMatchSnapshotRecord.id.desc())
@@ -201,6 +209,7 @@ def snapshot_to_record(snapshot: CandidateMatchSnapshot) -> CandidateMatchSnapsh
         profile_hash=snapshot.profile_hash,
         matcher_version=MATCHER_VERSION,
         source=snapshot.source,
+        model=snapshot.model,
         data=snapshot.data,
         provider_error=snapshot.provider_error,
         created_at=datetime.now(UTC),
@@ -212,6 +221,7 @@ def record_to_snapshot(record: CandidateMatchSnapshotRecord) -> CandidateMatchSn
         profile_input_hash=record.profile_input_hash,
         profile_hash=record.profile_hash,
         source=record.source,
+        model=record.model,
         data=record.data,
         provider_error=record.provider_error,
     )
@@ -226,61 +236,103 @@ def build_profile_input_hash(profile: ProfilePayload) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def build_snapshot_with_openclaw(
+@dataclass(frozen=True)
+class CandidateSnapshotAIFacade:
+    backend: AIBackend
+    model: str
+    agent_id: str
+    thinking: str
+    timeout_seconds: int
+    max_attempts: int
+    retry_backoff_seconds: float
+
+    def build(
+        self,
+        *,
+        profile: ProfilePayload,
+        fallback_snapshot: dict[str, Any],
+    ) -> dict[str, Any]:
+        return build_snapshot_with_ai(
+            profile=profile,
+            fallback_snapshot=fallback_snapshot,
+            backend=self.backend,
+            model=self.model,
+            agent_id=self.agent_id,
+            thinking=self.thinking,
+            timeout_seconds=self.timeout_seconds,
+            max_attempts=self.max_attempts,
+            retry_backoff_seconds=self.retry_backoff_seconds,
+        )
+
+
+def candidate_snapshot_model(settings: Settings) -> str:
+    return (
+        settings.openai_api_model
+        if settings.ai_backend_mode == "openai_api"
+        else settings.openclaw_ai_match_model
+    )
+
+
+def create_candidate_snapshot_ai_facade(settings: Settings) -> CandidateSnapshotAIFacade:
+    return CandidateSnapshotAIFacade(
+        backend=create_configured_ai_backend(
+            settings,
+            sync_runner=subprocess.run,
+            openclaw_prompt_transport="file",
+        ),
+        model=candidate_snapshot_model(settings),
+        agent_id=settings.openclaw_agent_id,
+        thinking=settings.ai_reasoning_for(settings.openclaw_ai_match_thinking),
+        timeout_seconds=settings.ai_timeout_for(
+            settings.openclaw_ai_match_timeout_seconds
+        ),
+        max_attempts=settings.ai_max_attempts_for(1),
+        retry_backoff_seconds=settings.ai_retry_backoff_for(0),
+    )
+
+
+def build_snapshot_with_ai(
     *,
     profile: ProfilePayload,
     fallback_snapshot: dict[str, Any],
-    settings: Settings,
-    backend: AIBackend | None = None,
+    backend: AIBackend,
+    model: str,
+    agent_id: str,
+    thinking: str,
+    timeout_seconds: int,
+    max_attempts: int,
+    retry_backoff_seconds: float,
 ) -> dict[str, Any]:
     prompt = build_openclaw_candidate_snapshot_prompt(profile, fallback_snapshot)
-    selected_backend = backend or create_configured_ai_backend(
-        settings,
-        sync_runner=subprocess.run,
-        openclaw_prompt_transport="file",
-    )
     try:
         result = generate_with_retries(
-            selected_backend,
+            backend,
             AIRequest(
                 prompt=prompt,
-                model=(
-                    settings.openai_api_model
-                    if selected_backend.name == "openai_api"
-                    else ""
-                ),
-                agent_id=settings.openclaw_agent_id,
-                thinking=settings.ai_reasoning_for(settings.openclaw_ai_match_thinking),
-                timeout_seconds=settings.ai_timeout_for(
-                    settings.openclaw_ai_match_timeout_seconds
-                ),
+                model=model,
+                agent_id=agent_id,
+                thinking=thinking,
+                timeout_seconds=timeout_seconds,
                 structured=True,
             ),
-            max_attempts=(
-                settings.openai_api_max_attempts
-                if selected_backend.name == "openai_api"
-                else 1
-            ),
-            retry_backoff_seconds=(
-                settings.openai_api_retry_backoff_seconds
-                if selected_backend.name == "openai_api"
-                else 0
-            ),
+            max_attempts=max_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
         )
     except AIBackendError as exc:
         if exc.code == "runtime_missing":
             raise CandidateSnapshotError(
-                f"OpenClaw command was not found: {settings.openclaw_command}. Install OpenClaw or "
-                "set OPENCLAW_COMMAND to the executable path."
+                "The configured AI runtime is unavailable."
             ) from exc
         if exc.code == "timeout":
-            raise CandidateSnapshotError("OpenClaw candidate snapshot timed out") from exc
-        raise CandidateSnapshotError(summarize_openclaw_error(str(exc))) from exc
+            raise CandidateSnapshotError("AI candidate snapshot timed out") from exc
+        message = (
+            summarize_openclaw_error(str(exc))
+            if backend.name == "openclaw_codex"
+            else "AI candidate snapshot failed"
+        )
+        raise CandidateSnapshotError(message) from exc
     except FileNotFoundError as exc:
-        raise CandidateSnapshotError(
-            f"OpenClaw command was not found: {settings.openclaw_command}. Install OpenClaw or "
-            "set OPENCLAW_COMMAND to the executable path."
-        ) from exc
+        raise CandidateSnapshotError("The configured AI runtime is unavailable.") from exc
 
     snapshot = (
         result.structured_data
@@ -290,8 +342,29 @@ def build_snapshot_with_openclaw(
     if isinstance(snapshot, dict) and isinstance(snapshot.get("candidate"), dict):
         snapshot = snapshot["candidate"]
     if not snapshot:
-        raise CandidateSnapshotError("OpenClaw did not return a candidate snapshot")
+        raise CandidateSnapshotError("The AI backend did not return a candidate snapshot")
     return snapshot
+
+
+def build_snapshot_with_openclaw(
+    *,
+    profile: ProfilePayload,
+    fallback_snapshot: dict[str, Any],
+    settings: Settings,
+    backend: AIBackend | None = None,
+) -> dict[str, Any]:
+    facade = create_candidate_snapshot_ai_facade(settings)
+    if backend is not None:
+        facade = CandidateSnapshotAIFacade(
+            backend=backend,
+            model=facade.model,
+            agent_id=facade.agent_id,
+            thinking=facade.thinking,
+            timeout_seconds=facade.timeout_seconds,
+            max_attempts=facade.max_attempts,
+            retry_backoff_seconds=facade.retry_backoff_seconds,
+        )
+    return facade.build(profile=profile, fallback_snapshot=fallback_snapshot)
 
 
 def backend_snapshot_source(backend: str) -> str:

@@ -12,12 +12,14 @@ from xml.etree import ElementTree
 
 from pydantic import BaseModel, ConfigDict
 
+from app.core.settings import Settings
 from app.models.profile import ImportedEducationEntry, ImportedExperienceEntry
 from app.services.ai_backend import (
     AIBackend,
     AIBackendError,
     AIRequest,
     OpenClawCodexBackend,
+    create_configured_ai_backend,
     generate_with_retries,
 )
 from app.services.resume_headings import (
@@ -136,8 +138,82 @@ DATE_RANGE_RE = re.compile(
 )
 
 
-class OpenClawResumeImportError(RuntimeError):
+class ResumeImportError(RuntimeError):
     pass
+
+
+# Backward-compatible name for the locked OpenClaw import surface.
+OpenClawResumeImportError = ResumeImportError
+
+
+@dataclass(frozen=True)
+class ResumeImportAIFacade:
+    backend: AIBackend
+    command: str
+    agent_id: str
+    thinking: str
+    timeout_seconds: int
+    model: str
+    max_attempts: int
+    retry_backoff_seconds: float
+
+    def parse_experience(self, text: str) -> list[ImportedExperienceEntry]:
+        return parse_experience_with_ai(
+            text=text,
+            command=self.command,
+            agent_id=self.agent_id,
+            thinking=self.thinking,
+            timeout_seconds=self.timeout_seconds,
+            model=self.model,
+            backend=self.backend,
+            max_attempts=self.max_attempts,
+            retry_backoff_seconds=self.retry_backoff_seconds,
+        )
+
+    def parse_education(self, text: str) -> list[ImportedEducationEntry]:
+        return parse_education_with_ai(
+            text=text,
+            command=self.command,
+            agent_id=self.agent_id,
+            thinking=self.thinking,
+            timeout_seconds=self.timeout_seconds,
+            model=self.model,
+            backend=self.backend,
+            max_attempts=self.max_attempts,
+            retry_backoff_seconds=self.retry_backoff_seconds,
+        )
+
+    def parse_skills(self, text: str) -> list[str]:
+        return parse_skills_with_ai(
+            text=text,
+            command=self.command,
+            agent_id=self.agent_id,
+            thinking=self.thinking,
+            timeout_seconds=self.timeout_seconds,
+            model=self.model,
+            backend=self.backend,
+            max_attempts=self.max_attempts,
+            retry_backoff_seconds=self.retry_backoff_seconds,
+        )
+
+
+def create_resume_import_ai_facade(settings: Settings) -> ResumeImportAIFacade:
+    return ResumeImportAIFacade(
+        backend=create_configured_ai_backend(settings),
+        command=settings.openclaw_command,
+        agent_id=settings.openclaw_agent_id,
+        thinking=settings.ai_reasoning_for(settings.openclaw_resume_import_thinking),
+        timeout_seconds=settings.ai_timeout_for(
+            settings.openclaw_resume_import_timeout_seconds
+        ),
+        model=(
+            settings.openai_api_model
+            if settings.ai_backend_mode == "openai_api"
+            else ""
+        ),
+        max_attempts=settings.ai_max_attempts_for(1),
+        retry_backoff_seconds=settings.ai_retry_backoff_for(0),
+    )
 
 
 @dataclass
@@ -348,7 +424,7 @@ def parse_skills_from_text(text: str) -> list[str]:
     return normalize_skill_list(extract_skill_candidates(section_lines))
 
 
-def parse_experience_with_openclaw(
+def parse_experience_with_ai(
     text: str,
     command: str,
     agent_id: str,
@@ -388,7 +464,7 @@ def parse_experience_with_openclaw(
     ][:12]
 
 
-def parse_education_with_openclaw(
+def parse_education_with_ai(
     text: str,
     command: str,
     agent_id: str,
@@ -428,7 +504,7 @@ def parse_education_with_openclaw(
     ][:12]
 
 
-def parse_skills_with_openclaw(
+def parse_skills_with_ai(
     text: str,
     command: str,
     agent_id: str,
@@ -462,6 +538,18 @@ def parse_skills_with_openclaw(
         return []
 
     return normalize_skill_list([skill for skill in skills if isinstance(skill, str)])
+
+
+def parse_experience_with_openclaw(*args, **kwargs) -> list[ImportedExperienceEntry]:
+    return parse_experience_with_ai(*args, **kwargs)
+
+
+def parse_education_with_openclaw(*args, **kwargs) -> list[ImportedEducationEntry]:
+    return parse_education_with_ai(*args, **kwargs)
+
+
+def parse_skills_with_openclaw(*args, **kwargs) -> list[str]:
+    return parse_skills_with_ai(*args, **kwargs)
 
 
 def run_resume_ai_backend(
@@ -500,10 +588,25 @@ def run_resume_ai_backend(
         )
     except AIBackendError as exc:
         if exc.code == "runtime_missing":
-            raise OpenClawResumeImportError(f"OpenClaw command was not found: {command}") from exc
+            message = (
+                f"OpenClaw command was not found: {command}"
+                if selected_backend.name == "openclaw_codex"
+                else "The configured AI runtime is unavailable"
+            )
+            raise ResumeImportError(message) from exc
         if exc.code == "timeout":
-            raise OpenClawResumeImportError("OpenClaw resume import timed out") from exc
-        raise OpenClawResumeImportError(summarize_openclaw_error(str(exc))) from exc
+            message = (
+                "OpenClaw resume import timed out"
+                if selected_backend.name == "openclaw_codex"
+                else "AI resume import timed out"
+            )
+            raise ResumeImportError(message) from exc
+        message = (
+            summarize_openclaw_error(str(exc))
+            if selected_backend.name == "openclaw_codex"
+            else "AI resume import failed"
+        )
+        raise ResumeImportError(message) from exc
 
     if isinstance(result.structured_data, dict):
         return result.structured_data

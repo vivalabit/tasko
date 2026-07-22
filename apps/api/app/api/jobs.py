@@ -122,8 +122,8 @@ def match_jobs(
             db,
             profile=profile,
             settings=settings,
-            allow_openclaw=True,
-            strict_openclaw=True,
+            allow_ai=True,
+            strict_ai=True,
         )
         jobs_to_match = [
             hydrate_job_data(
@@ -218,8 +218,8 @@ def run_match_jobs(
             db,
             profile=profile,
             settings=settings,
-            allow_openclaw=True,
-            strict_openclaw=True,
+            allow_ai=True,
+            strict_ai=True,
         )
         jobs_to_match = [
             hydrate_job_data(

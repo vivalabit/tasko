@@ -74,6 +74,12 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             ("expires_at",),
             ("template_id",),
         }
+        snapshot_indexes = inspect(engine).get_indexes("candidate_match_snapshots")
+        assert any(
+            index["column_names"]
+            == ["profile_input_hash", "matcher_version", "source", "model"]
+            for index in snapshot_indexes
+        )
         owner_tables = {
             "stored_applications",
             "stored_application_events",
@@ -104,7 +110,7 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "20260722_0011"
+            assert revision == "20260722_0012"
     finally:
         engine.dispose()
 
@@ -199,6 +205,7 @@ def test_backend_neutral_provenance_migration_preserves_legacy_ai_data(tmp_path)
         assert "provider_session_id" in columns["conversations"]
         assert "openclaw_session_key" not in columns["conversations"]
         assert "provider_error" in columns["candidate_match_snapshots"]
+        assert "model" in columns["candidate_match_snapshots"]
         assert "provider_error" in columns["job_matches"]
         assert "backend" in columns["job_matches"]
         with engine.connect() as connection:
@@ -210,10 +217,10 @@ def test_backend_neutral_provenance_migration_preserves_legacy_ai_data(tmp_path)
             ).scalar_one() == "openclaw_codex"
             assert connection.execute(
                 text(
-                    "SELECT source, provider_error FROM candidate_match_snapshots "
+                    "SELECT source, model, provider_error FROM candidate_match_snapshots "
                     "WHERE id = 'legacy-snapshot'"
                 )
-            ).one() == ("openclaw_codex", "snapshot error")
+            ).one() == ("openclaw_codex", "legacy", "snapshot error")
             assert connection.execute(
                 text(
                     "SELECT source, backend, provider_error FROM job_matches "
@@ -351,7 +358,7 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260722_0011"
+        assert revision == "20260722_0012"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))

@@ -195,7 +195,7 @@ def install_openclaw_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
             )
         return matches
 
-    monkeypatch.setattr("app.services.candidate_snapshot.build_snapshot_with_openclaw", fake_build_snapshot_with_openclaw)
+    monkeypatch.setattr("app.services.candidate_snapshot.build_snapshot_with_ai", fake_build_snapshot_with_openclaw)
     monkeypatch.setattr(ai_match_service, "score_with_openclaw", fake_score_with_openclaw)
 
 
@@ -789,7 +789,7 @@ def test_candidate_snapshot_caches_successful_openclaw_normalization(
         }
 
     monkeypatch.setattr(
-        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        "app.services.candidate_snapshot.build_snapshot_with_ai",
         fake_build_snapshot_with_openclaw,
     )
     engine = create_engine("sqlite://")
@@ -818,10 +818,12 @@ def test_candidate_snapshot_caches_successful_openclaw_normalization(
     assert calls == 1
     assert first == second
     assert first.source == "openclaw_codex"
+    assert first.model == settings.openclaw_ai_match_model
     assert first.data["roles"] == ["Senior Python Engineer"]
     assert first.data["skills"] == ["Python", "FastAPI"]
     assert len(records) == 1
     assert records[0].profile_input_hash == build_profile_input_hash(profile)
+    assert records[0].model == settings.openclaw_ai_match_model
 
 
 def test_candidate_snapshot_records_local_fallback_and_truncated_provider_error(
@@ -833,7 +835,7 @@ def test_candidate_snapshot_records_local_fallback_and_truncated_provider_error(
         raise CandidateSnapshotError(internal_error)
 
     monkeypatch.setattr(
-        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        "app.services.candidate_snapshot.build_snapshot_with_ai",
         fail_build_snapshot_with_openclaw,
     )
     engine = create_engine("sqlite://")
@@ -852,10 +854,12 @@ def test_candidate_snapshot_records_local_fallback_and_truncated_provider_error(
         record = db.query(CandidateMatchSnapshotRecord).one()
 
     assert snapshot.source == "local"
+    assert snapshot.model == "local"
     assert snapshot.data["roles"] == ["Python Engineer"]
     assert snapshot.data["skills"] == ["Python", "FastAPI"]
     assert snapshot.provider_error == internal_error[:240]
     assert record.source == "local"
+    assert record.model == "local"
     assert record.provider_error == internal_error[:240]
 
 
@@ -863,7 +867,7 @@ def test_candidate_snapshot_records_selected_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        "app.services.candidate_snapshot.build_snapshot_with_ai",
         lambda *, fallback_snapshot, **_: {
             **fallback_snapshot,
             "roles": ["Python Engineer"],
@@ -886,7 +890,78 @@ def test_candidate_snapshot_records_selected_backend(
         )
 
     assert snapshot.source == "openai_api"
+    assert snapshot.model == "gpt-5.6-terra"
     assert snapshot.data["roles"] == ["Python Engineer"]
+
+
+def test_candidate_snapshot_cache_separates_models(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    models: list[str] = []
+
+    def fake_build_snapshot_with_ai(
+        *,
+        fallback_snapshot: dict,
+        model: str,
+        **_: object,
+    ) -> dict:
+        models.append(model)
+        return {**fallback_snapshot, "roles": ["Python Engineer"]}
+
+    monkeypatch.setattr(
+        "app.services.candidate_snapshot.build_snapshot_with_ai",
+        fake_build_snapshot_with_ai,
+    )
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(bind=engine)
+    profile = ProfilePayload(current_role="Python Engineer")
+    first_settings = Settings(
+        ai_backend_mode="openai_api",
+        openai_api_key="test-key",
+        openai_api_model="gpt-5.6-terra",
+        openclaw_ai_match_enabled=True,
+    )
+    second_settings = Settings(
+        ai_backend_mode="openai_api",
+        openai_api_key="test-key",
+        openai_api_model="gpt-5.6-sol",
+        openclaw_ai_match_enabled=True,
+    )
+
+    with Session(engine) as db:
+        first = get_candidate_match_snapshot(
+            db,
+            profile=profile,
+            settings=first_settings,
+            allow_ai=True,
+            strict_ai=True,
+        )
+        db.commit()
+        second = get_candidate_match_snapshot(
+            db,
+            profile=profile,
+            settings=second_settings,
+            allow_ai=True,
+            strict_ai=True,
+        )
+        db.commit()
+        cached_second = get_candidate_match_snapshot(
+            db,
+            profile=profile,
+            settings=second_settings,
+            allow_ai=True,
+            strict_ai=True,
+        )
+        records = db.query(CandidateMatchSnapshotRecord).all()
+
+    assert models == ["gpt-5.6-terra", "gpt-5.6-sol"]
+    assert first.model == "gpt-5.6-terra"
+    assert second.model == "gpt-5.6-sol"
+    assert cached_second == second
+    assert {record.model for record in records} == {
+        "gpt-5.6-terra",
+        "gpt-5.6-sol",
+    }
 
 
 def test_openclaw_ai_match_reads_top_level_payloads_text() -> None:
@@ -1096,7 +1171,7 @@ def test_ai_match_endpoint_requires_openclaw_candidate_snapshot(
         raise AssertionError("job scoring should not run without an OpenClaw candidate snapshot")
 
     monkeypatch.setattr(
-        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        "app.services.candidate_snapshot.build_snapshot_with_ai",
         fail_build_snapshot_with_openclaw,
     )
     monkeypatch.setattr(ai_match_service, "score_with_openclaw", fail_score_with_openclaw)
@@ -1176,7 +1251,7 @@ def test_ai_match_endpoint_ignores_cached_local_candidate_snapshot(
         return {**fallback_snapshot, "roles": ["openclaw normalized role"]}
 
     monkeypatch.setattr(
-        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        "app.services.candidate_snapshot.build_snapshot_with_ai",
         fake_build_snapshot_with_openclaw,
     )
 
@@ -1307,7 +1382,7 @@ def test_ai_match_endpoint_rejects_incomplete_openclaw_breakdown(
         ]
 
     monkeypatch.setattr(
-        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        "app.services.candidate_snapshot.build_snapshot_with_ai",
         fake_build_snapshot_with_openclaw,
     )
     monkeypatch.setattr(ai_match_service, "score_with_openclaw", fake_score_with_openclaw)
@@ -1702,7 +1777,7 @@ def test_ai_match_run_endpoint_batches_openclaw_scoring(monkeypatch: pytest.Monk
         ]
 
     monkeypatch.setattr(
-        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        "app.services.candidate_snapshot.build_snapshot_with_ai",
         fake_build_snapshot_with_openclaw,
     )
     monkeypatch.setattr(ai_match_service, "score_with_openclaw", fake_score_with_openclaw)

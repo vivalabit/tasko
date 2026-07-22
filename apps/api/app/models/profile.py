@@ -3,7 +3,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
-from sqlalchemy import JSON, DateTime, String
+from sqlalchemy import JSON, DateTime, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base, OwnerScoped
@@ -32,12 +32,22 @@ class ProfileVersionRecord(Base):
 
 class CandidateMatchSnapshotRecord(OwnerScoped, Base):
     __tablename__ = "candidate_match_snapshots"
+    __table_args__ = (
+        Index(
+            "ix_candidate_match_snapshots_cache_identity",
+            "profile_input_hash",
+            "matcher_version",
+            "source",
+            "model",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     profile_input_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     profile_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     matcher_version: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     source: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(160), nullable=False, default="legacy")
     data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     provider_error: Mapped[str | None] = mapped_column(String(240), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

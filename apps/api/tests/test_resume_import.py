@@ -14,6 +14,7 @@ from app.services.ai_backend import AIRequest, AIResult, AIUsage
 from app.services.resume_import import (
     OpenClawResumeImportError,
     ResumeExperienceStructuredOutput,
+    create_resume_import_ai_facade,
     extract_json_object,
     extract_openclaw_education_payload,
     extract_openclaw_experience_payload,
@@ -183,7 +184,7 @@ def test_import_experience_endpoint_reads_attached_resume_data() -> None:
 
     try:
         with patch(
-            "app.api.profile.parse_experience_with_openclaw",
+            "app.api.profile.parse_resume_experience_with_selected_backend",
             return_value=parse_experience_from_text(resume_text),
         ):
             response = client.post(
@@ -218,7 +219,7 @@ def test_import_experience_reports_ai_failure_without_internal_details() -> None
 
     try:
         with patch(
-            "app.api.profile.parse_experience_with_openclaw",
+            "app.api.profile.parse_resume_experience_with_selected_backend",
             side_effect=OpenClawResumeImportError("internal analyzer details"),
         ):
             response = client.post(
@@ -239,8 +240,14 @@ def test_import_experience_reports_ai_failure_without_internal_details() -> None
 @pytest.mark.parametrize(
     ("endpoint", "parser_path"),
     [
-        ("/profile/import-education-from-resume", "app.api.profile.parse_education_with_openclaw"),
-        ("/profile/import-skills-from-resume", "app.api.profile.parse_skills_with_openclaw"),
+        (
+            "/profile/import-education-from-resume",
+            "app.api.profile.parse_resume_education_with_selected_backend",
+        ),
+        (
+            "/profile/import-skills-from-resume",
+            "app.api.profile.parse_resume_skills_with_selected_backend",
+        ),
     ],
 )
 def test_all_resume_import_endpoints_hide_openclaw_failure_details(
@@ -314,7 +321,7 @@ def test_import_education_endpoint_reads_attached_resume_data() -> None:
 
     try:
         with patch(
-            "app.api.profile.parse_education_with_openclaw",
+            "app.api.profile.parse_resume_education_with_selected_backend",
             return_value=parse_education_from_text(resume_text),
         ):
             response = client.post(
@@ -353,7 +360,7 @@ def test_import_skills_endpoint_reads_attached_resume_data() -> None:
 
     try:
         with patch(
-            "app.api.profile.parse_skills_with_openclaw",
+            "app.api.profile.parse_resume_skills_with_selected_backend",
             return_value=parse_skills_from_text(resume_text),
         ):
             response = client.post(
@@ -477,6 +484,27 @@ def test_resume_import_passes_strict_pydantic_output_model_to_backend() -> None:
     ) == []
 
     assert requests[0].response_model is ResumeExperienceStructuredOutput
+
+
+def test_resume_import_facade_uses_selected_openai_configuration() -> None:
+    facade = create_resume_import_ai_facade(
+        Settings(
+            ai_backend_mode="openai_api",
+            openai_api_key="test-key",
+            openai_api_model="gpt-5.6-terra",
+            openai_api_reasoning_effort="high",
+            openai_api_timeout_seconds=75,
+            openai_api_max_attempts=3,
+            openai_api_retry_backoff_seconds=1.25,
+        )
+    )
+
+    assert facade.backend.name == "openai_api"
+    assert facade.model == "gpt-5.6-terra"
+    assert facade.thinking == "high"
+    assert facade.timeout_seconds == 75
+    assert facade.max_attempts == 3
+    assert facade.retry_backoff_seconds == 1.25
 
 
 def test_extract_openclaw_education_payload_reads_json_result_wrapper() -> None:
