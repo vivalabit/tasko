@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 from sqlalchemy import DateTime, Integer, String
@@ -12,6 +13,7 @@ class AiPrivacySettingsRecord(OwnerScoped, Base):
 
     owner_id: Mapped[str] = mapped_column(String(160), primary_key=True)
     consent_version: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    consent_backend: Mapped[str | None] = mapped_column(String(32), nullable=True)
     consented_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     last_ai_activity_at: Mapped[datetime | None] = mapped_column(
@@ -28,6 +30,7 @@ class AiPrivacySettingsRecord(OwnerScoped, Base):
 
 class AiConsentUpdateRequest(BaseModel):
     version: str = Field(min_length=1, max_length=80)
+    backend: Literal["openclaw_codex", "openai_api"]
     retention_days: int = Field(default=30, ge=1, le=365, alias="retentionDays")
 
     model_config = {"populate_by_name": True, "extra": "forbid"}
@@ -41,8 +44,15 @@ class AiRetentionUpdateRequest(BaseModel):
 
 class AiPrivacySettingsPayload(BaseModel):
     provider_name: str = Field(alias="providerName")
+    current_backend: Literal["openclaw_codex", "openai_api"] = Field(
+        alias="currentBackend"
+    )
     current_consent_version: str = Field(alias="currentConsentVersion")
     consent_version: str | None = Field(default=None, alias="consentVersion")
+    consent_backend: Literal["openclaw_codex", "openai_api"] | None = Field(
+        default=None,
+        alias="consentBackend",
+    )
     consented_at: datetime | None = Field(default=None, alias="consentedAt")
     has_current_consent: bool = Field(alias="hasCurrentConsent")
     retention_days: int = Field(alias="retentionDays")

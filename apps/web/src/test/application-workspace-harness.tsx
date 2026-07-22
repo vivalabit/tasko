@@ -21,6 +21,8 @@ type WorkspaceApiOptions = {
   templates?: unknown[];
   workspaceSources?: unknown[];
   aiPrivacySettings?: Partial<{
+    currentBackend: "openclaw_codex" | "openai_api";
+    consentBackend: "openclaw_codex" | "openai_api" | null;
     consentVersion: string | null;
     consentedAt: string | null;
     hasCurrentConsent: boolean;
@@ -278,15 +280,18 @@ export function installApplicationWorkspaceApiMock({
     }
     if (url.pathname === "/assistant/config" && method === "GET") {
       return Response.json({
-        providerName: "OpenAI",
+        providerName: "OpenAI via OpenClaw/Codex",
+        backend: "openclaw_codex",
         consentVersion: "2026-07-18.v2",
       });
     }
     if (url.pathname === "/privacy/ai-consent" && method === "GET") {
       return Response.json({
-        providerName: "OpenAI",
+        providerName: "OpenAI via OpenClaw/Codex",
+        currentBackend: "openclaw_codex",
         currentConsentVersion: "2026-07-18.v2",
         consentVersion: null,
+        consentBackend: null,
         consentedAt: null,
         hasCurrentConsent: false,
         retentionDays: 30,
@@ -296,11 +301,13 @@ export function installApplicationWorkspaceApiMock({
       });
     }
     if (url.pathname === "/privacy/ai-consent" && method === "PUT") {
-      const request = JSON.parse(String(init?.body)) as { version: string; retentionDays: number };
+      const request = JSON.parse(String(init?.body)) as { backend: "openclaw_codex" | "openai_api"; version: string; retentionDays: number };
       return Response.json({
-        providerName: "OpenAI",
+        providerName: "OpenAI via OpenClaw/Codex",
+        currentBackend: "openclaw_codex",
         currentConsentVersion: "2026-07-18.v2",
         consentVersion: request.version,
+        consentBackend: request.backend,
         consentedAt: "2026-07-19T10:00:00.000Z",
         hasCurrentConsent: true,
         retentionDays: request.retentionDays,

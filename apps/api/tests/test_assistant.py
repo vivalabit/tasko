@@ -89,7 +89,8 @@ def test_extract_openclaw_assistant_text_reads_payload_wrapper() -> None:
 
 def test_assistant_config_exposes_provider_and_consent_version() -> None:
     app.dependency_overrides[get_settings] = lambda: Settings(
-        ai_provider_name="Example AI",
+        ai_backend_mode="openai_api",
+        openai_api_key="test-key",
         ai_consent_version="consent-v3",
     )
     try:
@@ -99,7 +100,8 @@ def test_assistant_config_exposes_provider_and_consent_version() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
-        "providerName": "Example AI",
+        "providerName": "OpenAI Responses API",
+        "backend": "openai_api",
         "consentVersion": "consent-v3",
     }
 
@@ -140,6 +142,7 @@ def test_assistant_routes_openai_api_mode_through_neutral_backend(
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
+    assert response.json()["metadata"]["providerName"] == "OpenAI Responses API"
     assert response.json()["message"] == "Direct API response"
     assert response.json()["metadata"]["backend"] == "openai_api"
     facade = captured["facade"]
@@ -1262,7 +1265,13 @@ def test_document_generation_uses_only_authoritative_server_context(
         assert artifact.result_content == "Generated"
         assert artifact.generation_model == "gpt-5.6-terra"
         assert artifact.generation_backend == "openai_api"
+        assert artifact.input_snapshot["assistant"]["providerName"] == (
+            "OpenAI Responses API"
+        )
         assert artifact.input_versions["generationArtifact"]["id"] == artifact.id
+        assert artifact.input_versions["generationArtifact"]["providerName"] == (
+            "OpenAI Responses API"
+        )
         assert len(
             artifact.input_versions["generationArtifact"]["inputSnapshotSha256"]
         ) == 64

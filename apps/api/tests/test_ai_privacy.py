@@ -80,12 +80,20 @@ def test_ai_calls_require_current_server_side_consent(monkeypatch) -> None:
         stale = client.put(
             "/privacy/ai-consent",
             headers=headers,
-            json={"version": "privacy-v0", "retentionDays": 7},
+            json={
+                "version": "privacy-v0",
+                "backend": "openclaw_codex",
+                "retentionDays": 7,
+            },
         )
         granted = client.put(
             "/privacy/ai-consent",
             headers=headers,
-            json={"version": "privacy-v1", "retentionDays": 7},
+            json={
+                "version": "privacy-v1",
+                "backend": "openclaw_codex",
+                "retentionDays": 7,
+            },
         )
         allowed = client.post(
             "/assistant/chat",
@@ -118,6 +126,9 @@ def test_ai_calls_require_current_server_side_consent(monkeypatch) -> None:
         app.dependency_overrides.clear()
 
     assert initial.status_code == 200
+    assert initial.json()["providerName"] == "OpenAI via OpenClaw/Codex"
+    assert initial.json()["currentBackend"] == "openclaw_codex"
+    assert initial.json()["consentBackend"] is None
     assert initial.json()["hasCurrentConsent"] is False
     assert denied.status_code == 403
     assert denied.json()["detail"]["code"] == "ai_consent_required"
@@ -127,6 +138,7 @@ def test_ai_calls_require_current_server_side_consent(monkeypatch) -> None:
     assert stale.status_code == 409
     assert granted.status_code == 200
     assert granted.json()["hasCurrentConsent"] is True
+    assert granted.json()["consentBackend"] == "openclaw_codex"
     assert granted.json()["retentionDays"] == 7
     assert granted.json()["consentedAt"]
     assert allowed.status_code == 200
@@ -139,9 +151,73 @@ def test_ai_calls_require_current_server_side_consent(monkeypatch) -> None:
         record = db.get(AiPrivacySettingsRecord, "privacy-owner")
         assert record is not None
         assert record.consent_version == "privacy-v1"
+        assert record.consent_backend == "openclaw_codex"
         assert record.last_ai_activity_at is not None
         assert record.ai_data_expires_at is not None
         assert record.ai_data_expires_at - record.last_ai_activity_at == timedelta(days=3)
+
+
+def test_ai_consent_is_invalidated_when_backend_changes() -> None:
+    client, testing_session_local = privacy_client()
+    headers = {"X-Tasko-Owner-Id": "backend-consent-owner"}
+
+    try:
+        granted = client.put(
+            "/privacy/ai-consent",
+            headers=headers,
+            json={
+                "version": "privacy-v1",
+                "backend": "openclaw_codex",
+                "retentionDays": 30,
+            },
+        )
+        app.dependency_overrides[get_settings] = lambda: Settings(
+            ai_backend_mode="openai_api",
+            openai_api_key="test-key",
+            ai_consent_version="privacy-v1",
+        )
+        after_switch = client.get("/privacy/ai-consent", headers=headers)
+        stale_route = client.put(
+            "/privacy/ai-consent",
+            headers=headers,
+            json={
+                "version": "privacy-v1",
+                "backend": "openclaw_codex",
+                "retentionDays": 30,
+            },
+        )
+        renewed = client.put(
+            "/privacy/ai-consent",
+            headers=headers,
+            json={
+                "version": "privacy-v1",
+                "backend": "openai_api",
+                "retentionDays": 30,
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert granted.json()["hasCurrentConsent"] is True
+    assert after_switch.status_code == 200
+    assert after_switch.json()["providerName"] == "OpenAI Responses API"
+    assert after_switch.json()["currentBackend"] == "openai_api"
+    assert after_switch.json()["consentBackend"] == "openclaw_codex"
+    assert after_switch.json()["hasCurrentConsent"] is False
+    assert stale_route.status_code == 409
+    assert stale_route.json()["detail"] == {
+        "code": "ai_consent_backend_mismatch",
+        "requiredBackend": "openai_api",
+        "providerName": "OpenAI Responses API",
+    }
+    assert renewed.status_code == 200
+    assert renewed.json()["consentBackend"] == "openai_api"
+    assert renewed.json()["hasCurrentConsent"] is True
+
+    with testing_session_local() as db:
+        record = db.get(AiPrivacySettingsRecord, "backend-consent-owner")
+        assert record is not None
+        assert record.consent_backend == "openai_api"
 
 
 def test_expired_ttl_deletes_only_the_owners_ai_data() -> None:
@@ -161,6 +237,7 @@ def test_expired_ttl_deletes_only_the_owners_ai_data() -> None:
                     AiPrivacySettingsRecord(
                         owner_id=owner_id,
                         consent_version="privacy-v1",
+                        consent_backend="openclaw_codex",
                         consented_at=now - timedelta(days=2),
                         retention_days=1,
                         last_ai_activity_at=now - timedelta(days=2),
@@ -283,6 +360,7 @@ def test_revoke_consent_deletes_owner_ai_data_but_preserves_other_owners() -> No
                     AiPrivacySettingsRecord(
                         owner_id=owner_id,
                         consent_version="privacy-v1",
+                        consent_backend="openclaw_codex",
                         consented_at=now,
                         retention_days=30,
                         last_ai_activity_at=now,
@@ -316,6 +394,7 @@ def test_revoke_consent_deletes_owner_ai_data_but_preserves_other_owners() -> No
         deleted_settings = db.get(AiPrivacySettingsRecord, "delete-owner")
         assert deleted_settings is not None
         assert deleted_settings.consent_version is None
+        assert deleted_settings.consent_backend is None
         assert deleted_settings.consented_at is None
         assert db.get(ConversationRecord, "conversation-delete-owner") is None
         assert db.get(ConversationRecord, "conversation-keep-owner") is not None

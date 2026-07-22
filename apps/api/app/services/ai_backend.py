@@ -28,6 +28,17 @@ from pydantic import BaseModel
 
 
 AIBackendMode = Literal["openclaw_codex", "openai_api"]
+
+AI_BACKEND_PROVIDER_NAMES: dict[AIBackendMode, str] = {
+    "openclaw_codex": "OpenAI via OpenClaw/Codex",
+    "openai_api": "OpenAI Responses API",
+}
+
+
+def ai_backend_provider_name(backend: str) -> str:
+    return AI_BACKEND_PROVIDER_NAMES.get(backend, "Local processing")
+
+
 PromptTransport = Literal["argument", "file"]
 
 

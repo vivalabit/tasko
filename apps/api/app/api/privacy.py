@@ -23,6 +23,7 @@ from app.services.ai_privacy import (
     has_current_ai_consent,
     privacy_settings_record,
 )
+from app.services.ai_backend import ai_backend_provider_name
 
 router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
@@ -57,6 +58,15 @@ def grant_ai_consent(
                 "requiredVersion": settings.ai_consent_version,
             },
         )
+    if request.backend != settings.ai_backend_mode:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "ai_consent_backend_mismatch",
+                "requiredBackend": settings.ai_backend_mode,
+                "providerName": ai_backend_provider_name(settings.ai_backend_mode),
+            },
+        )
     try:
         now = utc_now()
         record = privacy_settings_record(db, identity.owner_id)
@@ -64,6 +74,7 @@ def grant_ai_consent(
             record = AiPrivacySettingsRecord(
                 owner_id=identity.owner_id,
                 consent_version=request.version,
+                consent_backend=settings.ai_backend_mode,
                 consented_at=now,
                 retention_days=request.retention_days,
                 last_ai_activity_at=None,
@@ -73,6 +84,7 @@ def grant_ai_consent(
             db.add(record)
         else:
             record.consent_version = request.version
+            record.consent_backend = settings.ai_backend_mode
             record.consented_at = now
             record.retention_days = request.retention_days
             if record.last_ai_activity_at is not None:
@@ -130,6 +142,7 @@ def revoke_ai_consent(
         record = privacy_settings_record(db, identity.owner_id)
         if record:
             record.consent_version = None
+            record.consent_backend = None
             record.consented_at = None
             record.updated_at = utc_now()
         if delete_data:
@@ -161,9 +174,11 @@ def privacy_payload(
     settings: Settings,
 ) -> AiPrivacySettingsPayload:
     return AiPrivacySettingsPayload(
-        provider_name=settings.ai_provider_name,
+        provider_name=ai_backend_provider_name(settings.ai_backend_mode),
+        current_backend=settings.ai_backend_mode,
         current_consent_version=settings.ai_consent_version,
         consent_version=record.consent_version if record else None,
+        consent_backend=record.consent_backend if record else None,
         consented_at=record.consented_at if record else None,
         has_current_consent=has_current_ai_consent(record, settings),
         retention_days=(record.retention_days if record else 30),

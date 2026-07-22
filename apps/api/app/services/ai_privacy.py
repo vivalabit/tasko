@@ -39,6 +39,7 @@ def has_current_ai_consent(
         record
         and record.consented_at is not None
         and record.consent_version == settings.ai_consent_version
+        and record.consent_backend == settings.ai_backend_mode
     )
 
 
@@ -55,6 +56,7 @@ def require_current_ai_consent(
                 "code": "ai_consent_required",
                 "message": "Current AI data-processing consent is required",
                 "requiredVersion": settings.ai_consent_version,
+                "requiredBackend": settings.ai_backend_mode,
             },
         )
 

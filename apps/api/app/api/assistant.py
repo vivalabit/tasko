@@ -51,6 +51,7 @@ from app.models.documents import (
 )
 from app.models.jobs import StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
+from app.services.ai_backend import ai_backend_provider_name
 from app.services.ai_privacy import require_current_ai_consent
 from app.services.assistant import (
     AIAssistantRun,
@@ -159,6 +160,7 @@ def begin_generation_artifact(
             else settings.openclaw_assistant_model
         ),
         "backend": settings.ai_backend_mode,
+        "providerName": ai_backend_provider_name(settings.ai_backend_mode),
         "thinking": settings.ai_reasoning_for(settings.openclaw_assistant_thinking),
         "agentId": settings.openclaw_assistant_agent_id,
         "history": history,
@@ -182,6 +184,7 @@ def begin_generation_artifact(
                 else settings.openclaw_assistant_model
             ),
             "backend": provenance.generation_backend,
+            "providerName": ai_backend_provider_name(provenance.generation_backend),
         },
     }
     artifact = DocumentGenerationArtifactRecord(
@@ -262,7 +265,8 @@ def fail_generation_artifact(
 @router.get("/config")
 def get_assistant_config(settings: Settings = Depends(get_settings)) -> dict[str, str]:
     return {
-        "providerName": settings.ai_provider_name,
+        "providerName": ai_backend_provider_name(settings.ai_backend_mode),
+        "backend": settings.ai_backend_mode,
         "consentVersion": settings.ai_consent_version,
     }
 
@@ -382,7 +386,7 @@ async def chat_with_assistant(
             "sessionId": session_id,
             "contextKind": request.context_kind,
             "contextId": request.context_id,
-            "providerName": settings.ai_provider_name,
+            "providerName": ai_backend_provider_name(backend_name),
             "backend": backend_name,
             "metrics": metrics,
             **(
@@ -605,7 +609,7 @@ async def generate_assistant_stream(
             "sessionKey": session_id,
             "contextKind": request.context_kind,
             "contextId": request.context_id,
-            "providerName": settings.ai_provider_name,
+            "providerName": ai_backend_provider_name(backend_name),
             "backend": backend_name,
             "metrics": metrics,
             "actions": [action.model_dump(by_alias=True, mode="json") for action in actions],

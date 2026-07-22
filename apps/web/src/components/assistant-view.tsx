@@ -81,6 +81,8 @@ type AssistantConnectionStatus = "idle" | "connecting" | "connected" | "reconnec
 
 type AiPrivacySettings = {
   providerName: string;
+  currentBackend: "openclaw_codex" | "openai_api";
+  consentBackend: "openclaw_codex" | "openai_api" | null;
   currentConsentVersion: string;
   hasCurrentConsent: boolean;
   retentionDays: number;
@@ -195,7 +197,9 @@ const legacyAssistantThreadsStorageKey = "tasko.assistantThreads.v1";
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const assistantMessageMaxChars = 6_000;
 const defaultAiPrivacySettings: AiPrivacySettings = {
-  providerName: "OpenAI",
+  providerName: "OpenAI via OpenClaw/Codex",
+  currentBackend: "openclaw_codex",
+  consentBackend: null,
   currentConsentVersion: "2026-07-18.v2",
   hasCurrentConsent: false,
   retentionDays: 30,
@@ -1329,6 +1333,7 @@ export function AssistantView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           version: aiPrivacy.currentConsentVersion,
+          backend: aiPrivacy.currentBackend,
           retentionDays: aiPrivacy.retentionDays,
         }),
       });
@@ -1927,7 +1932,7 @@ export function AssistantView({
             <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-accent/25 bg-accent/10 text-accent"><ShieldCheck className="h-5 w-5" /></span>
             <div><p className="text-[10px] font-black uppercase tracking-[0.12em] text-accent">AI data disclosure · {aiPrivacy.currentConsentVersion}</p><h2 id="assistant-ai-consent-title" className="mt-1 text-lg font-bold text-white">Send selected context to {aiPrivacy.providerName}</h2></div>
           </div>
-          <p className="mt-4 text-xs leading-5 text-[#cbd3df]">Tasko sends your message and selected profile, vacancy, or application context through OpenClaw to the configured AI provider. AI results are deleted after your selected retention period.</p>
+          <p className="mt-4 text-xs leading-5 text-[#cbd3df]">Tasko sends your message and selected profile, vacancy, or application context using {aiPrivacy.providerName}. AI results are deleted after your selected retention period.</p>
           <label className="mt-4 block text-xs font-semibold text-[#dce2ea]">Keep AI results for (days)
             <input type="number" min={1} max={365} value={aiPrivacy.retentionDays} onChange={(event) => setAiPrivacy((privacy) => ({ ...privacy, retentionDays: Math.min(365, Math.max(1, Number(event.target.value) || 1)) }))} className="mt-2 h-10 w-full rounded-lg border border-border bg-[#0b1119] px-3 text-xs text-white" />
           </label>

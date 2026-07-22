@@ -80,6 +80,10 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             == ["profile_input_hash", "matcher_version", "source", "model"]
             for index in snapshot_indexes
         )
+        privacy_columns = {
+            column["name"] for column in inspect(engine).get_columns("ai_privacy_settings")
+        }
+        assert "consent_backend" in privacy_columns
         owner_tables = {
             "stored_applications",
             "stored_application_events",
@@ -110,7 +114,7 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "20260722_0012"
+            assert revision == "20260722_0013"
     finally:
         engine.dispose()
 
@@ -122,6 +126,42 @@ def test_upgrade_database_can_run_again_at_head(tmp_path) -> None:
 
     upgrade_database(database_url)
     upgrade_database(database_url)
+
+
+def test_backend_aware_consent_migration_preserves_openclaw_consent(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'backend-consent.sqlite'}"
+    config = get_alembic_config(database_url)
+    command.upgrade(config, "20260722_0012")
+    now = datetime.now(UTC).isoformat()
+
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO ai_privacy_settings "
+                    "(owner_id, consent_version, consented_at, retention_days, updated_at) "
+                    "VALUES ('consented-owner', 'privacy-v1', :now, 30, :now), "
+                    "('revoked-owner', NULL, NULL, 30, :now)"
+                ),
+                {"now": now},
+            )
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            rows = dict(
+                connection.execute(
+                    text(
+                        "SELECT owner_id, consent_backend FROM ai_privacy_settings "
+                        "ORDER BY owner_id"
+                    )
+                ).all()
+            )
+        assert rows == {
+            "consented-owner": "openclaw_codex",
+            "revoked-owner": None,
+        }
+    finally:
+        engine.dispose()
 
 
 def test_backend_neutral_provenance_migration_preserves_legacy_ai_data(tmp_path) -> None:
@@ -358,7 +398,7 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260722_0012"
+        assert revision == "20260722_0013"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))

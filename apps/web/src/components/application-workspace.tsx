@@ -265,13 +265,16 @@ type GeneratedDocument = {
 
 type AiConfiguration = {
   providerName: string;
+  backend: "openclaw_codex" | "openai_api";
   consentVersion: string;
 };
 
 type AiPrivacySettings = {
   providerName: string;
+  currentBackend: "openclaw_codex" | "openai_api";
   currentConsentVersion: string;
   consentVersion: string | null;
+  consentBackend: "openclaw_codex" | "openai_api" | null;
   consentedAt: string | null;
   hasCurrentConsent: boolean;
   retentionDays: number;
@@ -409,7 +412,8 @@ const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const docxContentType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 const legacyAiDisclosureStorageKey = "tasko.ai-cv-disclosure.v1";
 const defaultAiConfiguration: AiConfiguration = {
-  providerName: "OpenAI",
+  providerName: "OpenAI via OpenClaw/Codex",
+  backend: "openclaw_codex",
   consentVersion: "2026-07-18.v2",
 };
 const confirmationAnswerMaxChars = 1_500;
@@ -1480,6 +1484,7 @@ export function ApplicationWorkspace({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           version: aiConfiguration.consentVersion,
+          backend: aiConfiguration.backend,
           retentionDays: aiRetentionDays,
         }),
       });
@@ -2195,7 +2200,7 @@ export function ApplicationWorkspace({
             <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-accent/25 bg-accent/10 text-accent"><ShieldCheck className="h-5 w-5" /></span>
             <div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">AI data disclosure · {aiConfiguration.consentVersion}</p><h2 id="ai-disclosure-title" className="mt-1 text-lg font-bold text-white">Your application context will be sent to {aiConfiguration.providerName}</h2></div>
           </div>
-          <p className="mt-4 text-xs leading-5 text-[#cbd3df]">To tailor your application, Tasko sends the selected source document together with relevant profile details, vacancy text, and your confirmations through OpenClaw to the configured AI model provider.</p>
+          <p className="mt-4 text-xs leading-5 text-[#cbd3df]">To tailor your application, Tasko sends the selected source document together with relevant profile details, vacancy text, and your confirmations using {aiConfiguration.providerName}.</p>
           <div className="mt-4 space-y-2 rounded-xl border border-white/[0.08] bg-black/20 p-4 text-[11px] leading-5 text-muted">
             <p><span className="font-bold text-white">Purpose:</span> provide the AI assistance or generate the application documents you requested.</p>
             <p><span className="font-bold text-white">Tasko storage:</span> source templates remain until you delete them; AI results are deleted after your selected retention period.</p>

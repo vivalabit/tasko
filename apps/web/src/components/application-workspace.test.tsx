@@ -539,7 +539,7 @@ describe("ApplicationWorkspace", () => {
     renderApplicationWorkspace(createV3WorkspaceApplication());
 
     expect(await screen.findByText("AI provider:")).toBeInTheDocument();
-    expect(screen.getByText("OpenAI")).toBeInTheDocument();
+    expect(screen.getByText("OpenAI via OpenClaw/Codex")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Revoke consent" }));
     await waitFor(() => {
       expect(screen.getByText("Consent required")).toBeInTheDocument();

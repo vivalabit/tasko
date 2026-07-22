@@ -24,7 +24,9 @@ it("grants versioned server consent with a user TTL before streaming", async () 
     }
     if (url.pathname === "/privacy/ai-consent" && method === "GET") {
       return Response.json({
-        providerName: "OpenAI",
+        providerName: "OpenAI via OpenClaw/Codex",
+        currentBackend: "openclaw_codex",
+        consentBackend: null,
         currentConsentVersion: "privacy-v1",
         hasCurrentConsent: false,
         retentionDays: 30,
@@ -32,7 +34,9 @@ it("grants versioned server consent with a user TTL before streaming", async () 
     }
     if (url.pathname === "/privacy/ai-consent" && method === "PUT") {
       return Response.json({
-        providerName: "OpenAI",
+        providerName: "OpenAI via OpenClaw/Codex",
+        currentBackend: "openclaw_codex",
+        consentBackend: "openclaw_codex",
         currentConsentVersion: "privacy-v1",
         hasCurrentConsent: true,
         retentionDays: (body as { retentionDays: number }).retentionDays,
@@ -95,6 +99,7 @@ it("grants versioned server consent with a user TTL before streaming", async () 
   expect(await screen.findByText("AI reply")).toBeInTheDocument();
   expect(requests.find((request) => request.path === "/privacy/ai-consent" && request.method === "PUT")?.body).toEqual({
     version: "privacy-v1",
+    backend: "openclaw_codex",
     retentionDays: 7,
   });
 
@@ -149,7 +154,9 @@ it("resumes a dropped SSE chat from its offset and requires action-preview confi
     }
     if (url.pathname === "/privacy/ai-consent" && method === "GET") {
       return Response.json({
-        providerName: "OpenAI",
+        providerName: "OpenAI via OpenClaw/Codex",
+        currentBackend: "openclaw_codex",
+        consentBackend: "openclaw_codex",
         currentConsentVersion: "privacy-v1",
         hasCurrentConsent: true,
         retentionDays: 30,
