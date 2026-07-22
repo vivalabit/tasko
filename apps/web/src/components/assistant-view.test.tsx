@@ -104,3 +104,163 @@ it("grants versioned server consent with a user TTL before streaming", async () 
     expect(screen.getByText("AI consent required")).toBeInTheDocument();
   });
 });
+
+it("resumes a dropped SSE chat from its offset and requires action-preview confirmation", async () => {
+  const streamBodies: Array<Record<string, unknown>> = [];
+  const onActionApplied = vi.fn();
+  let streamAttempt = 0;
+  const action = {
+    id: "assistant-action-headline",
+    type: "update_profile_field",
+    title: "Update profile field",
+    description: "Change only the profile field headline.",
+    contextKind: "profile",
+    contextId: "",
+    fields: [
+      {
+        label: "Headline",
+        before: "Product designer",
+        after: "Senior product designer",
+      },
+    ],
+    payload: {
+      field: "headline",
+      value: "Senior product designer",
+      expectedValue: "Product designer",
+    },
+    status: "preview",
+    resultMessage: "",
+  };
+  const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+    const requestUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    const url = new URL(requestUrl);
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/assistant/conversations" && method === "GET") {
+      return Response.json([]);
+    }
+    if (url.pathname === "/documents" && method === "GET") {
+      return Response.json([]);
+    }
+    if (url.pathname === "/privacy/ai-consent" && method === "GET") {
+      return Response.json({
+        providerName: "OpenAI",
+        currentConsentVersion: "privacy-v1",
+        hasCurrentConsent: true,
+        retentionDays: 30,
+      });
+    }
+    if (url.pathname === "/assistant/chat/stream" && method === "POST") {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      streamBodies.push(body);
+      streamAttempt += 1;
+      if (streamAttempt === 1) {
+        return new Response(
+          [
+            'id: 0\nevent: connected\ndata: {"offset":0}',
+            'id: 8\nevent: delta\ndata: {"text":"Partial ","offset":8}',
+            "",
+          ].join("\n\n"),
+          { headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+      return new Response(
+        [
+          'id: 8\nevent: connected\ndata: {"offset":8}',
+          'id: 15\nevent: delta\ndata: {"text":"answer.","offset":15}',
+          `id: 15\nevent: done\ndata: ${JSON.stringify({
+            offset: 15,
+            metadata: { sessionKey: "session-resumed", actions: [action] },
+          })}`,
+          "",
+        ].join("\n\n"),
+        { headers: { "Content-Type": "text/event-stream" } },
+      );
+    }
+    if (url.pathname === "/assistant/actions/apply" && method === "POST") {
+      return Response.json({
+        actionId: action.id,
+        type: action.type,
+        status: "applied",
+        message: "Profile headline updated",
+        resourceKind: "profile",
+        resource: { headline: "Senior product designer" },
+      });
+    }
+    if (
+      url.pathname.startsWith("/assistant/conversations/") &&
+      url.pathname.includes("/messages/") &&
+      method === "PUT"
+    ) {
+      return Response.json({});
+    }
+    throw new Error(`Unhandled request: ${method} ${url.pathname}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+    configurable: true,
+    value: vi.fn(),
+  });
+
+  render(
+    <AssistantView
+      profile={{
+        name: "Alex Morgan",
+        current_role: "Designer",
+        desired_role: "Senior Designer",
+        location: "Zurich",
+        headline: "Product designer",
+        skills: "Research",
+        experience: "Six years",
+        education: "BA Design",
+        resume_file_name: "resume.docx",
+      }}
+      jobs={[]}
+      applications={[]}
+      launch={null}
+      onLaunchHandled={vi.fn()}
+      onDocumentAttached={vi.fn()}
+      onActionApplied={onActionApplied}
+    />,
+  );
+
+  await screen.findByRole("button", { name: "Revoke AI consent" });
+  fireEvent.change(
+    screen.getByPlaceholderText("Ask anything about your job search…"),
+    {
+      target: { value: "Update my headline" },
+    },
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+
+  expect(await screen.findByText("Partial answer.")).toBeInTheDocument();
+  expect(streamBodies).toHaveLength(2);
+  expect(streamBodies[0].offset).toBe(0);
+  expect(streamBodies[1].offset).toBe(8);
+  expect(streamBodies[1].requestId).toBe(streamBodies[0].requestId);
+  expect(streamBodies[1].assistantMessageId).toBe(
+    streamBodies[0].assistantMessageId,
+  );
+
+  expect(screen.getByText("Preview")).toBeInTheDocument();
+  expect(screen.getByText("Senior product designer")).toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Apply Update profile field" }),
+  );
+
+  expect(
+    await screen.findByText("Profile headline updated"),
+  ).toBeInTheDocument();
+  expect(onActionApplied).toHaveBeenCalledWith(
+    expect.objectContaining({
+      actionId: action.id,
+      status: "applied",
+      resourceKind: "profile",
+    }),
+  );
+});

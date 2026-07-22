@@ -234,6 +234,42 @@ def test_import_experience_reports_ai_failure_without_internal_details() -> None
     assert "internal analyzer details" not in response.text
 
 
+@pytest.mark.parametrize(
+    ("endpoint", "parser_path"),
+    [
+        ("/profile/import-education-from-resume", "app.api.profile.parse_education_with_openclaw"),
+        ("/profile/import-skills-from-resume", "app.api.profile.parse_skills_with_openclaw"),
+    ],
+)
+def test_all_resume_import_endpoints_hide_openclaw_failure_details(
+    endpoint: str,
+    parser_path: str,
+) -> None:
+    encoded_resume = base64.b64encode(b"Resume text").decode()
+    app.dependency_overrides[get_settings] = lambda: Settings(openclaw_resume_import_enabled=True)
+
+    try:
+        with patch(
+            parser_path,
+            side_effect=OpenClawResumeImportError("provider credentials and command details"),
+        ):
+            response = TestClient(app).post(
+                endpoint,
+                json={
+                    "resume_file_name": "resume.txt",
+                    "resume_data_url": f"data:text/plain;base64,{encoded_resume}",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "AI resume analysis is temporarily unavailable. Please try again."
+    }
+    assert "provider credentials" not in response.text
+
+
 def test_import_experience_does_not_use_local_parser_when_ai_is_disabled() -> None:
     resume_text = """
     Work Experience

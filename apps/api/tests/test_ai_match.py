@@ -33,6 +33,7 @@ from app.services.candidate_snapshot import (
     build_profile_input_hash,
     build_snapshot_with_openclaw,
     extract_openclaw_candidate_snapshot_payload,
+    get_candidate_match_snapshot,
 )
 
 
@@ -672,6 +673,91 @@ def test_candidate_snapshot_uses_message_file(monkeypatch: pytest.MonkeyPatch) -
     assert snapshot["roles"] == ["Backend Developer"]
     assert "Normalize this candidate" in captured_prompt
     assert not Path(captured_path).exists()
+
+
+def test_candidate_snapshot_caches_successful_openclaw_normalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def fake_build_snapshot_with_openclaw(*, fallback_snapshot: dict, **_: object) -> dict:
+        nonlocal calls
+        calls += 1
+        return {
+            **fallback_snapshot,
+            "roles": ["Senior Python Engineer"],
+            "skills": ["Python", "FastAPI"],
+        }
+
+    monkeypatch.setattr(
+        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        fake_build_snapshot_with_openclaw,
+    )
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(bind=engine)
+    profile = ProfilePayload(current_role="Python Engineer", skills="Python\nFastAPI")
+    settings = Settings(openclaw_ai_match_enabled=True)
+
+    with Session(engine) as db:
+        first = get_candidate_match_snapshot(
+            db,
+            profile=profile,
+            settings=settings,
+            allow_openclaw=True,
+            strict_openclaw=True,
+        )
+        db.commit()
+        second = get_candidate_match_snapshot(
+            db,
+            profile=profile,
+            settings=settings,
+            allow_openclaw=True,
+            strict_openclaw=True,
+        )
+        records = db.query(CandidateMatchSnapshotRecord).all()
+
+    assert calls == 1
+    assert first == second
+    assert first.source == "openclaw"
+    assert first.data["roles"] == ["Senior Python Engineer"]
+    assert first.data["skills"] == ["Python", "FastAPI"]
+    assert len(records) == 1
+    assert records[0].profile_input_hash == build_profile_input_hash(profile)
+
+
+def test_candidate_snapshot_records_local_fallback_and_truncated_openclaw_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    internal_error = "provider unavailable: " + "x" * 400
+
+    def fail_build_snapshot_with_openclaw(**_: object) -> dict:
+        raise CandidateSnapshotError(internal_error)
+
+    monkeypatch.setattr(
+        "app.services.candidate_snapshot.build_snapshot_with_openclaw",
+        fail_build_snapshot_with_openclaw,
+    )
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(bind=engine)
+    profile = ProfilePayload(current_role="Python Engineer", skills="Python\nFastAPI")
+
+    with Session(engine) as db:
+        snapshot = get_candidate_match_snapshot(
+            db,
+            profile=profile,
+            settings=Settings(openclaw_ai_match_enabled=True),
+            allow_openclaw=True,
+            strict_openclaw=False,
+        )
+        db.commit()
+        record = db.query(CandidateMatchSnapshotRecord).one()
+
+    assert snapshot.source == "local"
+    assert snapshot.data["roles"] == ["Python Engineer"]
+    assert snapshot.data["skills"] == ["Python", "FastAPI"]
+    assert snapshot.openclaw_error == internal_error[:240]
+    assert record.source == "local"
+    assert record.openclaw_error == internal_error[:240]
 
 
 def test_openclaw_ai_match_reads_top_level_payloads_text() -> None:

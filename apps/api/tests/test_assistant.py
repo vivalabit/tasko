@@ -2,6 +2,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import zipfile
 from collections.abc import Generator
 from datetime import UTC, date, datetime
@@ -33,6 +34,8 @@ from app.models.documents import DocumentGenerationArtifactRecord, DocumentTempl
 from app.models.jobs import JobMatchRecord, StoredJobRecord
 from app.models.profile import ProfilePayload, ProfileRecord
 from app.services.assistant import (
+    AssistantRunMetrics,
+    OpenClawAssistantRun,
     OpenClawAssistantError,
     OpenClawAssistantTimeoutError,
     analyze_openclaw_assistant_context,
@@ -635,6 +638,100 @@ def test_run_openclaw_assistant_retries_transient_failure_and_reports_metrics(
     assert run.metrics.token_count_source == "provider"
 
 
+def test_run_openclaw_assistant_does_not_retry_authentication_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    class FakeProcess:
+        returncode = 1
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"", b"Unauthorized: invalid API key"
+
+    async def fake_create_subprocess_exec(*_: str, **__: object) -> FakeProcess:
+        nonlocal calls
+        calls += 1
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    with pytest.raises(OpenClawAssistantError) as exc_info:
+        asyncio.run(
+            run_openclaw_assistant(
+                thread_id="thread-auth-error",
+                message="Review my profile",
+                context_kind="profile",
+                profile=ProfilePayload(name="Eduard"),
+                job=None,
+                application=None,
+                command="/custom/openclaw",
+                agent_id="tasko-assistant",
+                thinking="off",
+                timeout_seconds=30,
+                max_attempts=3,
+            )
+        )
+
+    assert calls == 1
+    assert exc_info.value.code == "authentication"
+    assert exc_info.value.retryable is False
+    assert str(exc_info.value) == (
+        "Assistant authentication is unavailable. Check the model provider credentials."
+    )
+
+
+def test_run_openclaw_assistant_estimates_metrics_and_logs_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b'{"result":{"payloads":[{"text":"Short answer"}]}}', b""
+
+    async def fake_create_subprocess_exec(*_: str, **__: object) -> FakeProcess:
+        return FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    caplog.set_level(logging.INFO, logger="uvicorn.error")
+
+    run = asyncio.run(
+        run_openclaw_assistant(
+            thread_id="thread-estimated-metrics",
+            message="Review my profile",
+            context_kind="profile",
+            profile=ProfilePayload(name="Eduard"),
+            job=None,
+            application=None,
+            command="/custom/openclaw",
+            agent_id="tasko-assistant",
+            thinking="off",
+            timeout_seconds=30,
+            model="openai/gpt-5.6-terra",
+        )
+    )
+
+    assert run.metrics.token_count_source == "estimate"
+    assert run.metrics.input_tokens > 0
+    assert run.metrics.output_tokens == 3
+    assert run.metrics.total_tokens == run.metrics.input_tokens + run.metrics.output_tokens
+    assert run.metrics.prompt_chars > len("Review my profile")
+    assert run.metrics.response_chars == len("Short answer")
+
+    event = next(
+        json.loads(record.message)
+        for record in caplog.records
+        if '"event":"assistant.openclaw.completed"' in record.message
+    )
+    assert event["thread_id"] == "thread-estimated-metrics"
+    assert event["status"] == "completed"
+    assert event["model"] == "openai/gpt-5.6-terra"
+    assert event["tokenCountSource"] == "estimate"
+    assert event["attempts"] == 1
+
+
 def test_run_openclaw_assistant_kills_process_when_cancelled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1051,8 +1148,22 @@ def test_document_generation_uses_internal_message_limit() -> None:
 
 
 def test_assistant_chat_stream_emits_resumable_sse(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_run_openclaw_assistant(**_: object) -> tuple[str, str]:
-        return "A streamed Tasko response.", "session-stream"
+    async def fake_run_openclaw_assistant(**_: object) -> OpenClawAssistantRun:
+        return OpenClawAssistantRun(
+            message="A streamed Tasko response.",
+            session_key="session-stream",
+            metrics=AssistantRunMetrics(
+                latency_ms=125,
+                model="openai/gpt-5.6-terra",
+                input_tokens=40,
+                output_tokens=8,
+                total_tokens=48,
+                token_count_source="provider",
+                attempts=2,
+                prompt_chars=320,
+                response_chars=26,
+            ),
+        )
 
     monkeypatch.setattr(assistant_api, "run_openclaw_assistant", fake_run_openclaw_assistant)
     engine = create_engine(
@@ -1106,6 +1217,22 @@ def test_assistant_chat_stream_emits_resumable_sse(monkeypatch: pytest.MonkeyPat
     assert "event: done" in response.text
     assert streamed_text(response.text) == "A streamed Tasko response."
     assert streamed_text(resumed_response.text) == "Tasko response."
+    assert "id: 0\nevent: connected" in response.text
+    assert "id: 11\nevent: connected" in resumed_response.text
+    resumed_events = parse_sse_events(resumed_response.text)
+    assert resumed_events[-1]["event"] == "done"
+    assert resumed_events[-1]["id"] == len("A streamed Tasko response.")
+    assert resumed_events[-1]["data"]["metadata"]["metrics"] == {
+        "latencyMs": 125,
+        "model": "openai/gpt-5.6-terra",
+        "inputTokens": 40,
+        "outputTokens": 8,
+        "totalTokens": 48,
+        "tokenCountSource": "provider",
+        "attempts": 2,
+        "promptChars": 320,
+        "responseChars": 26,
+    }
     assert conversation is not None
     assert conversation.title == "Profile review"
     assert conversation.openclaw_session_key == "session-stream"
@@ -1211,3 +1338,22 @@ def streamed_text(sse_body: str) -> str:
         payload = json.loads(data_line.removeprefix("data: "))
         chunks.append(payload["text"])
     return "".join(chunks)
+
+
+def parse_sse_events(sse_body: str) -> list[dict[str, object]]:
+    events: list[dict[str, object]] = []
+    for block in sse_body.split("\n\n"):
+        lines = block.splitlines()
+        event_line = next((line for line in lines if line.startswith("event: ")), None)
+        data_line = next((line for line in lines if line.startswith("data: ")), None)
+        id_line = next((line for line in lines if line.startswith("id: ")), None)
+        if not event_line or not data_line or not id_line:
+            continue
+        events.append(
+            {
+                "id": int(id_line.removeprefix("id: ")),
+                "event": event_line.removeprefix("event: "),
+                "data": json.loads(data_line.removeprefix("data: ")),
+            }
+        )
+    return events

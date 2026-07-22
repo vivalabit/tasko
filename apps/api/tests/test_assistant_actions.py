@@ -200,3 +200,39 @@ def test_application_action_is_rejected_when_context_changed() -> None:
 
     assert response.status_code == 409
     assert "context changed" in response.json()["detail"]
+
+
+def test_action_preview_strips_machine_blocks_and_keeps_only_valid_context_actions() -> None:
+    profile = ProfilePayload(headline="Product designer")
+    raw_response = """Review the safe previews below.
+
+<TASKO_ACTIONS_JSON>
+[
+  {"type":"add_application_note","note":"Requires an application"},
+  {"type":"update_profile_field","field":"headline","value":"Senior product designer"},
+  {"type":"update_profile_field","field":"email","value":"not-allowed@example.com"},
+  {"type":"create_interview_event","title":"Interview","startsAt":"2026-07-22T10:00:00","durationMinutes":45,"timezone":"Europe/Zurich"},
+  {"type":"unknown_action","value":"ignored"}
+]
+</TASKO_ACTIONS_JSON>"""
+
+    visible_text, previews = extract_assistant_action_previews(
+        raw_response,
+        request_id="request-filter-actions",
+        context_kind="profile",
+        context_id="",
+        profile=profile,
+        job=None,
+        application=None,
+    )
+
+    assert visible_text == "Review the safe previews below."
+    assert "TASKO_ACTIONS_JSON" not in visible_text
+    assert [preview.type for preview in previews] == ["update_profile_field"]
+    assert previews[0].fields[0].before == "Product designer"
+    assert previews[0].fields[0].after == "Senior product designer"
+    assert previews[0].payload == {
+        "field": "headline",
+        "value": "Senior product designer",
+        "expectedValue": "Product designer",
+    }
