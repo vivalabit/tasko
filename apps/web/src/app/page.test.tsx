@@ -17,6 +17,74 @@ const configuredAppSettings = {
   openai_api_retry_backoff_seconds: 0.8,
 };
 
+it("deletes a legacy supporting document that has no stored ID", async () => {
+  window.history.replaceState(null, "", "#profile");
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  const profileUpdates: Array<Record<string, unknown>> = [];
+  let storedProfile: Record<string, unknown> = {
+    name: "Eduard Ishchenko",
+    documents: JSON.stringify([
+      {
+        title: "Legacy CV",
+        category: "CV / Resume",
+        language: "English",
+        file_name: "legacy-cv.docx",
+        file_size: "60 KB",
+        file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        uploaded_at: "2026-07-20T10:00:00.000Z",
+        data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cv",
+      },
+      {
+        title: "Legacy Cover Letter",
+        category: "Cover Letter",
+        language: "German",
+        file_name: "legacy-cover.docx",
+        file_size: "37 KB",
+        file_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        uploaded_at: "2026-07-20T10:00:00.000Z",
+        data_url: "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,cover",
+      },
+    ]),
+  };
+  const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+    const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = new URL(requestUrl, "http://localhost");
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/parser-search-configs.local.json") return Response.json([]);
+    if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
+    if (url.pathname === "/applications" && method === "GET") return Response.json([]);
+    if (url.pathname === "/applications/events" && method === "GET") return Response.json([]);
+    if (url.pathname === "/profile" && method === "GET") return Response.json(storedProfile);
+    if (url.pathname === "/profile" && method === "PUT") {
+      storedProfile = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      profileUpdates.push(storedProfile);
+      return Response.json(storedProfile);
+    }
+    if (url.pathname === "/settings" && method === "GET") return Response.json(configuredAppSettings);
+    if ((url.pathname === "/applications" || url.pathname === "/applications/events") && method === "PUT") {
+      return Response.json([]);
+    }
+    throw new Error(`Unhandled request: ${method} ${url.pathname}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<HomePage />);
+
+  const legacyCv = await screen.findByText("Legacy CV");
+  const legacyCvCard = legacyCv.closest("article");
+  expect(legacyCvCard).not.toBeNull();
+  fireEvent.click(within(legacyCvCard!).getByRole("button", { name: "Delete document" }));
+
+  await waitFor(() => expect(screen.queryByText("Legacy CV")).not.toBeInTheDocument());
+  expect(screen.getByText("Legacy Cover Letter")).toBeInTheDocument();
+  expect(profileUpdates).toHaveLength(1);
+  const savedDocuments = JSON.parse(String(profileUpdates[0].documents)) as Array<{ id: string; title: string }>;
+  expect(savedDocuments).toEqual([
+    expect.objectContaining({ id: "legacy-document-1", title: "Legacy Cover Letter" }),
+  ]);
+});
+
 it("saves a selectable AI backend without overwriting unrelated settings", async () => {
   window.history.replaceState(null, "", "#settings");
   const requests: Array<{ path: string; method: string; body?: Record<string, unknown> }> = [];

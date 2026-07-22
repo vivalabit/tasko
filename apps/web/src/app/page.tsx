@@ -1353,11 +1353,14 @@ function mergeEducationEntries(currentEntries: EducationEntry[], importedEntries
   return nextEntries;
 }
 
-function normalizeDocumentEntry(entry: Partial<DocumentEntry>): DocumentEntry {
+function normalizeDocumentEntry(
+  entry: Partial<DocumentEntry>,
+  fallbackId = "",
+): DocumentEntry {
   return {
     ...defaultDocumentDraft,
     ...entry,
-    id: entry.id || createClientId("document"),
+    id: entry.id || fallbackId || createClientId("document"),
     title: entry.title?.trim() ?? "",
     category: entry.category?.trim() || "Other",
     language: entry.language?.trim() || inferDocumentLanguage(entry.file_name ?? "", entry.title ?? ""),
@@ -1386,7 +1389,10 @@ function parseDocumentEntries(value: string): DocumentEntry[] {
     if (Array.isArray(parsed)) {
       return parsed
         .filter((item): item is Partial<DocumentEntry> => Boolean(item) && typeof item === "object")
-        .map((item) => normalizeDocumentEntry(item))
+        // Older profiles may contain documents without IDs. The fallback must
+        // be deterministic: parsing once for render and again for delete/edit
+        // must address the same item. The next successful save persists it.
+        .map((item, index) => normalizeDocumentEntry(item, `legacy-document-${index}`))
         .filter((item) => item.title || item.file_name || item.data_url);
     }
   } catch {
