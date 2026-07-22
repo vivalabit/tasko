@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { getAiSourceLabel, type AiBackend, type AiSource } from "@/lib/ai-source";
 import { cn } from "@/lib/utils";
 
 export type AssistantLaunch = {
@@ -81,8 +82,8 @@ type AssistantConnectionStatus = "idle" | "connecting" | "connected" | "reconnec
 
 type AiPrivacySettings = {
   providerName: string;
-  currentBackend: "openclaw_codex" | "openai_api";
-  consentBackend: "openclaw_codex" | "openai_api" | null;
+  currentBackend: AiBackend;
+  consentBackend: AiBackend | null;
   currentConsentVersion: string;
   hasCurrentConsent: boolean;
   retentionDays: number;
@@ -98,7 +99,7 @@ type AssistantMessage = {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
-  source?: "openclaw_codex" | "openai_api" | "local";
+  source?: AiSource;
   status?: "generating" | "complete" | "stopped" | "error";
   actions?: AssistantActionPreview[];
 };
@@ -1556,9 +1557,9 @@ export function AssistantView({
                       {message.role === "assistant" && (
                         <p className="mb-1.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.1em] text-accent">
                           Tasko Assistant
-                          {message.source === "local" && (
+                          {message.source && (
                             <span className="rounded border border-border bg-white/[0.035] px-1.5 py-0.5 text-[8px] tracking-[0.08em] text-muted">
-                              Local fallback
+                              {getAiSourceLabel(message.source)}
                             </span>
                           )}
                         </p>

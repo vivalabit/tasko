@@ -46,7 +46,7 @@ it("grants versioned server consent with a user TTL before streaming", async () 
       return new Response([
         "event: connected\ndata: {}",
         "event: delta\ndata: {\"text\":\"AI reply\",\"offset\":8}",
-        "event: done\ndata: {\"metadata\":{}}",
+        "event: done\ndata: {\"metadata\":{\"backend\":\"openclaw_codex\"}}",
         "",
       ].join("\n\n"), { headers: { "Content-Type": "text/event-stream" } });
     }
@@ -97,6 +97,7 @@ it("grants versioned server consent with a user TTL before streaming", async () 
   fireEvent.click(screen.getByRole("button", { name: "Continue to AI" }));
 
   expect(await screen.findByText("AI reply")).toBeInTheDocument();
+  expect(screen.getByText("Codex credits via OpenClaw")).toBeInTheDocument();
   expect(requests.find((request) => request.path === "/privacy/ai-consent" && request.method === "PUT")?.body).toEqual({
     version: "privacy-v1",
     backend: "openclaw_codex",

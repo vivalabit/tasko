@@ -28,6 +28,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import type { AiBackend } from "@/lib/ai-source";
 import {
   getAiMatchAnalysisStatus,
   hasCurrentApplicationGuide,
@@ -265,16 +266,16 @@ type GeneratedDocument = {
 
 type AiConfiguration = {
   providerName: string;
-  backend: "openclaw_codex" | "openai_api";
+  backend: AiBackend;
   consentVersion: string;
 };
 
 type AiPrivacySettings = {
   providerName: string;
-  currentBackend: "openclaw_codex" | "openai_api";
+  currentBackend: AiBackend;
   currentConsentVersion: string;
   consentVersion: string | null;
-  consentBackend: "openclaw_codex" | "openai_api" | null;
+  consentBackend: AiBackend | null;
   consentedAt: string | null;
   hasCurrentConsent: boolean;
   retentionDays: number;

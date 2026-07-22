@@ -47,10 +47,25 @@ it("saves a selectable AI backend without overwriting unrelated settings", async
 
   render(<HomePage />);
 
-  expect(await screen.findByText("Configured: sk-e****-key. Leave blank to keep the current key.")).toBeInTheDocument();
-  const backendSelect = screen.getByRole("combobox", { name: "AI backend" });
-  fireEvent.change(backendSelect, { target: { value: "openai_api" } });
-  expect(backendSelect).toHaveValue("openai_api");
+  expect(await screen.findByText("OpenAI API key saved but not in use")).toBeInTheDocument();
+  expect(screen.getByText(/sk-e\*\*\*\*-key remains stored/)).toBeInTheDocument();
+  const openAiMode = screen.getByRole("radio", { name: /OpenAI API/ });
+  const openClawMode = screen.getByRole("radio", { name: /Codex credits via OpenClaw/ });
+  expect(openClawMode).toBeChecked();
+  fireEvent.click(openAiMode);
+  expect(openAiMode).toBeChecked();
+  expect(screen.getByText("Saved key: sk-e****-key. Leave blank to keep it.")).toBeInTheDocument();
+  fireEvent.click(openClawMode);
+  expect(screen.queryByLabelText("OpenAI API key")).not.toBeInTheDocument();
+  expect(screen.getByText("OpenAI API key saved but not in use")).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Save AI settings" }));
+  await waitFor(() => {
+    expect(requests.filter((request) => request.path === "/settings" && request.method === "PUT")).toHaveLength(1);
+  });
+  const openClawUpdate = requests.filter((request) => request.path === "/settings" && request.method === "PUT").at(-1)?.body;
+  expect(openClawUpdate).toMatchObject({ ai_backend: "openclaw_codex" });
+  expect(openClawUpdate).not.toHaveProperty("openai_api_key");
+  fireEvent.click(openAiMode);
   fireEvent.change(screen.getByRole("combobox", { name: "OpenAI reasoning effort" }), {
     target: { value: "high" },
   });
@@ -60,9 +75,9 @@ it("saves a selectable AI backend without overwriting unrelated settings", async
   fireEvent.click(screen.getByRole("button", { name: "Save AI settings" }));
 
   await waitFor(() => {
-    expect(requests.some((request) => request.path === "/settings" && request.method === "PUT")).toBe(true);
+    expect(requests.filter((request) => request.path === "/settings" && request.method === "PUT")).toHaveLength(2);
   });
-  const update = requests.find((request) => request.path === "/settings" && request.method === "PUT")?.body;
+  const update = requests.filter((request) => request.path === "/settings" && request.method === "PUT").at(-1)?.body;
   expect(update).toMatchObject({
     ai_backend: "openai_api",
     openai_api_model: "gpt-5.6-terra",
@@ -73,6 +88,68 @@ it("saves a selectable AI backend without overwriting unrelated settings", async
   });
   expect(update).not.toHaveProperty("openai_api_key");
   expect(update).not.toHaveProperty("brightdata_api_key");
+
+  fireEvent.click(screen.getByRole("button", { name: "Delete saved OpenAI API key" }));
+  await waitFor(() => {
+    expect(requests.filter((request) => request.path === "/settings" && request.method === "PUT")).toHaveLength(3);
+  });
+  const deleteUpdate = requests.filter((request) => request.path === "/settings" && request.method === "PUT").at(-1)?.body;
+  expect(deleteUpdate).toEqual({
+    ai_backend: "openclaw_codex",
+    openai_api_key: "",
+  });
+});
+
+it("validates OpenAI API mode before saving", async () => {
+  window.history.replaceState(null, "", "#settings");
+  const requests: Array<{ path: string; method: string; body?: Record<string, unknown> }> = [];
+  const unconfiguredSettings = {
+    ...configuredAppSettings,
+    openai_api_key_configured: false,
+    openai_api_key_preview: "",
+  };
+  const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+    const requestUrl = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    const url = new URL(requestUrl, "http://localhost");
+    const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+    requests.push({ path: url.pathname, method, body });
+
+    if (url.pathname === "/parser-search-configs.local.json") return Response.json([]);
+    if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
+    if (url.pathname === "/applications" && method === "GET") return Response.json([]);
+    if (url.pathname === "/applications/events" && method === "GET") return Response.json([]);
+    if (url.pathname === "/profile" && method === "GET") return Response.json({});
+    if (url.pathname === "/settings" && method === "GET") return Response.json(unconfiguredSettings);
+    if (url.pathname === "/settings" && method === "PUT") return Response.json({ ...unconfiguredSettings, ...body, openai_api_key_configured: true, openai_api_key_preview: "sk-t****-key" });
+    throw new Error(`Unhandled request: ${method} ${url.pathname}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<HomePage />);
+
+  fireEvent.click(await screen.findByRole("radio", { name: /OpenAI API/ }));
+  const saveButton = screen.getByRole("button", { name: "Save AI settings" });
+  expect(screen.getByRole("alert")).toHaveTextContent("Add an OpenAI API key before enabling this mode.");
+  expect(saveButton).toBeDisabled();
+
+  fireEvent.change(screen.getByLabelText("OpenAI API key"), { target: { value: "sk-test-key" } });
+  fireEvent.change(screen.getByRole("spinbutton", { name: "OpenAI timeout seconds" }), { target: { value: "5" } });
+  expect(screen.getByRole("alert")).toHaveTextContent("Timeout must be between 10 and 600 seconds.");
+  expect(saveButton).toBeDisabled();
+
+  fireEvent.change(screen.getByRole("spinbutton", { name: "OpenAI timeout seconds" }), { target: { value: "90" } });
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(saveButton).toBeEnabled();
+  fireEvent.click(saveButton);
+
+  await waitFor(() => expect(requests.some((request) => request.path === "/settings" && request.method === "PUT")).toBe(true));
+  const update = requests.find((request) => request.path === "/settings" && request.method === "PUT")?.body;
+  expect(update).toMatchObject({
+    ai_backend: "openai_api",
+    openai_api_key: "sk-test-key",
+    openai_api_timeout_seconds: 90,
+  });
 });
 
 it("adds a manual vacancy to Jobs, persists it, and starts AI analysis", async () => {
