@@ -4,6 +4,77 @@ import { expect, it, vi } from "vitest";
 import HomePage from "@/app/page";
 import { installApplicationWorkspaceApiMock } from "@/test/application-workspace-harness";
 
+const configuredAppSettings = {
+  has_brightdata_api_key: true,
+  brightdata_api_key_preview: "brig****-key",
+  ai_backend: "openclaw_codex",
+  openai_api_key_configured: true,
+  openai_api_key_preview: "sk-e****-key",
+  openai_api_model: "gpt-5.6-terra",
+  openai_api_reasoning_effort: "medium",
+  openai_api_timeout_seconds: 120,
+  openai_api_max_attempts: 2,
+  openai_api_retry_backoff_seconds: 0.8,
+};
+
+it("saves a selectable AI backend without overwriting unrelated settings", async () => {
+  window.history.replaceState(null, "", "#settings");
+  const requests: Array<{ path: string; method: string; body?: Record<string, unknown> }> = [];
+  const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+    const requestUrl = typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.href
+        : input.url;
+    const url = new URL(requestUrl, "http://localhost");
+    const method = init?.method ?? "GET";
+    const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
+    requests.push({ path: url.pathname, method, body });
+
+    if (url.pathname === "/parser-search-configs.local.json") return Response.json([]);
+    if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
+    if (url.pathname === "/applications" && method === "GET") return Response.json([]);
+    if (url.pathname === "/applications/events" && method === "GET") return Response.json([]);
+    if (url.pathname === "/profile" && method === "GET") return Response.json({});
+    if (url.pathname === "/settings" && method === "GET") return Response.json(configuredAppSettings);
+    if (url.pathname === "/settings" && method === "PUT") {
+      return Response.json({ ...configuredAppSettings, ...body });
+    }
+
+    throw new Error(`Unhandled request: ${method} ${url.pathname}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<HomePage />);
+
+  expect(await screen.findByText("Configured: sk-e****-key. Leave blank to keep the current key.")).toBeInTheDocument();
+  const backendSelect = screen.getByRole("combobox", { name: "AI backend" });
+  fireEvent.change(backendSelect, { target: { value: "openai_api" } });
+  expect(backendSelect).toHaveValue("openai_api");
+  fireEvent.change(screen.getByRole("combobox", { name: "OpenAI reasoning effort" }), {
+    target: { value: "high" },
+  });
+  fireEvent.change(screen.getByRole("spinbutton", { name: "OpenAI timeout seconds" }), {
+    target: { value: "90" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Save AI settings" }));
+
+  await waitFor(() => {
+    expect(requests.some((request) => request.path === "/settings" && request.method === "PUT")).toBe(true);
+  });
+  const update = requests.find((request) => request.path === "/settings" && request.method === "PUT")?.body;
+  expect(update).toMatchObject({
+    ai_backend: "openai_api",
+    openai_api_model: "gpt-5.6-terra",
+    openai_api_reasoning_effort: "high",
+    openai_api_timeout_seconds: 90,
+    openai_api_max_attempts: 2,
+    openai_api_retry_backoff_seconds: 0.8,
+  });
+  expect(update).not.toHaveProperty("openai_api_key");
+  expect(update).not.toHaveProperty("brightdata_api_key");
+});
+
 it("adds a manual vacancy to Jobs, persists it, and starts AI analysis", async () => {
   window.history.replaceState(null, "", "#jobs");
   const requests: Array<{ path: string; method: string; body?: unknown }> = [];

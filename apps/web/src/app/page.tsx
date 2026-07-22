@@ -290,9 +290,44 @@ type ParserApiResponse = {
   message?: string | null;
 };
 
+type AIBackendName = "openclaw_codex" | "openai_api";
+type OpenAIReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+
 type AppSettings = {
   has_brightdata_api_key: boolean;
   brightdata_api_key_preview: string;
+  ai_backend: AIBackendName;
+  openai_api_key_configured: boolean;
+  openai_api_key_preview: string;
+  openai_api_model: string;
+  openai_api_reasoning_effort: OpenAIReasoningEffort;
+  openai_api_timeout_seconds: number;
+  openai_api_max_attempts: number;
+  openai_api_retry_backoff_seconds: number;
+};
+
+type AppSettingsUpdate = Partial<{
+  brightdata_api_key: string;
+  ai_backend: AIBackendName;
+  openai_api_key: string;
+  openai_api_model: string;
+  openai_api_reasoning_effort: OpenAIReasoningEffort;
+  openai_api_timeout_seconds: number;
+  openai_api_max_attempts: number;
+  openai_api_retry_backoff_seconds: number;
+}>;
+
+const defaultAppSettings: AppSettings = {
+  has_brightdata_api_key: false,
+  brightdata_api_key_preview: "",
+  ai_backend: "openclaw_codex",
+  openai_api_key_configured: false,
+  openai_api_key_preview: "",
+  openai_api_model: "gpt-5.6-terra",
+  openai_api_reasoning_effort: "medium",
+  openai_api_timeout_seconds: 120,
+  openai_api_max_attempts: 2,
+  openai_api_retry_backoff_seconds: 0.8,
 };
 
 type BrightDataApiKeyResponse = {
@@ -2817,13 +2852,12 @@ export default function HomePage() {
   const [additionalNotesDraft, setAdditionalNotesDraft] = useState("");
   const [profileSaveStatus, setProfileSaveStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [profileSaveMessage, setProfileSaveMessage] = useState("");
-  const [appSettings, setAppSettings] = useState<AppSettings>({
-    has_brightdata_api_key: false,
-    brightdata_api_key_preview: "",
-  });
+  const [appSettings, setAppSettings] = useState<AppSettings>(defaultAppSettings);
   const [brightDataApiKeyDraft, setBrightDataApiKeyDraft] = useState("");
   const [settingsSaveStatus, setSettingsSaveStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [settingsSaveMessage, setSettingsSaveMessage] = useState("");
+  const [aiSettingsSaveStatus, setAiSettingsSaveStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [aiSettingsSaveMessage, setAiSettingsSaveMessage] = useState("");
   const [uiSettings, setUiSettings] = useState<UiSettings>(defaultUiSettings);
   const [areUiSettingsLoaded, setAreUiSettingsLoaded] = useState(false);
   const [appLogs, setAppLogs] = useState<AppLogEntry[]>([]);
@@ -3342,7 +3376,7 @@ export default function HomePage() {
 
         if (!response.ok) return;
 
-        setAppSettings((await response.json()) as AppSettings);
+        setAppSettings({ ...defaultAppSettings, ...await response.json() as AppSettings });
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
       }
@@ -3907,6 +3941,31 @@ export default function HomePage() {
     } catch (error) {
       setSettingsSaveStatus("error");
       setSettingsSaveMessage(error instanceof Error ? error.message : "Settings save failed");
+    }
+  }
+
+  async function saveAiSettings(update: AppSettingsUpdate) {
+    setAiSettingsSaveStatus("loading");
+    setAiSettingsSaveMessage("");
+
+    try {
+      const response = await fetch(`${apiBaseUrl}/settings`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(update),
+      });
+      const savedSettings = (await response.json()) as AppSettings & { detail?: string };
+
+      if (!response.ok) {
+        throw new Error(savedSettings.detail ?? "AI settings save failed");
+      }
+
+      setAppSettings({ ...defaultAppSettings, ...savedSettings });
+      setAiSettingsSaveStatus("ready");
+      setAiSettingsSaveMessage("AI backend settings saved and activated");
+    } catch (error) {
+      setAiSettingsSaveStatus("error");
+      setAiSettingsSaveMessage(error instanceof Error ? error.message : "AI settings save failed");
     }
   }
 
@@ -5475,6 +5534,8 @@ export default function HomePage() {
             apiKeyDraft={brightDataApiKeyDraft}
             status={settingsSaveStatus}
             message={settingsSaveMessage}
+            aiStatus={aiSettingsSaveStatus}
+            aiMessage={aiSettingsSaveMessage}
             onApiKeyChange={(value) => {
               setBrightDataApiKeyDraft(value);
               setSettingsSaveStatus("idle");
@@ -5482,6 +5543,7 @@ export default function HomePage() {
             }}
             onClear={() => saveAppSettings("")}
             onSave={() => saveAppSettings()}
+            onSaveAi={saveAiSettings}
             onShowLogsChange={updateShowLogs}
           />
         ) : activeView === "Logs" && uiSettings.showLogs ? (
@@ -8500,9 +8562,12 @@ function SettingsView({
   apiKeyDraft,
   status,
   message,
+  aiStatus,
+  aiMessage,
   onApiKeyChange,
   onClear,
   onSave,
+  onSaveAi,
   onShowLogsChange,
 }: {
   settings: AppSettings;
@@ -8510,12 +8575,24 @@ function SettingsView({
   apiKeyDraft: string;
   status: "idle" | "loading" | "ready" | "error";
   message: string;
+  aiStatus: "idle" | "loading" | "ready" | "error";
+  aiMessage: string;
   onApiKeyChange: (value: string) => void;
   onClear: () => void;
   onSave: () => void;
+  onSaveAi: (update: AppSettingsUpdate) => void;
   onShowLogsChange: (value: boolean) => void;
 }) {
   const hasApiKeyDraft = apiKeyDraft.trim().length > 0;
+  const [aiBackendDraft, setAiBackendDraft] = useState<AIBackendName>(settings.ai_backend);
+  const [openAiApiKeyDraft, setOpenAiApiKeyDraft] = useState("");
+  const [openAiModelDraft, setOpenAiModelDraft] = useState(settings.openai_api_model);
+  const [openAiReasoningDraft, setOpenAiReasoningDraft] = useState<OpenAIReasoningEffort>(
+    settings.openai_api_reasoning_effort,
+  );
+  const [openAiTimeoutDraft, setOpenAiTimeoutDraft] = useState(settings.openai_api_timeout_seconds);
+  const [openAiAttemptsDraft, setOpenAiAttemptsDraft] = useState(settings.openai_api_max_attempts);
+  const [openAiBackoffDraft, setOpenAiBackoffDraft] = useState(settings.openai_api_retry_backoff_seconds);
   const [isCurrentKeyVisible, setIsCurrentKeyVisible] = useState(false);
   const [revealedCurrentKey, setRevealedCurrentKey] = useState("");
   const [isCurrentKeyLoading, setIsCurrentKeyLoading] = useState(false);
@@ -8541,6 +8618,32 @@ function SettingsView({
     setRevealedCurrentKey("");
     setCopyStatus("");
   }, [settings.brightdata_api_key_preview, settings.has_brightdata_api_key]);
+
+  useEffect(() => {
+    setAiBackendDraft(settings.ai_backend);
+    setOpenAiApiKeyDraft("");
+    setOpenAiModelDraft(settings.openai_api_model);
+    setOpenAiReasoningDraft(settings.openai_api_reasoning_effort);
+    setOpenAiTimeoutDraft(settings.openai_api_timeout_seconds);
+    setOpenAiAttemptsDraft(settings.openai_api_max_attempts);
+    setOpenAiBackoffDraft(settings.openai_api_retry_backoff_seconds);
+  }, [settings]);
+
+  function saveAiBackendSettings() {
+    onSaveAi({
+      ai_backend: aiBackendDraft,
+      ...(openAiApiKeyDraft.trim() ? { openai_api_key: openAiApiKeyDraft.trim() } : {}),
+      openai_api_model: openAiModelDraft.trim(),
+      openai_api_reasoning_effort: openAiReasoningDraft,
+      openai_api_timeout_seconds: openAiTimeoutDraft,
+      openai_api_max_attempts: openAiAttemptsDraft,
+      openai_api_retry_backoff_seconds: openAiBackoffDraft,
+    });
+  }
+
+  function clearOpenAiApiKey() {
+    onSaveAi({ ai_backend: "openclaw_codex", openai_api_key: "" });
+  }
 
   async function loadCurrentApiKey() {
     if (!settings.has_brightdata_api_key) return "";
@@ -8630,6 +8733,163 @@ function SettingsView({
             >
               <span className={cn("absolute top-1 h-4 w-4 rounded-full bg-white transition", showLogs ? "right-1" : "left-1")} />
             </button>
+          </div>
+        </section>
+
+        <section className="panel p-5 2xl:p-7">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <div className="grid h-11 w-11 shrink-0 place-items-center rounded-md bg-accent/18 text-accent 2xl:h-12 2xl:w-12">
+                <BrainCircuit className="h-5 w-5 2xl:h-6 2xl:w-6" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="text-base font-bold text-white 2xl:text-lg">AI backend</h2>
+                <p className="mt-1 text-[13px] leading-5 text-muted 2xl:text-sm 2xl:leading-6">
+                  Select the local OpenClaw Codex flow or call the OpenAI Responses API directly.
+                </p>
+              </div>
+            </div>
+            <span
+              className={cn(
+                "inline-flex h-8 w-fit items-center gap-2 rounded-md border px-3 text-xs font-bold",
+                aiBackendDraft === "openai_api" && !settings.openai_api_key_configured && !openAiApiKeyDraft.trim()
+                  ? "border-[#d94d4d]/45 bg-[#d94d4d]/13 text-[#ff8a8a]"
+                  : "border-success/35 bg-success/12 text-success",
+              )}
+            >
+              {aiBackendDraft === "openai_api" ? "OpenAI API" : "OpenClaw Codex"}
+            </span>
+          </div>
+
+          <div className="mt-6 grid gap-5">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <label className="grid gap-2">
+                <span className="text-sm font-bold text-[#d8dee8] 2xl:text-base">Backend</span>
+                <select
+                  aria-label="AI backend"
+                  value={aiBackendDraft}
+                  onChange={(event) => setAiBackendDraft(event.target.value as AIBackendName)}
+                  className="h-12 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70 2xl:h-[52px] 2xl:px-4 2xl:text-base"
+                >
+                  <option value="openclaw_codex">OpenClaw Codex</option>
+                  <option value="openai_api">OpenAI API</option>
+                </select>
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-sm font-bold text-[#d8dee8] 2xl:text-base">OpenAI model</span>
+                <input
+                  aria-label="OpenAI model"
+                  value={openAiModelDraft}
+                  onChange={(event) => setOpenAiModelDraft(event.target.value)}
+                  className="h-12 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70 2xl:h-[52px] 2xl:px-4 2xl:text-base"
+                />
+              </label>
+            </div>
+
+            <label className="grid gap-2">
+              <span className="text-sm font-bold text-[#d8dee8] 2xl:text-base">OpenAI API key</span>
+              <input
+                type="password"
+                aria-label="OpenAI API key"
+                value={openAiApiKeyDraft}
+                onChange={(event) => setOpenAiApiKeyDraft(event.target.value)}
+                placeholder={settings.openai_api_key_preview || "Enter an OpenAI API key"}
+                className="h-12 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/70 focus:border-accent/70 2xl:h-[52px] 2xl:px-4 2xl:text-base"
+                autoComplete="off"
+              />
+              <span className="text-sm font-medium text-muted">
+                {settings.openai_api_key_configured
+                  ? `Configured: ${settings.openai_api_key_preview}. Leave blank to keep the current key.`
+                  : "The key stays server-side. The browser receives only its configured state and mask."}
+              </span>
+            </label>
+
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <label className="grid gap-2">
+                <span className="text-sm font-bold text-[#d8dee8]">Reasoning effort</span>
+                <select
+                  aria-label="OpenAI reasoning effort"
+                  value={openAiReasoningDraft}
+                  onChange={(event) => setOpenAiReasoningDraft(event.target.value as OpenAIReasoningEffort)}
+                  className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                >
+                  {(["none", "low", "medium", "high", "xhigh", "max"] as OpenAIReasoningEffort[]).map((effort) => (
+                    <option key={effort} value={effort}>{effort}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="grid gap-2">
+                <span className="text-sm font-bold text-[#d8dee8]">Timeout, seconds</span>
+                <input
+                  type="number"
+                  aria-label="OpenAI timeout seconds"
+                  min={10}
+                  max={600}
+                  value={openAiTimeoutDraft}
+                  onChange={(event) => setOpenAiTimeoutDraft(Number(event.target.value))}
+                  className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                />
+              </label>
+              <label className="grid gap-2">
+                <span className="text-sm font-bold text-[#d8dee8]">Max attempts</span>
+                <input
+                  type="number"
+                  aria-label="OpenAI max attempts"
+                  min={1}
+                  max={4}
+                  value={openAiAttemptsDraft}
+                  onChange={(event) => setOpenAiAttemptsDraft(Number(event.target.value))}
+                  className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                />
+              </label>
+              <label className="grid gap-2">
+                <span className="text-sm font-bold text-[#d8dee8]">Retry backoff, seconds</span>
+                <input
+                  type="number"
+                  aria-label="OpenAI retry backoff seconds"
+                  min={0}
+                  max={10}
+                  step={0.1}
+                  value={openAiBackoffDraft}
+                  onChange={(event) => setOpenAiBackoffDraft(Number(event.target.value))}
+                  className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                />
+              </label>
+            </div>
+
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <p className={cn("flex items-center gap-3 text-sm font-semibold", aiStatus === "error" ? "text-[#ff7a7a]" : aiStatus === "ready" ? "text-success" : "text-muted")}>
+                {aiStatus === "error" ? <X className="h-5 w-5" /> : <ShieldCheck className="h-5 w-5" />}
+                {aiMessage || (settings.openai_api_key_configured ? "OpenAI key configured" : "OpenAI key not configured")}
+              </p>
+              <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                {settings.openai_api_key_configured && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="h-12 rounded-md border border-border bg-transparent px-6 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
+                    disabled={aiStatus === "loading"}
+                    onClick={clearOpenAiApiKey}
+                  >
+                    Clear OpenAI key
+                  </Button>
+                )}
+                <Button
+                  type="button"
+                  className="h-12 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white"
+                  disabled={
+                    aiStatus === "loading"
+                    || !openAiModelDraft.trim()
+                    || (aiBackendDraft === "openai_api" && !settings.openai_api_key_configured && !openAiApiKeyDraft.trim())
+                  }
+                  onClick={saveAiBackendSettings}
+                >
+                  <Save className="h-4 w-4" />
+                  {aiStatus === "loading" ? "Saving..." : "Save AI settings"}
+                </Button>
+              </div>
+            </div>
           </div>
         </section>
 

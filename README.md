@@ -92,12 +92,18 @@ The reliability budget can be adjusted with these API environment variables:
 - `OPENCLAW_ASSISTANT_MAX_HISTORY_MESSAGES`
 - `OPENCLAW_ASSISTANT_MAX_HISTORY_CHARS`
 
-AI transport is selected with `AI_BACKEND_MODE`:
+AI transport is selected with `AI_BACKEND`:
 
 - `openclaw_codex` (default) preserves the existing isolated OpenClaw CLI flow.
 - `openai_api` sends the same prompts through the OpenAI Responses API. Set
   `OPENAI_API_KEY`; optionally override `OPENAI_API_BASE_URL` and
-  `OPENAI_API_MODEL`.
+  `OPENAI_API_MODEL`. Direct API reasoning and reliability are configured with
+  `OPENAI_API_REASONING_EFFORT`, `OPENAI_API_TIMEOUT_SECONDS`,
+  `OPENAI_API_MAX_ATTEMPTS`, and `OPENAI_API_RETRY_BACKOFF_SECONDS`.
+
+These values can also be changed from the Settings screen. Settings updates are
+partial, and the OpenAI API key is returned to the browser only as configured
+state plus a masked preview.
 
 Both modes return the same internal result contract: text, structured data,
 model, backend, token usage, latency, and session/response ID.

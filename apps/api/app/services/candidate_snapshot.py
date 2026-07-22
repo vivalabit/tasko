@@ -17,6 +17,7 @@ from app.services.ai_backend import (
     AIBackendError,
     AIRequest,
     create_configured_ai_backend,
+    generate_with_retries,
 )
 from app.services.ai_match import (
     MATCHER_VERSION,
@@ -232,7 +233,8 @@ def build_snapshot_with_openclaw(
         openclaw_prompt_transport="file",
     )
     try:
-        result = selected_backend.generate(
+        result = generate_with_retries(
+            selected_backend,
             AIRequest(
                 prompt=prompt,
                 model=(
@@ -241,10 +243,22 @@ def build_snapshot_with_openclaw(
                     else ""
                 ),
                 agent_id=settings.openclaw_agent_id,
-                thinking=settings.openclaw_ai_match_thinking,
-                timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
+                thinking=settings.ai_reasoning_for(settings.openclaw_ai_match_thinking),
+                timeout_seconds=settings.ai_timeout_for(
+                    settings.openclaw_ai_match_timeout_seconds
+                ),
                 structured=True,
-            )
+            ),
+            max_attempts=(
+                settings.openai_api_max_attempts
+                if selected_backend.name == "openai_api"
+                else 1
+            ),
+            retry_backoff_seconds=(
+                settings.openai_api_retry_backoff_seconds
+                if selected_backend.name == "openai_api"
+                else 0
+            ),
         )
     except AIBackendError as exc:
         if exc.code == "runtime_missing":

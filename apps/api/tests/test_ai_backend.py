@@ -9,9 +9,11 @@ from app.services.ai_backend import (
     AIBackendError,
     AIRequest,
     AIResult,
+    AIUsage,
     OpenAIAPIBackend,
     OpenClawCodexBackend,
     create_ai_backend,
+    generate_with_retries,
 )
 
 
@@ -168,3 +170,39 @@ def test_backend_factory_supports_both_modes_and_requires_direct_api_credentials
     backend = create_ai_backend(mode="openai_api")
     with pytest.raises(AIBackendError, match="OPENAI_API_KEY"):
         backend.generate(AIRequest(prompt="test", model="gpt-5.6-terra"))
+
+
+def test_provider_neutral_retry_policy_uses_exponential_backoff(monkeypatch) -> None:
+    attempts = 0
+    delays: list[float] = []
+
+    class FlakyBackend:
+        name = "openai_api"
+
+        def generate(self, _: AIRequest) -> AIResult:
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise AIBackendError("temporary", retryable=True)
+            return AIResult(
+                text="ready",
+                structured_data=None,
+                model="gpt-5.6-terra",
+                backend="openai_api",
+                usage=AIUsage(),
+                latency_ms=1,
+                session_id="resp-ready",
+            )
+
+    monkeypatch.setattr("app.services.ai_backend.time.sleep", delays.append)
+
+    result = generate_with_retries(
+        FlakyBackend(),
+        AIRequest(prompt="test"),
+        max_attempts=3,
+        retry_backoff_seconds=0.5,
+    )
+
+    assert result.text == "ready"
+    assert attempts == 3
+    assert delays == [0.5, 1.0]

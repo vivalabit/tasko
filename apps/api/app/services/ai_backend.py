@@ -555,3 +555,22 @@ def create_configured_ai_backend(
         openclaw_include_cli_timeout=openclaw_include_cli_timeout,
         openclaw_model_after_timeout=openclaw_model_after_timeout,
     )
+
+
+def generate_with_retries(
+    backend: AIBackend,
+    request: AIRequest,
+    *,
+    max_attempts: int = 1,
+    retry_backoff_seconds: float = 0,
+) -> AIResult:
+    attempts = max(1, max_attempts)
+    for attempt in range(1, attempts + 1):
+        try:
+            return backend.generate(request)
+        except AIBackendError as exc:
+            if not exc.retryable or attempt >= attempts:
+                raise
+            if retry_backoff_seconds > 0:
+                time.sleep(retry_backoff_seconds * (2 ** (attempt - 1)))
+    raise AIBackendError("AI backend request failed", code="backend_error")

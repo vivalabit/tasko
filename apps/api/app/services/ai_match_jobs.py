@@ -129,8 +129,10 @@ class AiMatchJobManager:
                 batch,
                 command=settings.openclaw_command,
                 agent_id=settings.openclaw_agent_id,
-                thinking=settings.openclaw_ai_match_thinking,
-                timeout_seconds=settings.openclaw_ai_match_timeout_seconds,
+                thinking=settings.ai_reasoning_for(settings.openclaw_ai_match_thinking),
+                timeout_seconds=settings.ai_timeout_for(
+                    settings.openclaw_ai_match_timeout_seconds
+                ),
                 openclaw_enabled=settings.openclaw_ai_match_enabled,
                 openclaw_max_jobs=max(1, settings.openclaw_ai_match_max_jobs),
                 model=(
@@ -138,7 +140,10 @@ class AiMatchJobManager:
                     if settings.ai_backend_mode == "openai_api"
                     else settings.openclaw_ai_match_model
                 ),
-                max_attempts=settings.openclaw_ai_match_max_attempts,
+                max_attempts=settings.ai_max_attempts_for(
+                    settings.openclaw_ai_match_max_attempts
+                ),
+                retry_backoff_seconds=settings.ai_retry_backoff_for(0),
                 force=force,
                 candidate_snapshot=candidate_snapshot,
                 backend=create_configured_ai_backend(settings),

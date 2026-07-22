@@ -131,7 +131,7 @@ def begin_generation_artifact(
             else settings.openclaw_assistant_model
         ),
         "backend": settings.ai_backend_mode,
-        "thinking": settings.openclaw_assistant_thinking,
+        "thinking": settings.ai_reasoning_for(settings.openclaw_assistant_thinking),
         "agentId": settings.openclaw_assistant_agent_id,
         "history": history,
     }
@@ -277,8 +277,10 @@ async def chat_with_assistant(
             application=inputs.application,
             command=settings.openclaw_command,
             agent_id=settings.openclaw_assistant_agent_id,
-            thinking=settings.openclaw_assistant_thinking,
-            timeout_seconds=settings.openclaw_assistant_timeout_seconds,
+            thinking=settings.ai_reasoning_for(settings.openclaw_assistant_thinking),
+            timeout_seconds=settings.ai_timeout_for(
+                settings.openclaw_assistant_timeout_seconds
+            ),
             model=(
                 settings.openai_api_model
                 if settings.ai_backend_mode == "openai_api"
@@ -289,8 +291,12 @@ async def chat_with_assistant(
             candidate_confirmations=list(inputs.confirmations),
             session_scope=uuid4().hex,
             max_prompt_chars=settings.openclaw_assistant_max_prompt_chars,
-            max_attempts=settings.openclaw_assistant_max_attempts,
-            retry_backoff_seconds=settings.openclaw_assistant_retry_backoff_seconds,
+            max_attempts=settings.ai_max_attempts_for(
+                settings.openclaw_assistant_max_attempts
+            ),
+            retry_backoff_seconds=settings.ai_retry_backoff_for(
+                settings.openclaw_assistant_retry_backoff_seconds
+            ),
             backend=create_configured_ai_backend(
                 settings,
                 openclaw_include_cli_timeout=True,
@@ -554,8 +560,10 @@ async def generate_assistant_stream(
             application=application,
             command=settings.openclaw_command,
             agent_id=settings.openclaw_assistant_agent_id,
-            thinking=settings.openclaw_assistant_thinking,
-            timeout_seconds=settings.openclaw_assistant_timeout_seconds,
+            thinking=settings.ai_reasoning_for(settings.openclaw_assistant_thinking),
+            timeout_seconds=settings.ai_timeout_for(
+                settings.openclaw_assistant_timeout_seconds
+            ),
             model=(
                 settings.openai_api_model
                 if settings.ai_backend_mode == "openai_api"
@@ -566,8 +574,12 @@ async def generate_assistant_stream(
             candidate_confirmations=candidate_confirmations,
             session_scope=request.request_id,
             max_prompt_chars=settings.openclaw_assistant_max_prompt_chars,
-            max_attempts=settings.openclaw_assistant_max_attempts,
-            retry_backoff_seconds=settings.openclaw_assistant_retry_backoff_seconds,
+            max_attempts=settings.ai_max_attempts_for(
+                settings.openclaw_assistant_max_attempts
+            ),
+            retry_backoff_seconds=settings.ai_retry_backoff_for(
+                settings.openclaw_assistant_retry_backoff_seconds
+            ),
             backend=create_configured_ai_backend(
                 settings,
                 openclaw_include_cli_timeout=True,

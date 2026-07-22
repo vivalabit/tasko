@@ -4,6 +4,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from app.api import settings as settings_api
 from app.api.settings import format_env_value, mask_secret, upsert_env_value
 from app.core.settings import Settings, get_settings
 from app.main import app
@@ -19,6 +20,7 @@ def test_format_env_value_quotes_values_that_need_it() -> None:
     assert format_env_value("plain_key-123") == "plain_key-123"
     assert format_env_value("key with spaces") == '"key with spaces"'
     assert format_env_value('key"with\\chars') == '"key\\"with\\\\chars"'
+    assert format_env_value("line-one\nline-two") == '"line-one\\nline-two"'
 
 
 def test_upsert_env_value_preserves_other_lines(tmp_path: Path) -> None:
@@ -67,3 +69,161 @@ def test_ai_backend_mode_accepts_only_supported_transports() -> None:
 
     with pytest.raises(ValidationError):
         Settings(ai_backend_mode="unsupported")
+
+    with pytest.raises(ValidationError, match="OPENAI_API_KEY is required"):
+        Settings(ai_backend_mode="openai_api", openai_api_key="")
+
+
+def test_ai_backend_uses_canonical_env_and_direct_api_parameters(monkeypatch) -> None:
+    monkeypatch.setenv("AI_BACKEND", "openai_api")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_API_REASONING_EFFORT", "high")
+    monkeypatch.setenv("OPENAI_API_TIMEOUT_SECONDS", "75")
+    monkeypatch.setenv("OPENAI_API_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv("OPENAI_API_RETRY_BACKOFF_SECONDS", "1.25")
+
+    settings = Settings()
+
+    assert settings.ai_backend_mode == "openai_api"
+    assert settings.ai_reasoning_for("off") == "high"
+    assert settings.ai_timeout_for(30) == 75
+    assert settings.ai_max_attempts_for(1) == 3
+    assert settings.ai_retry_backoff_for(0) == 1.25
+
+
+def test_settings_never_returns_full_openai_key(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-openai-key")
+    get_settings.cache_clear()
+
+    try:
+        response = TestClient(app).get("/settings")
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["openai_api_key_configured"] is True
+    assert response.json()["openai_api_key_preview"] == "sk-s****-key"
+    assert "sk-secret-openai-key" not in response.text
+    assert "openai_api_key" not in response.json()
+
+
+def test_ai_settings_update_is_partial_and_refreshes_cache(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "BRIGHTDATA_API_KEY=bright-existing-key\n"
+        "AI_BACKEND=openclaw_codex\n"
+        "OPENAI_API_KEY=\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings_api, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "bright-existing-key")
+    monkeypatch.setenv("AI_BACKEND", "openclaw_codex")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("OPENAI_API_MODEL", "gpt-5.6-terra")
+    monkeypatch.setenv("OPENAI_API_REASONING_EFFORT", "medium")
+    monkeypatch.setenv("OPENAI_API_TIMEOUT_SECONDS", "120")
+    monkeypatch.setenv("OPENAI_API_MAX_ATTEMPTS", "2")
+    monkeypatch.setenv("OPENAI_API_RETRY_BACKOFF_SECONDS", "0.8")
+    get_settings.cache_clear()
+    assert get_settings().ai_backend_mode == "openclaw_codex"
+
+    try:
+        response = TestClient(app).put(
+            "/settings",
+            json={
+                "ai_backend": "openai_api",
+                "openai_api_key": "sk-new-secret-key",
+                "openai_api_model": "gpt-5.6-terra",
+                "openai_api_reasoning_effort": "low",
+                "openai_api_timeout_seconds": 90,
+                "openai_api_max_attempts": 3,
+                "openai_api_retry_backoff_seconds": 1.5,
+            },
+        )
+
+        refreshed = get_settings()
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["ai_backend"] == "openai_api"
+    assert response.json()["openai_api_key_configured"] is True
+    assert response.json()["openai_api_key_preview"] == "sk-n****-key"
+    assert "sk-new-secret-key" not in response.text
+    assert refreshed.ai_backend_mode == "openai_api"
+    assert refreshed.openai_api_reasoning_effort == "low"
+    assert refreshed.openai_api_timeout_seconds == 90
+    assert "BRIGHTDATA_API_KEY=bright-existing-key" in env_path.read_text(encoding="utf-8")
+
+
+def test_openai_api_cannot_be_enabled_without_a_key(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(settings_api, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("AI_BACKEND", "openclaw_codex")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    get_settings.cache_clear()
+
+    try:
+        response = TestClient(app).put(
+            "/settings",
+            json={"ai_backend": "openai_api"},
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Configure an OpenAI API key before enabling openai_api"
+    )
+    assert not (tmp_path / ".env").exists()
+
+
+def test_rejected_openai_key_is_not_echoed(monkeypatch, tmp_path: Path) -> None:
+    rejected_key = "sk-" + "secret" * 700
+    monkeypatch.setattr(settings_api, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("AI_BACKEND", "openclaw_codex")
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    get_settings.cache_clear()
+
+    try:
+        response = TestClient(app).put(
+            "/settings",
+            json={"openai_api_key": rejected_key},
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "OpenAI API key is too long"
+    assert rejected_key not in response.text
+
+
+def test_brightdata_only_update_keeps_active_ai_configuration(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(settings_api, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("BRIGHTDATA_API_KEY", "old-bright-key")
+    monkeypatch.setenv("AI_BACKEND", "openai_api")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-existing-key")
+    get_settings.cache_clear()
+
+    try:
+        response = TestClient(app).put(
+            "/settings",
+            json={"brightdata_api_key": "new-bright-key"},
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["has_brightdata_api_key"] is True
+    assert response.json()["ai_backend"] == "openai_api"
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "BRIGHTDATA_API_KEY=new-bright-key" in env_text
+    assert "OPENAI_API_KEY" not in env_text

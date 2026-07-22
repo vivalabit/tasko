@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 import unicodedata
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
@@ -265,6 +266,7 @@ def calculate_ai_matches(
     openclaw_max_jobs: int,
     model: str = DEFAULT_AI_MATCH_MODEL,
     max_attempts: int = DEFAULT_AI_MATCH_MAX_ATTEMPTS,
+    retry_backoff_seconds: float = 0,
     force: bool = False,
     candidate_snapshot: dict[str, Any] | None = None,
     backend: AIBackend | None = None,
@@ -334,6 +336,8 @@ def calculate_ai_matches(
                 if attempt + 1 >= max(1, max_attempts):
                     raise
                 correction_feedback = str(exc)
+                if retry_backoff_seconds > 0:
+                    time.sleep(retry_backoff_seconds * (2**attempt))
         by_id.update(
             {
                 result["id"]: result

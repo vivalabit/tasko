@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -12,10 +12,19 @@ class Settings(BaseSettings):
     app_env: str = "local"
     database_url: str = "postgresql+psycopg://tasko:tasko@localhost:5432/tasko"
     redis_url: str = "redis://localhost:6379/0"
-    ai_backend_mode: Literal["openclaw_codex", "openai_api"] = "openclaw_codex"
+    ai_backend_mode: Literal["openclaw_codex", "openai_api"] = Field(
+        default="openclaw_codex",
+        validation_alias=AliasChoices("AI_BACKEND", "AI_BACKEND_MODE"),
+    )
     openai_api_key: str = ""
     openai_api_base_url: str = "https://api.openai.com/v1"
     openai_api_model: str = "gpt-5.6-terra"
+    openai_api_reasoning_effort: Literal[
+        "none", "low", "medium", "high", "xhigh", "max"
+    ] = "medium"
+    openai_api_timeout_seconds: int = Field(default=120, ge=10, le=600)
+    openai_api_max_attempts: int = Field(default=2, ge=1, le=4)
+    openai_api_retry_backoff_seconds: float = Field(default=0.8, ge=0, le=10)
     openclaw_resume_import_enabled: bool = True
     openclaw_command: str = "openclaw"
     openclaw_agent_id: str = "tasko-assistant"
@@ -55,9 +64,44 @@ class Settings(BaseSettings):
         r"172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}):300[01]$"
     )
 
+    def ai_reasoning_for(self, openclaw_reasoning: str) -> str:
+        return (
+            self.openai_api_reasoning_effort
+            if self.ai_backend_mode == "openai_api"
+            else openclaw_reasoning
+        )
+
+    def ai_timeout_for(self, openclaw_timeout_seconds: int) -> int:
+        return (
+            self.openai_api_timeout_seconds
+            if self.ai_backend_mode == "openai_api"
+            else openclaw_timeout_seconds
+        )
+
+    def ai_max_attempts_for(self, openclaw_max_attempts: int) -> int:
+        return (
+            self.openai_api_max_attempts
+            if self.ai_backend_mode == "openai_api"
+            else openclaw_max_attempts
+        )
+
+    def ai_retry_backoff_for(self, openclaw_retry_backoff_seconds: float) -> float:
+        return (
+            self.openai_api_retry_backoff_seconds
+            if self.ai_backend_mode == "openai_api"
+            else openclaw_retry_backoff_seconds
+        )
+
+    @model_validator(mode="after")
+    def require_openai_key_for_direct_backend(self) -> "Settings":
+        if self.ai_backend_mode == "openai_api" and not self.openai_api_key.strip():
+            raise ValueError("OPENAI_API_KEY is required when AI_BACKEND=openai_api")
+        return self
+
     model_config = SettingsConfigDict(
         env_file=(REPO_ROOT / ".env", ".env"),
         env_file_encoding="utf-8",
+        populate_by_name=True,
     )
 
 

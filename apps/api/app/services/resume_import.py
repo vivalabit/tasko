@@ -11,7 +11,13 @@ from uuid import uuid4
 from xml.etree import ElementTree
 
 from app.models.profile import ImportedEducationEntry, ImportedExperienceEntry
-from app.services.ai_backend import AIBackend, AIBackendError, AIRequest, OpenClawCodexBackend
+from app.services.ai_backend import (
+    AIBackend,
+    AIBackendError,
+    AIRequest,
+    OpenClawCodexBackend,
+    generate_with_retries,
+)
 from app.services.resume_headings import (
     ALL_RESUME_HEADINGS,
     CERTIFICATION_HEADINGS as RESUME_CERTIFICATION_HEADINGS,
@@ -330,6 +336,8 @@ def parse_experience_with_openclaw(
     timeout_seconds: int,
     model: str = "",
     backend: AIBackend | None = None,
+    max_attempts: int = 1,
+    retry_backoff_seconds: float = 0,
 ) -> list[ImportedExperienceEntry]:
     resume_text = text.strip()
     if not resume_text:
@@ -344,6 +352,8 @@ def parse_experience_with_openclaw(
         timeout_seconds=timeout_seconds,
         model=model,
         backend=backend,
+        max_attempts=max_attempts,
+        retry_backoff_seconds=retry_backoff_seconds,
         payload_extractor=extract_openclaw_experience_payload,
     )
     entries = parsed.get("experience", [])
@@ -365,6 +375,8 @@ def parse_education_with_openclaw(
     timeout_seconds: int,
     model: str = "",
     backend: AIBackend | None = None,
+    max_attempts: int = 1,
+    retry_backoff_seconds: float = 0,
 ) -> list[ImportedEducationEntry]:
     resume_text = text.strip()
     if not resume_text:
@@ -379,6 +391,8 @@ def parse_education_with_openclaw(
         timeout_seconds=timeout_seconds,
         model=model,
         backend=backend,
+        max_attempts=max_attempts,
+        retry_backoff_seconds=retry_backoff_seconds,
         payload_extractor=extract_openclaw_education_payload,
     )
     entries = parsed.get("education", [])
@@ -400,6 +414,8 @@ def parse_skills_with_openclaw(
     timeout_seconds: int,
     model: str = "",
     backend: AIBackend | None = None,
+    max_attempts: int = 1,
+    retry_backoff_seconds: float = 0,
 ) -> list[str]:
     resume_text = text.strip()
     if not resume_text:
@@ -414,6 +430,8 @@ def parse_skills_with_openclaw(
         timeout_seconds=timeout_seconds,
         model=model,
         backend=backend,
+        max_attempts=max_attempts,
+        retry_backoff_seconds=retry_backoff_seconds,
         payload_extractor=extract_openclaw_skills_payload,
     )
     skills = parsed.get("skills", [])
@@ -432,6 +450,8 @@ def run_resume_ai_backend(
     timeout_seconds: int,
     model: str,
     backend: AIBackend | None,
+    max_attempts: int,
+    retry_backoff_seconds: float,
     payload_extractor,
 ) -> dict[str, object]:
     selected_backend = backend or OpenClawCodexBackend(
@@ -439,7 +459,8 @@ def run_resume_ai_backend(
         sync_runner=subprocess.run,
     )
     try:
-        result = selected_backend.generate(
+        result = generate_with_retries(
+            selected_backend,
             AIRequest(
                 prompt=prompt,
                 model=model,
@@ -448,7 +469,9 @@ def run_resume_ai_backend(
                 timeout_seconds=timeout_seconds,
                 session_id=f"agent:{agent_id}:resume-import-{uuid4().hex}",
                 structured=True,
-            )
+            ),
+            max_attempts=max_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
         )
     except AIBackendError as exc:
         if exc.code == "runtime_missing":

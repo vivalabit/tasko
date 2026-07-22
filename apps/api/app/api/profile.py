@@ -156,10 +156,14 @@ def import_experience_from_resume(
             text=text,
             command=settings.openclaw_command,
             agent_id=settings.openclaw_agent_id,
-            thinking=settings.openclaw_resume_import_thinking,
-            timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
+            thinking=settings.ai_reasoning_for(settings.openclaw_resume_import_thinking),
+            timeout_seconds=settings.ai_timeout_for(
+                settings.openclaw_resume_import_timeout_seconds
+            ),
             model=settings.openai_api_model if settings.ai_backend_mode == "openai_api" else "",
             backend=create_configured_ai_backend(settings),
+            max_attempts=settings.ai_max_attempts_for(1),
+            retry_backoff_seconds=settings.ai_retry_backoff_for(0),
         )
     except OpenClawResumeImportError as exc:
         raise HTTPException(
@@ -203,10 +207,14 @@ def import_education_from_resume(
             text=text,
             command=settings.openclaw_command,
             agent_id=settings.openclaw_agent_id,
-            thinking=settings.openclaw_resume_import_thinking,
-            timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
+            thinking=settings.ai_reasoning_for(settings.openclaw_resume_import_thinking),
+            timeout_seconds=settings.ai_timeout_for(
+                settings.openclaw_resume_import_timeout_seconds
+            ),
             model=settings.openai_api_model if settings.ai_backend_mode == "openai_api" else "",
             backend=create_configured_ai_backend(settings),
+            max_attempts=settings.ai_max_attempts_for(1),
+            retry_backoff_seconds=settings.ai_retry_backoff_for(0),
         )
     except OpenClawResumeImportError as exc:
         raise HTTPException(
@@ -250,10 +258,14 @@ def import_skills_from_resume(
             text=text,
             command=settings.openclaw_command,
             agent_id=settings.openclaw_agent_id,
-            thinking=settings.openclaw_resume_import_thinking,
-            timeout_seconds=settings.openclaw_resume_import_timeout_seconds,
+            thinking=settings.ai_reasoning_for(settings.openclaw_resume_import_thinking),
+            timeout_seconds=settings.ai_timeout_for(
+                settings.openclaw_resume_import_timeout_seconds
+            ),
             model=settings.openai_api_model if settings.ai_backend_mode == "openai_api" else "",
             backend=create_configured_ai_backend(settings),
+            max_attempts=settings.ai_max_attempts_for(1),
+            retry_backoff_seconds=settings.ai_retry_backoff_for(0),
         )
     except OpenClawResumeImportError as exc:
         raise HTTPException(

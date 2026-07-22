@@ -104,11 +104,10 @@ def test_assistant_config_exposes_provider_and_consent_version() -> None:
 def test_assistant_routes_openai_api_mode_through_neutral_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured_backend = ""
+    captured: dict[str, object] = {}
 
     async def fake_run_ai_assistant(**kwargs: object) -> tuple[str, str]:
-        nonlocal captured_backend
-        captured_backend = kwargs["backend"].name
+        captured.update(kwargs)
         return "Direct API response", "resp-direct-api"
 
     monkeypatch.setattr(
@@ -119,6 +118,10 @@ def test_assistant_routes_openai_api_mode_through_neutral_backend(
     app.dependency_overrides[get_settings] = lambda: Settings(
         ai_backend_mode="openai_api",
         openai_api_key="test-key",
+        openai_api_reasoning_effort="high",
+        openai_api_timeout_seconds=75,
+        openai_api_max_attempts=3,
+        openai_api_retry_backoff_seconds=1.25,
         openclaw_assistant_enabled=True,
     )
     try:
@@ -136,7 +139,11 @@ def test_assistant_routes_openai_api_mode_through_neutral_backend(
     assert response.status_code == 200
     assert response.json()["message"] == "Direct API response"
     assert response.json()["metadata"]["backend"] == "openai_api"
-    assert captured_backend == "openai_api"
+    assert captured["backend"].name == "openai_api"
+    assert captured["thinking"] == "high"
+    assert captured["timeout_seconds"] == 75
+    assert captured["max_attempts"] == 3
+    assert captured["retry_backoff_seconds"] == 1.25
 
 
 def test_build_openclaw_assistant_prompt_only_includes_dynamic_context() -> None:
