@@ -18,6 +18,7 @@ from app.models.jobs import JobMatchFeedbackRecord, JobMatchRecord, StoredJobRec
 from app.models.profile import CandidateMatchSnapshotRecord, ProfilePayload, ProfileRecord
 from app.services import ai_match as ai_match_service
 from app.services.ai_match import (
+    OpenClawAiMatchPayload,
     OpenClawAiMatchError,
     build_job_snapshot,
     build_openclaw_ai_match_prompt,
@@ -25,9 +26,10 @@ from app.services.ai_match import (
     extract_openclaw_ai_match_payload,
     infer_seniority,
     parse_number,
+    score_with_openclaw,
 )
 from app.services.ai_privacy import require_current_ai_consent
-from app.services.ai_backend import OpenAIAPIBackend
+from app.services.ai_backend import AIRequest, AIResult, AIUsage, OpenAIAPIBackend
 from app.services.candidate_snapshot import (
     CandidateSnapshotError,
     build_openclaw_candidate_snapshot_prompt,
@@ -585,6 +587,49 @@ def test_ai_match_records_provider_neutral_backend_source(
     )
 
     assert matched[0]["aiMatch"]["source"] == "openai_api"
+
+
+def test_ai_match_passes_strict_pydantic_output_model_to_backend() -> None:
+    requests: list[AIRequest] = []
+
+    class FakeBackend:
+        name = "openai_api"
+
+        def generate(self, request: AIRequest) -> AIResult:
+            requests.append(request)
+            return AIResult(
+                text="",
+                structured_data={"matches": [valid_match_result("job-schema")]},
+                model="gpt-5.6-terra",
+                backend="openai_api",
+                usage=AIUsage(),
+                latency_ms=1,
+                session_id="resp_match_123",
+            )
+
+    matches = score_with_openclaw(
+        profile_snapshot={},
+        jobs=[
+            build_job_snapshot(
+                {
+                    "id": "job-schema",
+                    "title": "Python Engineer",
+                    "company": "Tasko",
+                    "skills": ["Python"],
+                }
+            )
+        ],
+        command="openclaw",
+        agent_id="tasko-assistant",
+        thinking="low",
+        timeout_seconds=30,
+        model="gpt-5.6-terra",
+        evidence_sources=[],
+        backend=FakeBackend(),
+    )
+
+    assert matches[0]["id"] == "job-schema"
+    assert requests[0].response_model is OpenClawAiMatchPayload
 
 
 def test_ai_match_retry_includes_validation_feedback(

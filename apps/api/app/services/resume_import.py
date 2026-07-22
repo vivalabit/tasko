@@ -10,6 +10,8 @@ from io import BytesIO
 from uuid import uuid4
 from xml.etree import ElementTree
 
+from pydantic import BaseModel, ConfigDict
+
 from app.models.profile import ImportedEducationEntry, ImportedExperienceEntry
 from app.services.ai_backend import (
     AIBackend,
@@ -36,6 +38,24 @@ SKILLS_HEADINGS = RESUME_SKILL_HEADINGS
 SECTION_STOP_HEADINGS = ALL_RESUME_HEADINGS - EXPERIENCE_HEADINGS
 SKILLS_STOP_HEADINGS = ALL_RESUME_HEADINGS - SKILLS_HEADINGS
 EDUCATION_STOP_HEADINGS = ALL_RESUME_HEADINGS - EDUCATION_HEADINGS
+
+
+class ResumeExperienceStructuredOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    experience: list[ImportedExperienceEntry]
+
+
+class ResumeEducationStructuredOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    education: list[ImportedEducationEntry]
+
+
+class ResumeSkillsStructuredOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    skills: list[str]
 
 TITLE_HINTS = {
     "administrator",
@@ -355,6 +375,7 @@ def parse_experience_with_openclaw(
         max_attempts=max_attempts,
         retry_backoff_seconds=retry_backoff_seconds,
         payload_extractor=extract_openclaw_experience_payload,
+        response_model=ResumeExperienceStructuredOutput,
     )
     entries = parsed.get("experience", [])
     if not isinstance(entries, list):
@@ -394,6 +415,7 @@ def parse_education_with_openclaw(
         max_attempts=max_attempts,
         retry_backoff_seconds=retry_backoff_seconds,
         payload_extractor=extract_openclaw_education_payload,
+        response_model=ResumeEducationStructuredOutput,
     )
     entries = parsed.get("education", [])
     if not isinstance(entries, list):
@@ -433,6 +455,7 @@ def parse_skills_with_openclaw(
         max_attempts=max_attempts,
         retry_backoff_seconds=retry_backoff_seconds,
         payload_extractor=extract_openclaw_skills_payload,
+        response_model=ResumeSkillsStructuredOutput,
     )
     skills = parsed.get("skills", [])
     if not isinstance(skills, list):
@@ -453,6 +476,7 @@ def run_resume_ai_backend(
     max_attempts: int,
     retry_backoff_seconds: float,
     payload_extractor,
+    response_model: type[BaseModel],
 ) -> dict[str, object]:
     selected_backend = backend or OpenClawCodexBackend(
         command=command,
@@ -469,6 +493,7 @@ def run_resume_ai_backend(
                 timeout_seconds=timeout_seconds,
                 session_id=f"agent:{agent_id}:resume-import-{uuid4().hex}",
                 structured=True,
+                response_model=response_model,
             ),
             max_attempts=max_attempts,
             retry_backoff_seconds=retry_backoff_seconds,

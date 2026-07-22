@@ -537,6 +537,7 @@ def score_with_openclaw(
                 thinking=thinking,
                 timeout_seconds=timeout_seconds,
                 structured=True,
+                response_model=OpenClawAiMatchPayload,
             )
         )
     except AIBackendError as exc:

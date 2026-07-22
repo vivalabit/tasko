@@ -12,7 +12,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-import httpx
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    AuthenticationError,
+    InternalServerError,
+    OpenAI,
+    OpenAIError,
+    PermissionDeniedError,
+    RateLimitError,
+)
+from pydantic import BaseModel
 
 
 AIBackendMode = Literal["openclaw_codex", "openai_api"]
@@ -59,6 +71,7 @@ class AIRequest:
     timeout_seconds: int = 120
     session_id: str = ""
     structured: bool = False
+    response_model: type[BaseModel] | None = None
 
 
 @dataclass(frozen=True)
@@ -241,8 +254,8 @@ class OpenAIAPIBackend:
         api_key: str,
         base_url: str = "https://api.openai.com/v1",
         default_model: str = "",
-        client: httpx.Client | None = None,
-        async_client: httpx.AsyncClient | None = None,
+        client: OpenAI | Any | None = None,
+        async_client: AsyncOpenAI | Any | None = None,
     ) -> None:
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
@@ -252,84 +265,127 @@ class OpenAIAPIBackend:
 
     def generate(self, request: AIRequest) -> AIResult:
         started_at = time.perf_counter()
-        client = self.client or httpx.Client(timeout=request.timeout_seconds)
-        should_close = self.client is None
         try:
-            response = client.post(
-                f"{self.base_url}/responses",
-                headers=self._headers(),
-                json=self._payload(request),
-            )
-            return self._result(response, request, started_at)
-        except httpx.TimeoutException as exc:
-            raise AIBackendError("AI backend request timed out", code="timeout", retryable=True) from exc
-        except httpx.HTTPError as exc:
-            raise AIBackendError(
-                "AI backend could not reach the provider",
-                code="provider_unreachable",
-                retryable=True,
-            ) from exc
-        finally:
-            if should_close:
-                client.close()
+            client = self._sync_client()
+            if request.response_model is not None:
+                response = client.responses.parse(
+                    **self._request_options(request),
+                    text_format=request.response_model,
+                )
+            else:
+                response = client.responses.create(**self._request_options(request))
+        except OpenAIError as exc:
+            raise openai_sdk_error(exc) from exc
+        return self._result(response, request, started_at)
 
     async def agenerate(self, request: AIRequest) -> AIResult:
         started_at = time.perf_counter()
-        client = self.async_client or httpx.AsyncClient(timeout=request.timeout_seconds)
-        should_close = self.async_client is None
         try:
-            response = await client.post(
-                f"{self.base_url}/responses",
-                headers=self._headers(),
-                json=self._payload(request),
-            )
-            return self._result(response, request, started_at)
-        except httpx.TimeoutException as exc:
-            raise AIBackendError("AI backend request timed out", code="timeout", retryable=True) from exc
-        except httpx.HTTPError as exc:
-            raise AIBackendError(
-                "AI backend could not reach the provider",
-                code="provider_unreachable",
-                retryable=True,
-            ) from exc
-        finally:
-            if should_close:
-                await client.aclose()
+            client = self._async_client()
+            if request.response_model is not None:
+                response = await client.responses.parse(
+                    **self._request_options(request),
+                    text_format=request.response_model,
+                )
+            else:
+                response = await client.responses.create(**self._request_options(request))
+        except OpenAIError as exc:
+            raise openai_sdk_error(exc) from exc
+        return self._result(response, request, started_at)
 
-    def _headers(self) -> dict[str, str]:
+    def _require_api_key(self) -> str:
         if not self.api_key.strip():
             raise AIBackendError(
                 "OPENAI_API_KEY is required for openai_api mode",
                 code="authentication",
             )
-        return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        return self.api_key
 
-    def _payload(self, request: AIRequest) -> dict[str, Any]:
-        payload: dict[str, Any] = {
+    def _sync_client(self) -> OpenAI | Any:
+        if self.client is None:
+            self.client = OpenAI(
+                api_key=self._require_api_key(),
+                base_url=self.base_url,
+                max_retries=0,
+            )
+        return self.client
+
+    def _async_client(self) -> AsyncOpenAI | Any:
+        if self.async_client is None:
+            self.async_client = AsyncOpenAI(
+                api_key=self._require_api_key(),
+                base_url=self.base_url,
+                max_retries=0,
+            )
+        return self.async_client
+
+    def _request_options(self, request: AIRequest) -> dict[str, Any]:
+        options: dict[str, Any] = {
             "model": normalize_openai_model(request.model or self.default_model),
             "input": request.prompt,
+            "store": False,
+            "timeout": request.timeout_seconds,
         }
         if request.thinking and request.thinking != "off":
-            payload["reasoning"] = {"effort": request.thinking}
-        if request.structured:
-            payload["text"] = {"format": {"type": "json_object"}}
-        return payload
+            options["reasoning"] = {"effort": request.thinking}
+        if request.structured and request.response_model is None:
+            options["text"] = {"format": {"type": "json_object"}}
+        return options
 
     def _result(
         self,
-        response: httpx.Response,
+        response: Any,
         request: AIRequest,
         started_at: float,
     ) -> AIResult:
-        if response.is_error:
-            raise openai_response_error(response)
-        raw_response = response.text
-        return build_ai_result(
-            raw_response=raw_response,
-            fallback_model=normalize_openai_model(request.model or self.default_model),
+        response_error = getattr(response, "error", None)
+        if response_error is not None:
+            message = getattr(response_error, "message", None) or str(response_error)
+            raise AIBackendError(message, code="provider_error", retryable=True)
+        refusal = extract_openai_refusal(response)
+        if refusal:
+            raise AIBackendError(refusal, code="refusal")
+        status = getattr(response, "status", "completed")
+        if status == "incomplete":
+            raise AIBackendError(
+                "OpenAI response was incomplete",
+                code="incomplete_response",
+                retryable=True,
+            )
+
+        raw_response = serialize_openai_response(response)
+        parsed = getattr(response, "output_parsed", None)
+        structured_data = (
+            parsed.model_dump(mode="json", by_alias=True)
+            if isinstance(parsed, BaseModel)
+            else parsed
+        )
+        text = str(getattr(response, "output_text", "") or "").strip()
+        if not text and structured_data is not None:
+            text = json.dumps(structured_data, ensure_ascii=False)
+        usage = getattr(response, "usage", None)
+        input_tokens = nonnegative_int(getattr(usage, "input_tokens", 0))
+        output_tokens = nonnegative_int(getattr(usage, "output_tokens", 0))
+        total_tokens = nonnegative_int(getattr(usage, "total_tokens", 0))
+        if structured_data is None:
+            structured_data = extract_structured_data(text, extract_json_values(raw_response))
+        return AIResult(
+            text=text,
+            structured_data=structured_data,
+            model=str(
+                getattr(response, "model", "")
+                or normalize_openai_model(request.model or self.default_model)
+            ),
             backend=self.name,
-            session_id="",
+            usage=AIUsage(
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens or input_tokens + output_tokens,
+                source="provider",
+            ),
             latency_ms=round((time.perf_counter() - started_at) * 1000),
+            session_id=str(getattr(response, "id", "") or ""),
+            raw_response=raw_response,
         )
 
 
@@ -487,20 +543,85 @@ def normalize_openai_model(model: str) -> str:
     return model.removeprefix("openai/")
 
 
-def openai_response_error(response: httpx.Response) -> AIBackendError:
-    status_code = response.status_code
-    try:
-        payload = response.json()
-        detail = payload.get("error", {}).get("message", "") if isinstance(payload, dict) else ""
-    except (TypeError, ValueError):
-        detail = ""
-    if status_code in {401, 403}:
-        return AIBackendError(detail or "AI backend authentication failed", code="authentication", status_code=status_code)
-    if status_code == 429:
-        return AIBackendError(detail or "AI backend is rate-limited", code="rate_limited", retryable=True, status_code=status_code)
-    if status_code >= 500:
-        return AIBackendError(detail or "AI provider failed", code="provider_error", retryable=True, status_code=status_code)
-    return AIBackendError(detail or "AI request was rejected", code="invalid_request", status_code=status_code)
+def serialize_openai_response(response: Any) -> str:
+    model_dump = getattr(response, "model_dump", None)
+    if callable(model_dump):
+        try:
+            payload = model_dump(mode="json", warnings=False)
+        except TypeError:
+            payload = model_dump(mode="json")
+        return json.dumps(payload, ensure_ascii=False)
+    model_dump_json = getattr(response, "model_dump_json", None)
+    if callable(model_dump_json):
+        return str(model_dump_json())
+    return json.dumps(response, ensure_ascii=False, default=str)
+
+
+def extract_openai_refusal(response: Any) -> str:
+    for output_item in getattr(response, "output", []) or []:
+        for content_item in getattr(output_item, "content", []) or []:
+            refusal = getattr(content_item, "refusal", "")
+            if isinstance(refusal, str) and refusal.strip():
+                return refusal.strip()
+    return ""
+
+
+def nonnegative_int(value: Any) -> int:
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+        return int(value)
+    return 0
+
+
+def openai_sdk_error(exc: OpenAIError) -> AIBackendError:
+    status_code = getattr(exc, "status_code", None)
+    message = str(exc).strip()
+    if isinstance(exc, APITimeoutError):
+        return AIBackendError(
+            "AI backend request timed out",
+            code="timeout",
+            retryable=True,
+        )
+    if isinstance(exc, RateLimitError):
+        return AIBackendError(
+            message or "AI backend is rate-limited",
+            code="rate_limited",
+            retryable=True,
+            status_code=status_code or 429,
+        )
+    if isinstance(exc, AuthenticationError):
+        return AIBackendError(
+            message or "AI backend authentication failed",
+            code="authentication",
+            status_code=status_code or 401,
+        )
+    if isinstance(exc, PermissionDeniedError):
+        return AIBackendError(
+            message or "AI backend permission was denied",
+            code="permission_denied",
+            status_code=status_code or 403,
+        )
+    if isinstance(exc, APIConnectionError):
+        return AIBackendError(
+            "AI backend could not reach the provider",
+            code="provider_unreachable",
+            retryable=True,
+        )
+    if isinstance(exc, InternalServerError):
+        return AIBackendError(
+            message or "AI provider failed",
+            code="provider_error",
+            retryable=True,
+            status_code=status_code,
+        )
+    if isinstance(exc, APIStatusError):
+        retryable = bool(status_code in {408, 409, 429} or (status_code or 0) >= 500)
+        return AIBackendError(
+            message or "AI request was rejected",
+            code="provider_error" if retryable else "invalid_request",
+            retryable=retryable,
+            status_code=status_code,
+        )
+    return AIBackendError(message or "OpenAI SDK request failed", code="backend_error")
 
 
 def create_ai_backend(

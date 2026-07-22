@@ -10,8 +10,10 @@ from fastapi.testclient import TestClient
 from app.core.settings import Settings, get_settings
 from app.main import app
 from app.services.ai_privacy import require_current_ai_consent
+from app.services.ai_backend import AIRequest, AIResult, AIUsage
 from app.services.resume_import import (
     OpenClawResumeImportError,
+    ResumeExperienceStructuredOutput,
     extract_json_object,
     extract_openclaw_education_payload,
     extract_openclaw_experience_payload,
@@ -444,6 +446,37 @@ def test_openclaw_resume_import_uses_a_fresh_isolated_session() -> None:
 
     assert all(key.startswith("agent:tasko-assistant:resume-import-") for key in session_keys)
     assert len(set(session_keys)) == 2
+
+
+def test_resume_import_passes_strict_pydantic_output_model_to_backend() -> None:
+    requests: list[AIRequest] = []
+
+    class FakeBackend:
+        name = "openai_api"
+
+        def generate(self, request: AIRequest) -> AIResult:
+            requests.append(request)
+            return AIResult(
+                text='{"experience":[]}',
+                structured_data={"experience": []},
+                model="gpt-5.6-terra",
+                backend="openai_api",
+                usage=AIUsage(),
+                latency_ms=1,
+                session_id="resp_resume_123",
+            )
+
+    assert parse_experience_with_openclaw(
+        text="Developer at Tasko",
+        command="openclaw",
+        agent_id="tasko-assistant",
+        thinking="low",
+        timeout_seconds=30,
+        model="gpt-5.6-terra",
+        backend=FakeBackend(),
+    ) == []
+
+    assert requests[0].response_model is ResumeExperienceStructuredOutput
 
 
 def test_extract_openclaw_education_payload_reads_json_result_wrapper() -> None:
