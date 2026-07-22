@@ -10,6 +10,43 @@ import {
   renderApplicationWorkspace,
 } from "@/test/application-workspace-harness";
 
+const defaultResumeReplacement = {
+  blockId: "block-0001",
+  spanId: "block-0001-span-0001",
+  original: "Summary",
+  replacement: "Tailored summary",
+  reason: "Matches the role",
+  evidenceIds: ["source:block-0001-span-0001"],
+};
+
+function resumePipelineResponse(
+  prompt: string,
+  replacement = defaultResumeReplacement,
+) {
+  if (prompt.includes("PASS 1 OF 3")) {
+    return JSON.stringify({
+      missingKeywords: Array.from({ length: 5 }, (_, index) => ({
+        keyword: `keyword-${index + 1}`,
+        whyItMatters: "Role requirement",
+        evidenceStatus: "verified",
+        evidenceIds: ["source:block-0001-span-0001"],
+      })),
+      redFlags: Array.from({ length: 3 }, (_, index) => ({
+        flag: `red-flag-${index + 1}`,
+        whyItIsVisible: "Visible in a quick scan",
+        fix: "Use concise evidence",
+      })),
+    });
+  }
+  if (prompt.includes("PASS 2 OF 3")) {
+    return JSON.stringify({ replacements: [replacement] });
+  }
+  return JSON.stringify({
+    atsScan: { skippedSections: [] },
+    replacements: [replacement],
+  });
+}
+
 describe("ApplicationWorkspace", () => {
   it("shows an empty state when the route has no application ID", () => {
     renderApplicationWorkspace(null);
@@ -632,9 +669,13 @@ describe("ApplicationWorkspace", () => {
       requestHandler: async (url, method, init) => {
         if (url.pathname === "/assistant/chat" && method === "POST") {
           assistantCalls += 1;
+          const request = JSON.parse(String(init?.body)) as {
+            message: string;
+            generationContext?: { documentType?: string };
+          };
           return Response.json({
-            message: assistantCalls === 1
-              ? JSON.stringify({ replacements: [{ blockId: "block-0001", spanId: "block-0001-span-0001", original: "Summary", replacement: "Tailored summary", reason: "Matches the role", evidenceIds: ["source:block-0001-span-0001"] }] })
+            message: request.generationContext?.documentType === "tailored_resume"
+              ? resumePipelineResponse(request.message)
               : JSON.stringify({ replacements: [{ paragraphId: "paragraph-0002", spanId: "paragraph-0002-span-0001", original: "Reusable body", replacement: "Role-specific body", reason: "Matches the role", evidenceIds: ["source:paragraph-0002-span-0001"] }] }),
             metadata: { generationArtifactId: `generation-artifact-${assistantCalls}` },
           });
@@ -673,7 +714,7 @@ describe("ApplicationWorkspace", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/No pack documents were saved/)).not.toBeInTheDocument();
     expect(submittedResume?.validationArtifactId).toBe("artifact-1");
-    expect(submittedResume?.generationArtifactId).toBe("generation-artifact-1");
+    expect(submittedResume?.generationArtifactId).toBe("generation-artifact-3");
     expect(submittedResume).not.toHaveProperty("content");
     expect(submittedResume).not.toHaveProperty("generationModel");
     expect(submittedResume).not.toHaveProperty("templateId");
@@ -730,7 +771,7 @@ describe("ApplicationWorkspace", () => {
           const request = JSON.parse(String(init?.body)) as { message: string };
           assistantPrompts.push(request.message);
           return Response.json({
-            message: JSON.stringify({ replacements: [{ blockId: "block-0001", spanId: "block-0001-span-0001", original: "Summary", replacement: "Tailored summary", reason: "Matches the role", evidenceIds: ["source:block-0001-span-0001"] }] }),
+            message: resumePipelineResponse(request.message),
             metadata: { generationArtifactId: `generation-artifact-${assistantCalls}` },
           });
         }
@@ -757,13 +798,13 @@ describe("ApplicationWorkspace", () => {
     fireEvent.click(generateResume);
 
     await waitFor(() => expect(props.onDocumentAttached).toHaveBeenCalledTimes(1), { timeout: 4_000 });
-    expect(assistantCalls).toBe(2);
+    expect(assistantCalls).toBe(6);
     expect(saveCalls).toBe(2);
-    expect(finalArtifactId).toBe("generation-artifact-2");
-    expect(assistantPrompts[1]).toContain("SAFETY CORRECTION");
-    expect(assistantPrompts[1]).toContain("block-0015-span-0003");
-    expect(assistantPrompts[1]).toContain("PREVIOUS_DRAFT_JSON");
-    expect(assistantPrompts[1]).toContain("Tailored summary");
+    expect(finalArtifactId).toBe("generation-artifact-6");
+    expect(assistantPrompts[5]).toContain("previous final draft failed validation");
+    expect(assistantPrompts[5]).toContain("block-0015-span-0003");
+    expect(assistantPrompts[5]).toContain("PREVIOUS_FINAL_DRAFT_JSON");
+    expect(assistantPrompts[5]).toContain("Tailored summary");
     expect(screen.queryByText(validationMessage)).not.toBeInTheDocument();
   });
 
@@ -810,7 +851,11 @@ describe("ApplicationWorkspace", () => {
           const request = JSON.parse(String(init?.body)) as { message: string };
           assistantPrompts.push(request.message);
           return Response.json({
-            message: JSON.stringify({ replacements: [{ blockId: "block-0001", spanId: "block-0001-span-0001", original: "Summary", replacement: "Python automation summary", reason: "Requested emphasis", evidenceIds: ["source:block-0001-span-0001"] }] }),
+            message: resumePipelineResponse(request.message, {
+              ...defaultResumeReplacement,
+              replacement: "Python automation summary",
+              reason: "Requested emphasis",
+            }),
             metadata: { generationArtifactId: "chat-revision-artifact" },
           });
         }
@@ -832,9 +877,11 @@ describe("ApplicationWorkspace", () => {
     fireEvent.click(applyInstruction);
 
     await waitFor(() => expect(props.onDocumentAttached).toHaveBeenCalledTimes(1));
-    expect(assistantPrompts).toHaveLength(1);
-    expect(assistantPrompts[0]).toContain("USER REVISION REQUEST");
-    expect(assistantPrompts[0]).toContain("Emphasize my Python automation experience.");
+    expect(assistantPrompts).toHaveLength(3);
+    expect(assistantPrompts[0]).toContain("PASS 1 OF 3");
+    expect(assistantPrompts[1]).toContain("PASS 2 OF 3");
+    expect(assistantPrompts[2]).toContain("PASS 3 OF 3");
+    expect(assistantPrompts.every((prompt) => prompt.includes("Emphasize my Python automation experience."))).toBe(true);
     expect(await screen.findByText(/saved a new CV version/)).toBeInTheDocument();
   });
 
@@ -869,7 +916,9 @@ describe("ApplicationWorkspace", () => {
           const request = JSON.parse(String(init?.body)) as { message: string };
           assistantPrompts.push(request.message);
           return Response.json({
-            message: JSON.stringify({ replacements: [] }),
+            message: request.message.includes("PASS 3 OF 3")
+              ? JSON.stringify({ atsScan: { skippedSections: [] }, replacements: [] })
+              : resumePipelineResponse(request.message),
             metadata: { generationArtifactId: `empty-artifact-${assistantCalls}` },
           });
         }
@@ -890,12 +939,13 @@ describe("ApplicationWorkspace", () => {
     fireEvent.click(generateResume);
 
     expect(await screen.findByText(/did not find any evidence-backed changes for the CV/)).toBeInTheDocument();
-    expect(assistantCalls).toBe(2);
+    expect(assistantCalls).toBe(3);
     expect(saveCalls).toBe(0);
     expect(props.onDocumentAttached).not.toHaveBeenCalled();
-    expect(assistantPrompts[0]).toContain("return at least one meaningful evidence-backed replacement");
-    expect(assistantPrompts[1]).toContain("zero replacements");
-    expect(assistantPrompts[1]).toContain("PREVIOUS_DRAFT_JSON");
+    expect(assistantPrompts[0]).toContain("PASS 1 OF 3");
+    expect(assistantPrompts[1]).toContain("PASS 2 OF 3");
+    expect(assistantPrompts[2]).toContain("PASS 3 OF 3");
+    expect(assistantPrompts[2]).toContain("do not return an empty replacements array");
   });
 
   it("saves a generated cover letter without a validation repair pass", async () => {
@@ -1060,11 +1110,14 @@ describe("ApplicationWorkspace", () => {
       requestHandler: async (url, method, init) => {
         if (url.pathname === "/assistant/chat" && method === "POST") {
           assistantCalls += 1;
-          const request = JSON.parse(String(init?.body)) as { message: string };
+          const request = JSON.parse(String(init?.body)) as {
+            message: string;
+            generationContext?: { documentType?: string };
+          };
           assistantPrompts.push(request.message);
           return Response.json({
-            message: assistantCalls <= 2
-              ? JSON.stringify({ replacements: [{ blockId: "block-0001", spanId: "block-0001-span-0001", original: "Summary", replacement: "Tailored summary", reason: "Matches the role", evidenceIds: ["source:block-0001-span-0001"] }] })
+            message: request.generationContext?.documentType === "tailored_resume"
+              ? resumePipelineResponse(request.message)
               : JSON.stringify({ replacements: [{ paragraphId: "paragraph-0002", spanId: "paragraph-0002-span-0001", original: "Reusable body", replacement: "Role-specific body", reason: "Matches the role", evidenceIds: ["source:paragraph-0002-span-0001"] }] }),
             metadata: { generationArtifactId: `generation-artifact-${assistantCalls}` },
           });
@@ -1107,11 +1160,11 @@ describe("ApplicationWorkspace", () => {
     fireEvent.click(generatePack);
 
     await waitFor(() => expect(props.onDocumentAttached).toHaveBeenCalledTimes(2), { timeout: 4_000 });
-    expect(assistantCalls).toBe(3);
+    expect(assistantCalls).toBe(7);
     expect(validationCalls).toBe(2);
-    expect(assistantPrompts[1]).toContain("SAFETY CORRECTION");
-    expect(assistantPrompts[1]).toContain("block-0015-span-0003");
-    expect(submittedResumeArtifactId).toBe("generation-artifact-2");
+    expect(assistantPrompts[5]).toContain("previous final draft failed validation");
+    expect(assistantPrompts[5]).toContain("block-0015-span-0003");
+    expect(submittedResumeArtifactId).toBe("generation-artifact-6");
     expect(screen.queryByText(validationMessage)).not.toBeInTheDocument();
   });
 
