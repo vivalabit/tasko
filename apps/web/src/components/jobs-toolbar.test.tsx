@@ -33,6 +33,7 @@ it("renders the requested action order and opens auto-searches locally", async (
       onToggleArchivedJobs={vi.fn()}
       onAnalysisMenuOpenChange={vi.fn()}
       onRunAnalysis={vi.fn()}
+      onVacanciesChanged={vi.fn()}
     />,
   );
 

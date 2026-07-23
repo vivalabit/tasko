@@ -75,7 +75,6 @@ import { getAiMatchAnalysisStatus, legacyAiMatchVersion } from "@/lib/ai-match";
 import { getAiSourceLabel, type AiBackend, type AiSource } from "@/lib/ai-source";
 import { findWorkspaceApplication, getHashForView, getRouteFromHash, type View } from "@/lib/app-route";
 import { cn } from "@/lib/utils";
-import { runSequentially } from "@/lib/async-queue";
 
 type AiMatchMetadata = {
   version: string;
@@ -269,33 +268,6 @@ type ApplicationTimelineItem = {
   event?: ApplicationEvent;
 };
 
-type ParsedJob = {
-  source?: string;
-  title?: string | null;
-  company?: string | null;
-  location?: string | null;
-  url?: string | null;
-  apply_url?: string | null;
-  posted_at?: string | null;
-  employment_type?: string | null;
-  seniority?: string | null;
-  description?: string | null;
-  salary?: string | null;
-  salary_min?: number | null;
-  salary_max?: number | null;
-  salary_currency?: string | null;
-  salary_unit?: string | null;
-};
-
-type ParserApiResponse = {
-  parser?: string;
-  status: "completed" | "queued" | "running";
-  jobs?: ParsedJob[];
-  search_url?: string;
-  snapshot_id?: string | null;
-  message?: string | null;
-};
-
 type AIBackendName = AiBackend;
 type OpenAIReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -384,6 +356,22 @@ type ParserSearchConfig = {
   name: string;
   form: ParserSearchForm;
   updatedAt: string;
+};
+
+type JobSearchConfigPayload = {
+  id: string;
+  name: string;
+  filters: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type JobSearchRunPayload = {
+  status: string;
+  jobsFound: number;
+  jobsAdded: number;
+  sourceErrors: Record<string, string>;
+  warning?: string | null;
 };
 
 type CandidateProfile = {
@@ -618,8 +606,6 @@ const applicationEventOutcomes: Array<{ outcome: ApplicationEventOutcome; label:
 ];
 
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-const snapshotPollDelayMs = 4000;
-const snapshotPollMaxAttempts = 30;
 const aiMatchStatusPollDelayMs = 2500;
 const aiMatchStatusPollMaxAttempts = 720;
 const recentJobWindowMs = 24 * 60 * 60 * 1000;
@@ -638,7 +624,6 @@ const legacyParserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v1";
 const parserSearchConfigsStorageKey = "tasko.parserSearchConfigs.v2";
 const uiSettingsStorageKey = "tasko.uiSettings.v1";
 const appLogsStorageKey = "tasko.appLogs.v1";
-const parserSearchConfigsLocalUrl = "/parser-search-configs.local.json";
 const legacyMovedFromJobsNote = "Moved from Jobs after applying.";
 const maxStoredAppLogs = 300;
 
@@ -1724,111 +1709,6 @@ function normalizeParserIds(form: ParserSearchForm): ParserId[] {
   return [...defaultParserSearchForm.parsers];
 }
 
-function createParsedJobId(job: ParsedJob, index: number) {
-  const parser = job.source === "indeed"
-    ? "indeed"
-    : job.source === "jobs_ch" || job.source === "jobs.ch"
-      ? "jobs_ch"
-      : "linkedin";
-  const source = job.url || `${job.title ?? `${parser}-job`}-${job.company ?? "company"}-${job.location ?? "location"}-${index}`;
-  return `${parser}-${source.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 96)}`;
-}
-
-function mapParsedJobToJob(job: ParsedJob, index: number): Job {
-  const parserLabel = getParserLabel(job.source);
-  const sourceLogo: Job["logo"] = job.source === "indeed"
-    ? "indeed"
-    : job.source === "jobs_ch" || job.source === "jobs.ch"
-      ? "jobs_ch"
-      : "linkedin";
-  const title = job.title?.trim() || `${parserLabel} vacancy`;
-  const company = job.company?.trim() || parserLabel;
-  const location = job.location?.trim() || "Not specified";
-  const type = job.employment_type?.trim() || "Not specified";
-  const experience = job.seniority?.trim() || "Not specified";
-  const overview = job.description?.trim() || `Imported from ${parserLabel}. Open the source vacancy to review the full description and apply details.`;
-  const salaryCurrency = job.salary_currency?.trim() || "";
-  const formatSalaryAmount = (value: number | null | undefined) =>
-    typeof value === "number" ? `${salaryCurrency ? `${salaryCurrency} ` : ""}${value.toLocaleString("en-CH")}` : "N/A";
-  const salary = job.salary?.trim() || (
-    job.salary_min != null || job.salary_max != null
-      ? [formatSalaryAmount(job.salary_min), formatSalaryAmount(job.salary_max)].filter((value, position, values) => value !== "N/A" && (position === 0 || value !== values[0])).join(" – ")
-      : "Not specified"
-  );
-  const salaryAverage = job.salary_min != null && job.salary_max != null
-    ? formatSalaryAmount(Math.round((job.salary_min + job.salary_max) / 2))
-    : formatSalaryAmount(job.salary_min ?? job.salary_max);
-
-  return {
-    id: createParsedJobId(job, index),
-    company,
-    title,
-    location,
-    type,
-    salary,
-    posted: job.posted_at?.trim() || parserLabel,
-    experience,
-    department: `${parserLabel} import`,
-    match: 50,
-    logo: sourceLogo,
-    overview,
-    responsibilities: [`Review the ${parserLabel} vacancy details`, "Compare requirements with your profile", "Decide whether to save or apply"],
-    requirements: [experience, type, location].filter((item) => item !== "Not specified"),
-    skills: [parserLabel, "Imported"],
-    salaryAverage,
-    salaryMin: formatSalaryAmount(job.salary_min),
-    salaryMax: formatSalaryAmount(job.salary_max),
-    recommendations: [],
-    companyInfo: `${company} vacancy imported from ${parserLabel}${job.url ? `: ${job.url}` : "."}`,
-    reviews: ["This vacancy was imported automatically and has not been reviewed yet."],
-    similarJobs: [],
-    applyUrl: job.apply_url?.trim() || job.url?.trim() || undefined,
-    sourceUrl: job.url?.trim() || undefined,
-    addedAt: new Date().toISOString(),
-  };
-}
-
-function deduplicateParsedJobs(jobs: ParsedJob[]) {
-  const seenUrls = new Set<string>();
-  const seenVacancies = new Set<string>();
-
-  return jobs.filter((job) => {
-    const normalizedUrl = job.url?.trim().toLowerCase().replace(/\/$/, "") || "";
-    const normalizedVacancy = [job.title, job.company, job.location]
-      .map((value) => value?.trim().toLowerCase().replace(/\s+/g, " ") || "")
-      .join("|");
-    const hasVacancyIdentity = Boolean(job.title?.trim() && job.company?.trim());
-    const duplicate =
-      (normalizedUrl && seenUrls.has(normalizedUrl)) ||
-      (hasVacancyIdentity && seenVacancies.has(normalizedVacancy));
-
-    if (duplicate) return false;
-    if (normalizedUrl) seenUrls.add(normalizedUrl);
-    if (hasVacancyIdentity) seenVacancies.add(normalizedVacancy);
-    return true;
-  });
-}
-
-const entryItTitlePattern = /\b(?:software|developer|entwickler|entwicklung|python|data|machine[\s-]?learning|deep[\s-]?learning|artificial[\s-]?intelligence|ai|ml|web|front[\s-]?end|back[\s-]?end|full[\s-]?stack|devops|mlops|cloud|it|informatik|cyber(?:security)?|security|network|embedded|firmware|programming)\b/i;
-const entryLevelTitlePattern = /\b(?:intern(?:ship)?|praktik\w*|working[\s-]?student|werkstudent\w*|junior|graduate|trainee|student\w*)\b/i;
-const entryLevelSeniorityPattern = /^(?:internship|entry level|associate)$/i;
-const seniorTitlePattern = /\b(?:senior|lead|staff|head|principal|manager|architect|director|chief)\b/i;
-const seniorSeniorityPattern = /(?:mid[\s-]?senior|senior|executive|director)/i;
-
-function isEntryItParsedJob(job: ParsedJob) {
-  const title = job.title?.trim() || "";
-  const seniority = job.seniority?.trim() || "";
-
-  if (!entryItTitlePattern.test(title)) return false;
-  if (seniorTitlePattern.test(title) || seniorSeniorityPattern.test(seniority)) return false;
-
-  return entryLevelTitlePattern.test(title) || entryLevelSeniorityPattern.test(seniority);
-}
-
-function shouldFilterEntryItJobs(form: ParserSearchForm) {
-  return form.searchName.trim().toLowerCase() === "entry it";
-}
-
 const manualJobSkillPatterns: Array<{ label: string; pattern: RegExp }> = [
   { label: "IPX", pattern: /\bipx\b/i },
   { label: "HVAC", pattern: /\bhvac\b/i },
@@ -2090,6 +1970,98 @@ function normalizeParserSearchConfigs(configs: ParserSearchConfig[]) {
   }
 
   return Array.from(uniqueConfigs.values());
+}
+
+function parserSearchFiltersFromForm(
+  form: ParserSearchForm,
+): Record<string, unknown> {
+  return {
+    keywords: form.keywords.trim(),
+    location: form.location.trim(),
+    remote: form.remote,
+    experienceLevel: form.experienceLevel,
+    jobType: form.jobType,
+    datePosted: form.datePosted,
+    resultsLimit: Number.parseInt(form.resultsLimit, 10) || 10,
+    country: form.country,
+    deduplicate: form.deduplicate,
+    searchName: form.searchName.trim(),
+    folder: form.folder,
+    sources: normalizeParserIds(form),
+  };
+}
+
+function parserSearchConfigFromApi(
+  config: JobSearchConfigPayload,
+): ParserSearchConfig {
+  const filters = config.filters;
+  const sources = Array.isArray(filters.sources)
+    ? filters.sources.filter(
+        (source): source is ParserId =>
+          source === "linkedin" || source === "indeed" || source === "jobs_ch",
+      )
+    : [];
+  return {
+    id: config.id,
+    name: config.name,
+    updatedAt: config.updatedAt,
+    form: {
+      ...defaultParserSearchForm,
+      parsers: sources.length > 0 ? sources : [...defaultParserSearchForm.parsers],
+      keywords: filterString(filters, "keywords"),
+      location: filterString(filters, "location"),
+      remote: filterString(filters, "remote") || defaultParserSearchForm.remote,
+      experienceLevel:
+        filterString(filters, "experienceLevel", "experience_level") ||
+        defaultParserSearchForm.experienceLevel,
+      jobType:
+        filterString(filters, "jobType", "job_type") ||
+        defaultParserSearchForm.jobType,
+      datePosted:
+        filterString(filters, "datePosted", "date_posted") ||
+        defaultParserSearchForm.datePosted,
+      resultsLimit: String(
+        filterNumber(filters, "resultsLimit", "results_limit") ?? 10,
+      ),
+      country: filterString(filters, "country") || defaultParserSearchForm.country,
+      deduplicate:
+        filterBoolean(filters, "deduplicate") ??
+        defaultParserSearchForm.deduplicate,
+      searchName: config.name,
+      folder: filterString(filters, "folder"),
+    },
+  };
+}
+
+function filterString(
+  filters: Record<string, unknown>,
+  ...keys: string[]
+): string {
+  for (const key of keys) {
+    if (typeof filters[key] === "string") return filters[key];
+  }
+  return "";
+}
+
+function filterNumber(
+  filters: Record<string, unknown>,
+  ...keys: string[]
+): number | null {
+  for (const key of keys) {
+    const value = filters[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && Number.isFinite(Number(value))) {
+      return Number(value);
+    }
+  }
+  return null;
+}
+
+function filterBoolean(
+  filters: Record<string, unknown>,
+  key: string,
+): boolean | null {
+  return typeof filters[key] === "boolean" ? filters[key] : null;
 }
 
 function normalizeStoredLogs(value: unknown) {
@@ -2831,7 +2803,6 @@ export default function HomePage() {
   const [parserSearchForm, setParserSearchForm] = useState<ParserSearchForm>(defaultParserSearchForm);
   const [parserSearchConfigs, setParserSearchConfigs] = useState<ParserSearchConfig[]>([]);
   const [selectedParserSearchConfigId, setSelectedParserSearchConfigId] = useState("");
-  const [isParserSearchConfigsLoaded, setIsParserSearchConfigsLoaded] = useState(false);
   const [profile, setProfile] = useState<CandidateProfile>(defaultCandidateProfile);
   const [profileDraft, setProfileDraft] = useState<CandidateProfile>(defaultCandidateProfile);
   const [isProfileLoaded, setIsProfileLoaded] = useState(false);
@@ -2971,6 +2942,35 @@ export default function HomePage() {
     setPendingAiMatchFocus(section);
   }
 
+  async function refreshStoredJobsFromServer(signal?: AbortSignal) {
+    const response = await fetch(`${apiBaseUrl}/jobs`, {
+      cache: "no-store",
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(
+        await readApiErrorMessage(response, "Vacancies could not be refreshed"),
+      );
+    }
+
+    const storedJobs = (await response.json()) as Array<{
+      id: string;
+      data: unknown;
+    }>;
+    const storedUserJobs = keepStoredUserJobs(
+      normalizeStoredJobs(storedJobs.map((job) => job.data)),
+    );
+    setJobList((currentJobs) => [
+      ...storedUserJobs,
+      ...currentJobs.filter((job) => !isUserManagedJob(job)),
+    ]);
+    window.localStorage.setItem(
+      importedJobsStorageKey,
+      JSON.stringify(storedUserJobs),
+    );
+    return storedUserJobs;
+  }
+
   useEffect(() => {
     if (activeTab !== "AI Match" || !pendingAiMatchFocus) return;
 
@@ -3008,40 +3008,87 @@ export default function HomePage() {
     let isMounted = true;
 
     async function loadParserSearchConfigs() {
-      const configs: ParserSearchConfig[] = [];
-
       try {
         window.localStorage.removeItem(legacyParserSearchConfigsStorageKey);
-        const rawConfigs = window.localStorage.getItem(parserSearchConfigsStorageKey);
-        if (rawConfigs) {
-          const parsedConfigs = JSON.parse(rawConfigs) as ParserSearchConfig[];
-          if (Array.isArray(parsedConfigs)) {
-            configs.push(...parsedConfigs);
-          }
+        const response = await fetch(`${apiBaseUrl}/job-search/configs`, {
+          cache: "no-store",
+        });
+        if (!response.ok) {
+          throw new Error(
+            await readApiErrorMessage(response, "Search configs could not be loaded"),
+          );
         }
-      } catch {
-        configs.length = 0;
-      }
+        const serverConfigs = (await response.json()) as JobSearchConfigPayload[];
+        const rawLegacyConfigs = window.localStorage.getItem(
+          parserSearchConfigsStorageKey,
+        );
 
-      try {
-        const response = await fetch(parserSearchConfigsLocalUrl, { cache: "no-store" });
-        if (response.ok) {
-          const localConfigs = (await response.json()) as ParserSearchConfig[];
-          if (Array.isArray(localConfigs)) {
-            configs.push(...localConfigs);
+        if (rawLegacyConfigs) {
+          let legacyConfigs: ParserSearchConfig[] = [];
+          try {
+            const parsedLegacyConfigs = JSON.parse(rawLegacyConfigs) as unknown;
+            legacyConfigs = Array.isArray(parsedLegacyConfigs)
+              ? normalizeParserSearchConfigs(
+                  parsedLegacyConfigs as ParserSearchConfig[],
+                )
+              : [];
+          } catch {
+            window.localStorage.removeItem(parserSearchConfigsStorageKey);
           }
+          for (const legacyConfig of legacyConfigs) {
+            const filters = parserSearchFiltersFromForm(legacyConfig.form);
+            const alreadyImported = serverConfigs.some((serverConfig) => {
+              if (serverConfig.name !== legacyConfig.name) return false;
+              return (
+                JSON.stringify(
+                  parserSearchFiltersFromForm(
+                    parserSearchConfigFromApi(serverConfig).form,
+                  ),
+                ) === JSON.stringify(filters)
+              );
+            });
+            if (alreadyImported) continue;
+
+            const importResponse = await fetch(
+              `${apiBaseUrl}/job-search/configs`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  name: legacyConfig.name,
+                  filters,
+                }),
+              },
+            );
+            if (!importResponse.ok) {
+              throw new Error(
+                await readApiErrorMessage(
+                  importResponse,
+                  `Could not import config: ${legacyConfig.name}`,
+                ),
+              );
+            }
+            serverConfigs.push(
+              (await importResponse.json()) as JobSearchConfigPayload,
+            );
+          }
+          window.localStorage.removeItem(parserSearchConfigsStorageKey);
         }
-      } catch {
-        // Local config file is optional.
+
+        if (!isMounted) return;
+        setParserSearchConfigs(serverConfigs.map(parserSearchConfigFromApi));
+      } catch (error) {
+        if (!isMounted) return;
+        setParserSearchStatus("error");
+        setParserSearchMessage(
+          error instanceof Error
+            ? error.message
+            : "Search configs could not be loaded",
+        );
       }
-
-      if (!isMounted) return;
-
-      setParserSearchConfigs(normalizeParserSearchConfigs(configs));
-      setIsParserSearchConfigsLoaded(true);
     }
 
-    loadParserSearchConfigs();
+    void loadParserSearchConfigs();
 
     return () => {
       isMounted = false;
@@ -3176,12 +3223,6 @@ export default function HomePage() {
   }, [areApplicationEventsLoaded, applicationEvents]);
 
   useEffect(() => {
-    if (!isParserSearchConfigsLoaded) return;
-
-    window.localStorage.setItem(parserSearchConfigsStorageKey, JSON.stringify(parserSearchConfigs));
-  }, [isParserSearchConfigsLoaded, parserSearchConfigs]);
-
-  useEffect(() => {
     try {
       const rawSettings = window.localStorage.getItem(uiSettingsStorageKey);
       const storedSettings = rawSettings ? (JSON.parse(rawSettings) as Partial<UiSettings>) : {};
@@ -3255,17 +3296,7 @@ export default function HomePage() {
 
     async function loadStoredJobs() {
       try {
-        const response = await fetch(`${apiBaseUrl}/jobs`, {
-          cache: "no-store",
-          signal: abortController.signal,
-        });
-
-        if (!response.ok) return;
-
-        const storedJobs = (await response.json()) as Array<{ id: string; data: unknown }>;
-        const storedUserJobs = keepStoredUserJobs(normalizeStoredJobs(storedJobs.map((job) => job.data)));
-        setJobList((currentJobs) => [...storedUserJobs, ...currentJobs.filter((job) => !isUserManagedJob(job))]);
-        window.localStorage.setItem(importedJobsStorageKey, JSON.stringify(storedUserJobs));
+        await refreshStoredJobsFromServer(abortController.signal);
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
       }
@@ -3981,7 +4012,7 @@ export default function HomePage() {
     }
   }
 
-  function saveParserSearchConfig() {
+  async function saveParserSearchConfig() {
     const configName = parserSearchForm.searchName.trim();
     if (!configName) {
       setParserSearchStatus("error");
@@ -3989,29 +4020,55 @@ export default function HomePage() {
       return;
     }
 
-    const updatedAt = new Date().toISOString();
     const formToSave = { ...parserSearchForm, searchName: configName };
-    const configId = selectedParserSearchConfigId || createClientId("parser-config");
+    const isUpdate = Boolean(selectedParserSearchConfigId);
+    setParserSearchStatus("loading");
+    setParserSearchMessage(
+      `${isUpdate ? "Updating" : "Saving"} config: ${configName}`,
+    );
 
-    setParserSearchConfigs((currentConfigs) => {
-      const configExists = currentConfigs.some((config) => config.id === configId);
-      const nextConfig: ParserSearchConfig = {
-        id: configId,
-        name: configName,
-        form: formToSave,
-        updatedAt,
-      };
-
-      if (configExists) {
-        return currentConfigs.map((config) => (config.id === configId ? nextConfig : config));
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/job-search/configs${
+          isUpdate
+            ? `/${encodeURIComponent(selectedParserSearchConfigId)}`
+            : ""
+        }`,
+        {
+          method: isUpdate ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: configName,
+            filters: parserSearchFiltersFromForm(formToSave),
+          }),
+        },
+      );
+      if (!response.ok) {
+        throw new Error(
+          await readApiErrorMessage(response, "Search config save failed"),
+        );
       }
 
-      return [nextConfig, ...currentConfigs];
-    });
-    setSelectedParserSearchConfigId(configId);
-    setParserSearchForm(formToSave);
-    setParserSearchStatus("ready");
-    setParserSearchMessage(`Saved config: ${configName}`);
+      const savedConfig = parserSearchConfigFromApi(
+        (await response.json()) as JobSearchConfigPayload,
+      );
+      setParserSearchConfigs((currentConfigs) =>
+        currentConfigs.some((config) => config.id === savedConfig.id)
+          ? currentConfigs.map((config) =>
+              config.id === savedConfig.id ? savedConfig : config,
+            )
+          : [savedConfig, ...currentConfigs],
+      );
+      setSelectedParserSearchConfigId(savedConfig.id);
+      setParserSearchForm(savedConfig.form);
+      setParserSearchStatus("ready");
+      setParserSearchMessage(`Saved config: ${configName}`);
+    } catch (error) {
+      setParserSearchStatus("error");
+      setParserSearchMessage(
+        error instanceof Error ? error.message : "Search config save failed",
+      );
+    }
   }
 
   function loadParserSearchConfig(configId: string) {
@@ -4025,14 +4082,40 @@ export default function HomePage() {
     setParserSearchMessage(`Loaded config: ${config.name}`);
   }
 
-  function deleteParserSearchConfig() {
+  async function deleteParserSearchConfig() {
     if (!selectedParserSearchConfigId) return;
 
     const deletedConfig = parserSearchConfigs.find((config) => config.id === selectedParserSearchConfigId);
-    setParserSearchConfigs((currentConfigs) => currentConfigs.filter((config) => config.id !== selectedParserSearchConfigId));
-    setSelectedParserSearchConfigId("");
-    setParserSearchStatus("ready");
-    setParserSearchMessage(deletedConfig ? `Deleted config: ${deletedConfig.name}` : "Deleted config");
+    setParserSearchStatus("loading");
+    setParserSearchMessage(
+      deletedConfig ? `Deleting config: ${deletedConfig.name}` : "Deleting config",
+    );
+    try {
+      const response = await fetch(
+        `${apiBaseUrl}/job-search/configs/${encodeURIComponent(selectedParserSearchConfigId)}`,
+        { method: "DELETE" },
+      );
+      if (!response.ok) {
+        throw new Error(
+          await readApiErrorMessage(response, "Search config delete failed"),
+        );
+      }
+      setParserSearchConfigs((currentConfigs) =>
+        currentConfigs.filter(
+          (config) => config.id !== selectedParserSearchConfigId,
+        ),
+      );
+      setSelectedParserSearchConfigId("");
+      setParserSearchStatus("ready");
+      setParserSearchMessage(
+        deletedConfig ? `Deleted config: ${deletedConfig.name}` : "Deleted config",
+      );
+    } catch (error) {
+      setParserSearchStatus("error");
+      setParserSearchMessage(
+        error instanceof Error ? error.message : "Search config delete failed",
+      );
+    }
   }
 
   function openProfileEditor() {
@@ -5240,72 +5323,15 @@ export default function HomePage() {
     return null;
   }
 
-  function addParsedJobsToList(parsedJobs: ParsedJob[]) {
-    const importedJobs = parsedJobs
-      .map((job, index) => mapParsedJobToJob(job, index))
-      .filter((job) => !deletedJobIds.includes(job.id));
-
-    if (importedJobs.length > 0) {
-      const existingJobIds = new Set(jobList.map((job) => job.id));
-      const newJobs = importedJobs.filter((job) => !existingJobIds.has(job.id));
-      setJobList((currentJobs) => {
-        const nextJobs = mergeJobs(importedJobs, currentJobs);
-        const nextUserJobs = nextJobs.filter(isUserManagedJob);
-        void persistUserJobs(nextUserJobs);
-        return nextJobs;
-      });
-      setSelectedJobId(importedJobs[0].id);
-      setActiveTab("Overview");
-      void runSequentially(newJobs, (job) => refreshAiMatch(job));
-    }
-
-    return importedJobs.length;
-  }
-
-  async function pollParserSnapshot(snapshotId: string, parser: ParserId): Promise<ParserApiResponse> {
-    const parserLabel = getParserLabel(parser);
-    for (let attempt = 1; attempt <= snapshotPollMaxAttempts; attempt += 1) {
-      const pollMessage = `${parserLabel} snapshot queued. Checking ${attempt}/${snapshotPollMaxAttempts}...`;
-      setParserSearchMessage(pollMessage);
-      appendAppLog({
-        level: "info",
-        area: "Vacancy search",
-        message: pollMessage,
-        details: `Snapshot: ${snapshotId}`,
-      });
-      await wait(snapshotPollDelayMs);
-
-      const snapshotResponse = await fetch(
-        `${apiBaseUrl}/parsers/${parser}/snapshots/${encodeURIComponent(snapshotId)}?results_limit=${Number.parseInt(parserSearchForm.resultsLimit, 10) || 10}&deduplicate=${parserSearchForm.deduplicate}`,
-      );
-      const snapshotData = (await snapshotResponse.json()) as ParserApiResponse & { detail?: string };
-
-      if (!snapshotResponse.ok) {
-        throw new Error(
-          formatApiErrorDetail(snapshotData.detail) || `${getParserLabel(parser)} snapshot request failed`,
-        );
-      }
-
-      if (snapshotData.status === "completed") {
-        appendAppLog({
-          level: "success",
-          area: "Vacancy search",
-          message: `Bright Data snapshot completed with ${(snapshotData.jobs ?? []).length} vacancies`,
-          details: `Snapshot: ${snapshotId}`,
-        });
-        return snapshotData;
-      }
-    }
-
-    throw new Error("Bright Data snapshot is still not ready. Try again later.");
-  }
-
-  async function runParser(parser: ParserId): Promise<ParserApiResponse> {
-    const parserLabel = getParserLabel(parser);
+  async function runParsers() {
+    const parsers = normalizeParserIds(parserSearchForm);
+    const parsersLabel = getParsersLabel(parsers);
+    setParserSearchStatus("loading");
+    setParserSearchMessage(`Searching ${parsersLabel}...`);
     appendAppLog({
       level: "info",
       area: "Vacancy search",
-      message: `${parserLabel} vacancy search started`,
+      message: `${parsersLabel} vacancy search started`,
       details: [
         `Keywords: ${parserSearchForm.keywords || "Any"}`,
         `Location: ${parserSearchForm.location || parserSearchForm.country || "Any"}`,
@@ -5314,120 +5340,72 @@ export default function HomePage() {
       ].join("\n"),
     });
 
-    const response = await fetch(`${apiBaseUrl}/parsers/${parser}/search`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        keywords: parserSearchForm.keywords,
-        location: parserSearchForm.location,
-        remote: parserSearchForm.remote,
-        experience_level: parserSearchForm.experienceLevel,
-        job_type: parserSearchForm.jobType,
-        date_posted: parserSearchForm.datePosted,
-        results_limit: Number.parseInt(parserSearchForm.resultsLimit, 10) || 10,
-        country: parserSearchForm.country,
-        deduplicate: parserSearchForm.deduplicate,
-        search_name: parserSearchForm.searchName,
-        folder: parserSearchForm.folder,
-      }),
-    });
-    const data = (await response.json()) as ParserApiResponse & { detail?: unknown };
+    try {
+      const response = await fetch(`${apiBaseUrl}/job-search/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          config: {
+            name: parserSearchForm.searchName.trim() || "Manual search",
+            filters: parserSearchFiltersFromForm(parserSearchForm),
+          },
+          sources: parsers,
+          aiAnalysisEnabled: true,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(
+          await readApiErrorMessage(response, "Vacancy search failed"),
+        );
+      }
 
-    if (!response.ok) {
-      throw new Error(formatApiErrorDetail(data.detail) || `${parserLabel} parser request failed`);
-    }
+      const run = (await response.json()) as JobSearchRunPayload;
+      const refreshedJobs = await refreshStoredJobsFromServer();
+      if (run.jobsAdded > 0 && refreshedJobs.length > 0) {
+        setSelectedJobId(refreshedJobs[0].id);
+        setActiveTab("Overview");
+      }
+      const failedSources = Object.keys(run.sourceErrors).map(getParserLabel);
+      const finalMessage = failedSources.length
+        ? `Added ${run.jobsAdded} of ${run.jobsFound} vacancies; failed: ${failedSources.join(", ")}`
+        : run.jobsAdded > 0
+          ? `Added ${run.jobsAdded} of ${run.jobsFound} vacancies from ${parsersLabel}`
+          : run.jobsFound > 0
+            ? `Found ${run.jobsFound} vacancies; all were already saved or deleted`
+            : `No vacancies returned from ${parsersLabel}`;
+      const message = run.warning
+        ? `${finalMessage} · ${run.warning}`
+        : finalMessage;
 
-    const initialJobsCount = (data.jobs ?? []).length;
-    appendAppLog({
-      level: data.status === "completed" ? (initialJobsCount > 0 ? "success" : "warning") : "info",
-      area: "Vacancy search",
-      message:
-        data.status === "completed"
-          ? `${parserLabel} parser returned ${initialJobsCount} vacancies immediately`
-          : `${parserLabel} snapshot queued: ${data.snapshot_id ?? "waiting"}`,
-      details: [data.search_url ? `Search URL: ${data.search_url}` : "", data.message || ""].filter(Boolean).join("\n") || undefined,
-    });
-
-    const finalData =
-      data.status === "completed"
-        ? data
-        : data.snapshot_id
-          ? await pollParserSnapshot(data.snapshot_id, parser)
-          : data;
-    return {
-      ...finalData,
-      jobs: (finalData.jobs ?? []).map((job) => ({ ...job, source: job.source ?? parser })),
-    };
-  }
-
-  async function runParsers() {
-    const parsers = normalizeParserIds(parserSearchForm);
-    const parsersLabel = getParsersLabel(parsers);
-    const resultsLimit = Number.parseInt(parserSearchForm.resultsLimit, 10) || 10;
-    setParserSearchStatus("loading");
-    setParserSearchMessage(`Searching ${parsersLabel}...`);
-
-    const results = await Promise.allSettled(parsers.map((parser) => runParser(parser)));
-    const successfulResults = results
-      .map((result, index) => ({ result, parser: parsers[index] }))
-      .filter(
-        (entry): entry is { result: PromiseFulfilledResult<ParserApiResponse>; parser: ParserId } =>
-          entry.result.status === "fulfilled",
-      );
-    const failedResults = results
-      .map((result, index) => ({ result, parser: parsers[index] }))
-      .filter(
-        (entry): entry is { result: PromiseRejectedResult; parser: ParserId } =>
-          entry.result.status === "rejected",
-      );
-
-    for (const { result, parser } of failedResults) {
+      setParserSearchStatus("ready");
+      setParserSearchMessage(message);
+      appendAppLog({
+        level:
+          failedSources.length > 0
+            ? "warning"
+            : run.jobsAdded > 0
+              ? "success"
+              : "warning",
+        area: "Vacancy search",
+        message,
+        details:
+          failedSources.length > 0
+            ? Object.entries(run.sourceErrors)
+                .map(([source, error]) => `${getParserLabel(source)}: ${error}`)
+                .join("\n")
+            : undefined,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Vacancy search failed";
+      setParserSearchStatus("error");
+      setParserSearchMessage(message);
       appendAppLog({
         level: "error",
         area: "Vacancy search",
-        message: `${getParserLabel(parser)} search failed`,
-        details: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        message,
       });
     }
-
-    if (successfulResults.length === 0) {
-      const errorMessage = failedResults
-        .map(({ result, parser }) =>
-          `${getParserLabel(parser)}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`,
-        )
-        .join(" · ");
-      setParserSearchStatus("error");
-      setParserSearchMessage(errorMessage || "Vacancy search failed");
-      return;
-    }
-
-    const returnedJobs = successfulResults.flatMap(({ result }) => result.value.jobs ?? []);
-    const relevantJobs = shouldFilterEntryItJobs(parserSearchForm)
-      ? returnedJobs.filter(isEntryItParsedJob)
-      : returnedJobs;
-    const excludedJobsCount = returnedJobs.length - relevantJobs.length;
-    const combinedJobs = (parserSearchForm.deduplicate
-      ? deduplicateParsedJobs(relevantJobs)
-      : relevantJobs
-    ).slice(0, resultsLimit);
-    const addedCount = addParsedJobsToList(combinedJobs);
-    const failedLabels = failedResults.map(({ parser }) => getParserLabel(parser));
-    const finalMessage = failedLabels.length
-      ? `Added ${addedCount} vacancies from ${getParsersLabel(successfulResults.map(({ parser }) => parser))}; failed: ${failedLabels.join(", ")}`
-      : addedCount > 0
-        ? `Added ${addedCount} vacancies from ${parsersLabel}`
-        : `No vacancies returned from ${parsersLabel}`;
-
-    setParserSearchStatus("ready");
-    setParserSearchMessage(finalMessage);
-    appendAppLog({
-      level: failedLabels.length > 0 ? "warning" : addedCount > 0 ? "success" : "warning",
-      area: "Vacancy search",
-      message: finalMessage,
-      details: excludedJobsCount > 0
-        ? `Excluded ${excludedJobsCount} vacancies that were not entry-level IT roles.`
-        : undefined,
-    });
   }
 
   return (
@@ -5605,6 +5583,9 @@ export default function HomePage() {
             }}
             onAnalysisMenuOpenChange={setIsAnalysisMenuOpen}
             onRunAnalysis={(scope) => void runBulkAiAnalysis(scope)}
+            onVacanciesChanged={async () => {
+              await refreshStoredJobsFromServer();
+            }}
           />
         </header>
 
@@ -6246,13 +6227,13 @@ export default function HomePage() {
                           variant="ghost"
                           className="h-9 rounded-md border border-border bg-transparent px-3 text-[13px] text-[#e6ebf3] hover:bg-white/[0.06]"
                           disabled={!selectedParserSearchConfigId}
-                          onClick={deleteParserSearchConfig}
+                          onClick={() => void deleteParserSearchConfig()}
                         >
                           <Trash2 className="h-4 w-4" />
                           Delete
                         </Button>
                       </div>
-                      <span className="text-xs font-medium text-muted">Saved locally in this browser, outside git</span>
+                      <span className="text-xs font-medium text-muted">Saved on the server and available to automatic searches</span>
                     </label>
 
                     <label className="grid gap-2">
@@ -6285,7 +6266,7 @@ export default function HomePage() {
                       type="button"
                       variant="ghost"
                       className="h-9 rounded-md border border-accent/55 bg-accent/12 px-4 text-[13px] text-white hover:bg-accent/18"
-                      onClick={saveParserSearchConfig}
+                      onClick={() => void saveParserSearchConfig()}
                     >
                       <Save className="h-4 w-4" />
                       Save config
@@ -6327,7 +6308,7 @@ export default function HomePage() {
                   <Button
                     className="h-10 rounded-md bg-gradient-to-r from-[#ff5a00] to-[#ff3d00] px-7 text-[13px] text-white shadow-[0_12px_28px_rgba(255,90,0,0.25)] hover:from-[#ff6a14] hover:to-[#ff4a12]"
                     disabled={parserSearchStatus === "loading"}
-                    onClick={runParsers}
+                    onClick={() => void runParsers()}
                   >
                     <Search className="h-4 w-4" />
                     {parserSearchStatus === "loading" ? "Searching..." : "Start search"}

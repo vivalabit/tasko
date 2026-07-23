@@ -17,6 +17,41 @@ const configuredAppSettings = {
   openai_api_retry_backoff_seconds: 0.8,
 };
 
+function importedJobData({
+  id,
+  title,
+  source = "linkedin",
+}: {
+  id: string;
+  title: string;
+  source?: "linkedin" | "indeed" | "jobs_ch";
+}) {
+  const sourceLabel =
+    source === "indeed" ? "Indeed" : source === "jobs_ch" ? "jobs.ch" : "LinkedIn";
+  return {
+    id,
+    company: "Example AG",
+    title,
+    location: "Zurich",
+    type: "Full-time",
+    salary: "Not specified",
+    posted: sourceLabel,
+    experience: "Entry level",
+    department: `${sourceLabel} import`,
+    match: 50,
+    logo: source,
+    overview: `Imported ${title}`,
+    responsibilities: ["Review vacancy"],
+    requirements: ["Entry level"],
+    skills: [sourceLabel],
+    recommendations: [],
+    companyInfo: "Example vacancy",
+    reviews: [],
+    similarJobs: [],
+    addedAt: "2026-07-23T10:00:00.000Z",
+  };
+}
+
 it("deletes a legacy supporting document that has no stored ID", async () => {
   window.history.replaceState(null, "", "#profile");
   vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -51,7 +86,7 @@ it("deletes a legacy supporting document that has no stored ID", async () => {
     const url = new URL(requestUrl, "http://localhost");
     const method = init?.method ?? "GET";
 
-    if (url.pathname === "/parser-search-configs.local.json") return Response.json([]);
+    if (url.pathname === "/job-search/configs" && method === "GET") return Response.json([]);
     if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
     if (url.pathname === "/applications" && method === "GET") return Response.json([]);
     if (url.pathname === "/applications/events" && method === "GET") return Response.json([]);
@@ -99,7 +134,7 @@ it("saves a selectable AI backend without overwriting unrelated settings", async
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
     requests.push({ path: url.pathname, method, body });
 
-    if (url.pathname === "/parser-search-configs.local.json") return Response.json([]);
+    if (url.pathname === "/job-search/configs" && method === "GET") return Response.json([]);
     if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
     if (url.pathname === "/applications" && method === "GET") return Response.json([]);
     if (url.pathname === "/applications/events" && method === "GET") return Response.json([]);
@@ -183,7 +218,7 @@ it("validates OpenAI API mode before saving", async () => {
     const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : undefined;
     requests.push({ path: url.pathname, method, body });
 
-    if (url.pathname === "/parser-search-configs.local.json") return Response.json([]);
+    if (url.pathname === "/job-search/configs" && method === "GET") return Response.json([]);
     if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
     if (url.pathname === "/applications" && method === "GET") return Response.json([]);
     if (url.pathname === "/applications/events" && method === "GET") return Response.json([]);
@@ -234,7 +269,7 @@ it("adds a manual vacancy to Jobs, persists it, and starts AI analysis", async (
     const body = init?.body ? JSON.parse(String(init.body)) as unknown : undefined;
     requests.push({ path: url.pathname, method, body });
 
-    if (url.pathname === "/parser-search-configs.local.json") return Response.json([]);
+    if (url.pathname === "/job-search/configs" && method === "GET") return Response.json([]);
     if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
     if (url.pathname === "/jobs" && method === "PUT") return Response.json([]);
     if (url.pathname === "/applications" && method === "GET") return Response.json([]);
@@ -300,6 +335,8 @@ it("searches LinkedIn, Indeed, and jobs.ch together when all sources are selecte
   window.history.replaceState(null, "", "#jobs");
   const requests: Array<{ path: string; method: string }> = [];
   const requestUrls: string[] = [];
+  const runBodies: Array<Record<string, unknown>> = [];
+  let storedJobs: Array<{ id: string; data: unknown }> = [];
   const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
     const requestUrl = typeof input === "string"
       ? input
@@ -311,34 +348,30 @@ it("searches LinkedIn, Indeed, and jobs.ch together when all sources are selecte
     requests.push({ path: url.pathname, method });
     requestUrls.push(`${url.pathname}${url.search}`);
 
-    if (url.pathname === "/parser-search-configs.local.json") return Response.json([]);
-    if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
+    if (url.pathname === "/job-search/configs" && method === "GET") return Response.json([]);
+    if (url.pathname === "/jobs" && method === "GET") return Response.json(storedJobs);
     if (url.pathname === "/applications" && method === "GET") return Response.json([]);
     if (url.pathname === "/applications/events" && method === "GET") return Response.json([]);
     if (url.pathname === "/profile" && method === "GET") return Response.json({});
     if (url.pathname === "/settings" && method === "GET") {
       return Response.json({ has_brightdata_api_key: true, brightdata_api_key_preview: "test...key" });
     }
-    if (url.pathname === "/parsers/linkedin/search" && method === "POST") {
-      return Response.json({ parser: "linkedin", status: "completed", jobs: [] });
-    }
-    if (url.pathname === "/parsers/indeed/search" && method === "POST") {
+    if (url.pathname === "/job-search/run" && method === "POST") {
+      runBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      const job = importedJobData({
+        id: "indeed-example",
+        title: "Junior Data Engineer",
+        source: "indeed",
+      });
+      storedJobs = [{ id: job.id, data: job }];
       return Response.json({
-        parser: "indeed",
         status: "completed",
-        jobs: [{
-          source: "indeed",
-          title: "Junior Data Engineer",
-          company: "Example AG",
-          location: "Zurich",
-          url: "https://ch.indeed.com/viewjob?jk=example",
-        }],
+        jobsFound: 1,
+        jobsAdded: 1,
+        sourceErrors: {},
+        warning: null,
       });
     }
-    if (url.pathname === "/parsers/jobs_ch/search" && method === "POST") {
-      return Response.json({ parser: "jobs_ch", status: "completed", jobs: [] });
-    }
-    if (url.pathname === "/jobs" && method === "PUT") return Response.json([]);
     if (url.pathname === "/jobs/ai-match/run" && method === "POST") {
       return Response.json({ detail: "AI match disabled in test" }, { status: 403 });
     }
@@ -365,11 +398,23 @@ it("searches LinkedIn, Indeed, and jobs.ch together when all sources are selecte
   fireEvent.click(screen.getByRole("button", { name: "Start search" }));
 
   await waitFor(() => {
-    expect(requests).toContainEqual({ path: "/parsers/linkedin/search", method: "POST" });
-    expect(requests).toContainEqual({ path: "/parsers/indeed/search", method: "POST" });
-    expect(requests).toContainEqual({ path: "/parsers/jobs_ch/search", method: "POST" });
+    expect(requests).toContainEqual({ path: "/job-search/run", method: "POST" });
   });
-  expect(await screen.findByText("Added 1 vacancies from LinkedIn + Indeed + jobs.ch")).toBeInTheDocument();
+  expect(runBodies[0]).toMatchObject({
+    sources: ["linkedin", "indeed", "jobs_ch"],
+    aiAnalysisEnabled: true,
+  });
+  expect(runBodies[0]).toHaveProperty("config");
+  expect(
+    await screen.findByText(
+      "Added 1 of 1 vacancies from LinkedIn + Indeed + jobs.ch",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    requests.filter(
+      (request) => request.path === "/jobs" && request.method === "GET",
+    ).length,
+  ).toBeGreaterThanOrEqual(2);
   expect(screen.getAllByRole("img", { name: "Data Engineering role · Indeed" })).toHaveLength(2);
   expect(screen.getAllByText("Source: Indeed")).toHaveLength(2);
 
@@ -395,7 +440,7 @@ it("does not re-add a vacancy whose deleted id was synchronized with the server"
     const method = init?.method ?? "GET";
     requests.push({ path: url.pathname, method });
 
-    if (url.pathname === "/parser-search-configs.local.json") return Response.json([]);
+    if (url.pathname === "/job-search/configs" && method === "GET") return Response.json([]);
     if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
     if (url.pathname === "/jobs/dismissed-ids" && method === "PUT") {
       return Response.json([dismissedId]);
@@ -406,17 +451,13 @@ it("does not re-add a vacancy whose deleted id was synchronized with the server"
     if (url.pathname === "/settings" && method === "GET") {
       return Response.json({ has_brightdata_api_key: true, brightdata_api_key_preview: "test...key" });
     }
-    if (url.pathname === "/parsers/linkedin/search" && method === "POST") {
+    if (url.pathname === "/job-search/run" && method === "POST") {
       return Response.json({
-        parser: "linkedin",
         status: "completed",
-        jobs: [{
-          source: "linkedin",
-          title: "Product Designer",
-          company: "Figma",
-          location: "Remote",
-          url: "https://www.linkedin.com/jobs/view/123",
-        }],
+        jobsFound: 1,
+        jobsAdded: 0,
+        sourceErrors: {},
+        warning: null,
       });
     }
 
@@ -432,20 +473,27 @@ it("does not re-add a vacancy whose deleted id was synchronized with the server"
   fireEvent.click(await screen.findByRole("button", { name: "Search vacancies" }));
   fireEvent.click(screen.getByRole("button", { name: "Start search" }));
 
-  expect(await screen.findByText("No vacancies returned from LinkedIn")).toBeInTheDocument();
+  expect(
+    await screen.findByText(
+      "Found 1 vacancies; all were already saved or deleted",
+    ),
+  ).toBeInTheDocument();
+  expect(requests).toContainEqual({ path: "/job-search/run", method: "POST" });
   expect(requests).not.toContainEqual({ path: "/jobs", method: "PUT" });
   expect(requests).not.toContainEqual({ path: "/jobs/ai-match/run", method: "POST" });
 });
 
-it("keeps only entry-level IT vacancies for the Entry IT config", async () => {
+it("loads a server config and refreshes backend-persisted search results", async () => {
   window.history.replaceState(null, "", "#jobs");
-  const persistedTitles: string[] = [];
+  const runBodies: Array<Record<string, unknown>> = [];
+  let storedJobs: Array<{ id: string; data: unknown }> = [];
   const entryItConfig = {
     id: "entry-it",
     name: "Entry IT",
+    createdAt: "2026-07-21T00:00:00.000Z",
     updatedAt: "2026-07-21T00:00:00.000Z",
-    form: {
-      parsers: ["linkedin"],
+    filters: {
+      sources: ["linkedin"],
       keywords: "entry IT",
       location: "Zurich, Switzerland",
       remote: "Any",
@@ -468,34 +516,37 @@ it("keeps only entry-level IT vacancies for the Entry IT config", async () => {
     const url = new URL(requestUrl, "http://localhost");
     const method = init?.method ?? "GET";
 
-    if (url.pathname === "/parser-search-configs.local.json") return Response.json([entryItConfig]);
-    if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
+    if (url.pathname === "/job-search/configs" && method === "GET") {
+      return Response.json([entryItConfig]);
+    }
+    if (url.pathname === "/jobs" && method === "GET") return Response.json(storedJobs);
     if (url.pathname === "/applications" && method === "GET") return Response.json([]);
     if (url.pathname === "/applications/events" && method === "GET") return Response.json([]);
     if (url.pathname === "/profile" && method === "GET") return Response.json({});
     if (url.pathname === "/settings" && method === "GET") {
       return Response.json({ has_brightdata_api_key: true, brightdata_api_key_preview: "test...key" });
     }
-    if (url.pathname === "/parsers/linkedin/search" && method === "POST") {
-      return Response.json({
-        parser: "linkedin",
-        status: "completed",
-        jobs: [
-          { source: "linkedin", title: "Verkäufer:in Food Studentenaushilfe", company: "Shop", seniority: "Entry level" },
-          { source: "linkedin", title: "Working Student Consulting 50-100%", company: "Consulting AG", seniority: "Internship" },
-          { source: "linkedin", title: "Senior Data Engineer", company: "Data AG", seniority: "Mid-Senior level" },
-          { source: "linkedin", title: "Junior Python Developer", company: "Code AG", seniority: "Entry level" },
-          { source: "linkedin", title: "Werkstudent Embedded-Software-Entwicklung", company: "Device AG", seniority: "Not Applicable" },
-        ],
+    if (url.pathname === "/job-search/run" && method === "POST") {
+      runBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      const junior = importedJobData({
+        id: "linkedin-junior-python",
+        title: "Junior Python Developer",
       });
-    }
-    if (url.pathname === "/jobs" && method === "PUT") {
-      const payload = JSON.parse(String(init?.body)) as { jobs: Array<{ data: { title: string } }> };
-      persistedTitles.push(...payload.jobs.map((job) => job.data.title));
-      return Response.json([]);
-    }
-    if (url.pathname === "/jobs/ai-match/run" && method === "POST") {
-      return Response.json({ detail: "AI match disabled in test" }, { status: 403 });
+      const embedded = importedJobData({
+        id: "linkedin-werkstudent-embedded",
+        title: "Werkstudent Embedded-Software-Entwicklung",
+      });
+      storedJobs = [
+        { id: junior.id, data: junior },
+        { id: embedded.id, data: embedded },
+      ];
+      return Response.json({
+        status: "completed",
+        jobsFound: 2,
+        jobsAdded: 2,
+        sourceErrors: {},
+        warning: null,
+      });
     }
 
     throw new Error(`Unhandled request: ${method} ${url.pathname}`);
@@ -508,18 +559,254 @@ it("keeps only entry-level IT vacancies for the Entry IT config", async () => {
   fireEvent.change(await screen.findByLabelText("Existing configs"), { target: { value: "entry-it" } });
   fireEvent.click(screen.getByRole("button", { name: "Start search" }));
 
-  expect(await screen.findByText("Added 2 vacancies from LinkedIn")).toBeInTheDocument();
-  await waitFor(() => {
-    expect(persistedTitles).toEqual(expect.arrayContaining([
-      "Junior Python Developer",
-      "Werkstudent Embedded-Software-Entwicklung",
-    ]));
+  expect(
+    await screen.findByText("Added 2 of 2 vacancies from LinkedIn"),
+  ).toBeInTheDocument();
+  expect(runBodies[0]).toMatchObject({
+    sources: ["linkedin"],
+    config: {
+      name: "Entry IT",
+      filters: {
+        keywords: "entry IT",
+        location: "Zurich, Switzerland",
+        resultsLimit: 50,
+        deduplicate: true,
+      },
+    },
   });
-  expect(persistedTitles).not.toEqual(expect.arrayContaining([
-    "Verkäufer:in Food Studentenaushilfe",
-    "Working Student Consulting 50-100%",
-    "Senior Data Engineer",
-  ]));
+  expect(screen.getAllByText("Junior Python Developer").length).toBeGreaterThan(0);
+  expect(
+    screen.getAllByText("Werkstudent Embedded-Software-Entwicklung").length,
+  ).toBeGreaterThan(0);
+});
+
+it("imports legacy local search configs to the server only once", async () => {
+  window.history.replaceState(null, "", "#jobs");
+  window.localStorage.setItem(
+    "tasko.parserSearchConfigs.v2",
+    JSON.stringify([
+      {
+        id: "legacy-zurich",
+        name: "Legacy Zurich",
+        updatedAt: "2026-07-20T09:00:00.000Z",
+        form: {
+          parsers: ["linkedin", "indeed"],
+          keywords: "Platform Engineer",
+          location: "Zurich",
+          remote: "Any",
+          experienceLevel: "Any",
+          jobType: "Full-time",
+          datePosted: "Past week",
+          resultsLimit: "25",
+          country: "Switzerland",
+          deduplicate: true,
+          searchName: "Legacy Zurich",
+          folder: "",
+        },
+      },
+    ]),
+  );
+  const configWrites: Array<Record<string, unknown>> = [];
+  const serverConfigs: Array<Record<string, unknown>> = [];
+  const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+    const requestUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    const url = new URL(requestUrl, "http://localhost");
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/job-search/configs" && method === "GET") {
+      return Response.json(serverConfigs);
+    }
+    if (url.pathname === "/job-search/configs" && method === "POST") {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      configWrites.push(body);
+      const saved = {
+        id: "server-config-1",
+        ...body,
+        createdAt: "2026-07-23T10:00:00.000Z",
+        updatedAt: "2026-07-23T10:00:00.000Z",
+      };
+      serverConfigs.push(saved);
+      return Response.json(saved, { status: 201 });
+    }
+    if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
+    if (url.pathname === "/jobs/dismissed-ids" && method === "GET") {
+      return Response.json([]);
+    }
+    if (url.pathname === "/applications" && method === "GET") {
+      return Response.json([]);
+    }
+    if (url.pathname === "/applications/events" && method === "GET") {
+      return Response.json([]);
+    }
+    if (url.pathname === "/profile" && method === "GET") return Response.json({});
+    if (url.pathname === "/settings" && method === "GET") {
+      return Response.json(configuredAppSettings);
+    }
+    if (
+      (url.pathname === "/applications" ||
+        url.pathname === "/applications/events") &&
+      method === "PUT"
+    ) {
+      return Response.json([]);
+    }
+    throw new Error(`Unhandled request: ${method} ${url.pathname}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  const firstRender = render(<HomePage />);
+  await waitFor(() => expect(configWrites).toHaveLength(1));
+  expect(configWrites[0]).toMatchObject({
+    name: "Legacy Zurich",
+    filters: {
+      sources: ["linkedin", "indeed"],
+      keywords: "Platform Engineer",
+      location: "Zurich",
+      resultsLimit: 25,
+      deduplicate: true,
+    },
+  });
+  expect(
+    window.localStorage.getItem("tasko.parserSearchConfigs.v2"),
+  ).toBeNull();
+
+  firstRender.unmount();
+  render(<HomePage />);
+  await waitFor(() => {
+    expect(
+      fetchMock.mock.calls.filter(([input, init]) => {
+        const requestUrl =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.href
+              : input.url;
+        return (
+          new URL(requestUrl, "http://localhost").pathname ===
+            "/job-search/configs" &&
+          (init?.method ?? "GET") === "GET"
+        );
+      }).length,
+    ).toBeGreaterThanOrEqual(2);
+  });
+  expect(configWrites).toHaveLength(1);
+});
+
+it("saves and deletes manual-search configs through the API", async () => {
+  window.history.replaceState(null, "", "#jobs");
+  const configRequests: Array<{
+    path: string;
+    method: string;
+    body?: Record<string, unknown>;
+  }> = [];
+  const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+    const requestUrl =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    const url = new URL(requestUrl, "http://localhost");
+    const method = init?.method ?? "GET";
+
+    if (url.pathname === "/job-search/configs" && method === "GET") {
+      return Response.json([]);
+    }
+    if (url.pathname === "/job-search/configs" && method === "POST") {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      configRequests.push({ path: url.pathname, method, body });
+      return Response.json(
+        {
+          id: "manual-config-1",
+          ...body,
+          createdAt: "2026-07-23T10:00:00.000Z",
+          updatedAt: "2026-07-23T10:00:00.000Z",
+        },
+        { status: 201 },
+      );
+    }
+    if (
+      url.pathname === "/job-search/configs/manual-config-1" &&
+      method === "DELETE"
+    ) {
+      configRequests.push({ path: url.pathname, method });
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
+    if (url.pathname === "/jobs/dismissed-ids" && method === "GET") {
+      return Response.json([]);
+    }
+    if (url.pathname === "/applications" && method === "GET") {
+      return Response.json([]);
+    }
+    if (url.pathname === "/applications/events" && method === "GET") {
+      return Response.json([]);
+    }
+    if (url.pathname === "/profile" && method === "GET") return Response.json({});
+    if (url.pathname === "/settings" && method === "GET") {
+      return Response.json(configuredAppSettings);
+    }
+    if (
+      (url.pathname === "/applications" ||
+        url.pathname === "/applications/events") &&
+      method === "PUT"
+    ) {
+      return Response.json([]);
+    }
+    throw new Error(`Unhandled request: ${method} ${url.pathname}`);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+
+  render(<HomePage />);
+  fireEvent.click(await screen.findByRole("button", { name: "Search vacancies" }));
+  fireEvent.change(
+    screen.getByPlaceholderText("e.g. Product Designer Remote Jobs"),
+    {
+    target: { value: "Remote platform roles" },
+    },
+  );
+  fireEvent.change(
+    screen.getByPlaceholderText(
+      "e.g. Product Designer, UX Designer, Design System",
+    ),
+    {
+    target: { value: "Platform Engineer" },
+    },
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Save config" }));
+
+  expect(
+    await screen.findByText("Saved config: Remote platform roles"),
+  ).toBeInTheDocument();
+  expect(configRequests[0]).toMatchObject({
+    path: "/job-search/configs",
+    method: "POST",
+    body: {
+      name: "Remote platform roles",
+      filters: {
+        keywords: "Platform Engineer",
+        sources: ["linkedin"],
+        resultsLimit: 10,
+        deduplicate: true,
+      },
+    },
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+  expect(
+    await screen.findByText("Deleted config: Remote platform roles"),
+  ).toBeInTheDocument();
+  expect(configRequests[1]).toEqual({
+    path: "/job-search/configs/manual-config-1",
+    method: "DELETE",
+  });
+  expect(
+    window.localStorage.getItem("tasko.parserSearchConfigs.v2"),
+  ).toBeNull();
 });
 
 it("keeps preparation drafts out of Applications until they are marked as applied", async () => {
@@ -528,7 +815,7 @@ it("keeps preparation drafts out of Applications until they are marked as applie
 
   installApplicationWorkspaceApiMock({
     requestHandler: async (url, method, init) => {
-      if (url.pathname === "/parser-search-configs.local.json") return Response.json([]);
+      if (url.pathname === "/job-search/configs" && method === "GET") return Response.json([]);
       if (url.pathname === "/jobs" && method === "GET") return Response.json([]);
       if (url.pathname === "/applications" && method === "GET") return Response.json([]);
       if (url.pathname === "/applications/events" && method === "GET") return Response.json([]);

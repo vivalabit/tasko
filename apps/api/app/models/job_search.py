@@ -2,7 +2,7 @@ from datetime import UTC, datetime, time
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -224,6 +224,34 @@ class JobSearchConfigPayload(BaseModel):
     @classmethod
     def normalize_timestamps(cls, value: datetime) -> datetime:
         return as_utc(value)
+
+
+class JobSearchManualRunRequest(BaseModel):
+    config_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=36,
+        alias="configId",
+    )
+    config: JobSearchConfigCreateRequest | None = None
+    sources: list[JobSearchSource] = Field(min_length=1, max_length=10)
+    ai_analysis_enabled: bool = Field(default=True, alias="aiAnalysisEnabled")
+
+    model_config = {"extra": "forbid", "populate_by_name": True}
+
+    @field_validator("sources")
+    @classmethod
+    def normalize_sources(
+        cls,
+        value: list[JobSearchSource],
+    ) -> list[JobSearchSource]:
+        return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def require_one_config_source(self) -> "JobSearchManualRunRequest":
+        if bool(self.config_id) == bool(self.config):
+            raise ValueError("provide exactly one of configId or config")
+        return self
 
 
 class JobSearchScheduleCreateRequest(BaseModel):

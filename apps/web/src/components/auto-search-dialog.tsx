@@ -75,6 +75,7 @@ export type JobSearchSchedule = {
 type AutoSearchDialogProps = {
   open: boolean;
   onClose: () => void;
+  onVacanciesChanged?: () => void | Promise<void>;
 };
 
 type EditorMode = "create" | "edit" | "duplicate";
@@ -124,6 +125,7 @@ function defaultDraft(): ScheduleDraft {
 export function AutoSearchDialog({
   open,
   onClose,
+  onVacanciesChanged,
 }: AutoSearchDialogProps) {
   const [view, setView] = useState<"list" | "form">("list");
   const [configs, setConfigs] = useState<JobSearchConfig[]>([]);
@@ -300,16 +302,18 @@ export function AutoSearchDialog({
       }>(`/job-search/schedules/${encodeURIComponent(schedule.id)}/run`, {
         method: "POST",
       });
-      setMessage(
-        [
-          `${schedule.name}: ${run.status}`,
-          `${run.jobsFound} found`,
-          `${run.jobsAdded} added`,
-          run.warning,
-        ]
-          .filter(Boolean)
-          .join(" · "),
-      );
+      const parts = [
+        `${schedule.name}: ${run.status}`,
+        `${run.jobsFound} found`,
+        `${run.jobsAdded} added`,
+        run.warning,
+      ].filter(Boolean);
+      try {
+        await onVacanciesChanged?.();
+      } catch {
+        parts.push("Vacancies could not be refreshed");
+      }
+      setMessage(parts.join(" · "));
       await loadSearchData();
     } catch (error) {
       setMessage(errorMessage(error));

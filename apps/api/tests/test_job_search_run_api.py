@@ -66,6 +66,61 @@ class FakeRunner:
         return self.result
 
 
+def test_manual_run_accepts_inline_config_without_creating_schedule(
+    api_context: ApiContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = {"X-Tasko-Owner-Id": "manual-owner"}
+    job = parsed_job(
+        title="Manual Backend Engineer",
+        url="https://www.linkedin.com/jobs/view/manual-1",
+    )
+    runner = FakeRunner(
+        VacancySearchRunResult(
+            jobs=[job],
+            source_results={"linkedin": completed_response("linkedin", [job])},
+            source_errors={},
+        )
+    )
+    monkeypatch.setattr(
+        job_search_api,
+        "create_vacancy_search_runner",
+        lambda _settings: runner,
+    )
+
+    response = api_context.client.post(
+        "/job-search/run",
+        headers=headers,
+        json={
+            "config": {
+                "name": "Unsaved manual search",
+                "filters": {
+                    "keywords": "Backend Engineer",
+                    "resultsLimit": 15,
+                    "deduplicate": True,
+                },
+            },
+            "sources": ["linkedin"],
+            "aiAnalysisEnabled": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scheduleId"] is None
+    assert payload["runType"] == "manual"
+    assert payload["jobsFound"] == 1
+    assert payload["jobsAdded"] == 1
+    assert payload["configSnapshot"]["name"] == "Unsaved manual search"
+    assert runner.requests[0]["wait_for_snapshots"] is True
+    assert runner.requests[0]["request"].results_limit == 15
+    assert api_context.client.get("/job-search/schedules", headers=headers).json() == []
+    assert [record.data["title"] for record in stored_jobs(
+        api_context.sessions,
+        owner_id="manual-owner",
+    )] == ["Manual Backend Engineer"]
+
+
 def test_run_now_persists_jobs_snapshot_and_no_consent_warning(
     api_context: ApiContext,
     monkeypatch: pytest.MonkeyPatch,

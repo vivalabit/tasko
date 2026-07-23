@@ -54,25 +54,35 @@ class JobSearchExecutionResult:
 def execute_job_search(
     db: Session,
     *,
-    schedule: JobSearchScheduleRecord,
-    config: JobSearchConfigRecord,
+    schedule: JobSearchScheduleRecord | None,
+    config: JobSearchConfigRecord | None,
     runner: VacancySearchRunner,
     settings: Settings,
     run_type: Literal["manual", "automatic"],
+    config_snapshot: dict[str, Any] | None = None,
+    sources: list[str] | None = None,
+    ai_analysis_enabled: bool | None = None,
     scheduled_for: datetime | None = None,
     now: datetime | None = None,
     reserved_run: JobSearchRunRecord | None = None,
     recalculate_schedule: bool = True,
 ) -> JobSearchExecutionResult:
     started_at = now or datetime.now(UTC)
+    if config_snapshot is None:
+        if config is None:
+            raise ValueError("config or config_snapshot is required")
+        config_snapshot = build_config_snapshot(config)
+    run_sources = list(sources if sources is not None else schedule.sources if schedule else [])
+    if not run_sources:
+        raise ValueError("at least one job search source is required")
     if reserved_run is None:
         run = JobSearchRunRecord(
             id=uuid4().hex,
-            schedule_id=schedule.id,
+            schedule_id=schedule.id if schedule else None,
             run_type=run_type,
             scheduled_for=scheduled_for,
-            config_snapshot=build_config_snapshot(config),
-            sources=list(schedule.sources),
+            config_snapshot=config_snapshot,
+            sources=run_sources,
             status="running",
             jobs_found=0,
             jobs_added=0,
@@ -88,7 +98,10 @@ def execute_job_search(
     db.commit()
 
     try:
-        filters = run.config_snapshot.get("filters", config.filters)
+        filters = run.config_snapshot.get(
+            "filters",
+            config.filters if config is not None else {},
+        )
         request = search_request_from_config(filters)
         search_result = runner.run(
             sources=list(run.sources),
@@ -129,16 +142,21 @@ def execute_job_search(
     run.source_errors = search_result.source_errors
     run.status = run_status(search_result)
     run.completed_at = completed_at
-    schedule.last_run_at = completed_at
-    if recalculate_schedule:
-        recalculate_next_schedule_run(schedule, now=completed_at)
-    schedule.updated_at = completed_at
+    if schedule is not None:
+        schedule.last_run_at = completed_at
+        if recalculate_schedule:
+            recalculate_next_schedule_run(schedule, now=completed_at)
+        schedule.updated_at = completed_at
     db.commit()
 
     warning = match_new_jobs_if_allowed(
         db,
         jobs=new_jobs,
-        enabled=schedule.ai_analysis_enabled,
+        enabled=(
+            ai_analysis_enabled
+            if ai_analysis_enabled is not None
+            else schedule.ai_analysis_enabled if schedule else False
+        ),
         settings=settings,
         owner_id=get_bound_owner_id(),
     )
@@ -148,7 +166,7 @@ def execute_job_search(
 
 def finish_failed_run(
     run: JobSearchRunRecord,
-    schedule: JobSearchScheduleRecord,
+    schedule: JobSearchScheduleRecord | None,
     *,
     completed_at: datetime,
     source_errors: dict[str, str],
@@ -157,10 +175,11 @@ def finish_failed_run(
     run.status = "failed"
     run.source_errors = source_errors
     run.completed_at = completed_at
-    schedule.last_run_at = completed_at
-    if recalculate_schedule:
-        recalculate_next_schedule_run(schedule, now=completed_at)
-    schedule.updated_at = completed_at
+    if schedule is not None:
+        schedule.last_run_at = completed_at
+        if recalculate_schedule:
+            recalculate_next_schedule_run(schedule, now=completed_at)
+        schedule.updated_at = completed_at
 
 
 def recalculate_next_schedule_run(
@@ -189,7 +208,11 @@ def search_request_from_config(filters: dict[str, Any]) -> LinkedInSearchRequest
         "resultsLimit": "results_limit",
         "searchName": "search_name",
     }
-    normalized = {aliases.get(key, key): value for key, value in filters.items()}
+    normalized = {
+        aliases.get(key, key): value
+        for key, value in filters.items()
+        if key not in {"sources", "parsers"}
+    }
     return LinkedInSearchRequest.model_validate(normalized)
 
 

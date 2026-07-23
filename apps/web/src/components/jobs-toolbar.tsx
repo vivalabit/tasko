@@ -32,6 +32,7 @@ type JobsToolbarProps = {
   onToggleArchivedJobs: () => void;
   onAnalysisMenuOpenChange: (isOpen: boolean) => void;
   onRunAnalysis: (scope: BulkAnalysisScope) => void;
+  onVacanciesChanged: () => void | Promise<void>;
 };
 
 const secondaryButtonClass =
@@ -53,6 +54,7 @@ export function JobsToolbar({
   onToggleArchivedJobs,
   onAnalysisMenuOpenChange,
   onRunAnalysis,
+  onVacanciesChanged,
 }: JobsToolbarProps) {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
@@ -190,6 +192,7 @@ export function JobsToolbar({
       <AutoSearchDialog
         open={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        onVacanciesChanged={onVacanciesChanged}
       />
     </>
   );

@@ -15,6 +15,7 @@ from app.models.job_search import (
     JobSearchConfigPayload,
     JobSearchConfigRecord,
     JobSearchConfigUpdateRequest,
+    JobSearchManualRunRequest,
     JobSearchRunPayload,
     JobSearchRunRecord,
     JobSearchScheduleCreateRequest,
@@ -305,6 +306,63 @@ def delete_schedule(schedule_id: str, db: Session = Depends(get_db)) -> None:
     except SQLAlchemyError as exc:
         db.rollback()
         raise database_unavailable(exc) from exc
+
+
+@router.post(
+    "/run",
+    response_model=JobSearchRunPayload,
+)
+def run_manual_search(
+    request: JobSearchManualRunRequest,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> JobSearchRunPayload:
+    try:
+        config = require_config(db, request.config_id) if request.config_id else None
+        inline_config = request.config
+        config_snapshot = (
+            None
+            if config is not None
+            else {
+                "id": None,
+                "name": inline_config.name,
+                "filters": inline_config.filters,
+                "createdAt": None,
+                "updatedAt": None,
+            }
+        )
+        result = execute_job_search(
+            db,
+            schedule=None,
+            config=config,
+            config_snapshot=config_snapshot,
+            sources=list(request.sources),
+            ai_analysis_enabled=request.ai_analysis_enabled,
+            runner=create_vacancy_search_runner(settings),
+            settings=settings,
+            run_type="manual",
+            recalculate_schedule=False,
+        )
+        payload = JobSearchRunPayload.model_validate(result.run)
+        return payload.model_copy(update={"warning": result.warning})
+    except JobSearchExecutionError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Vacancy search execution failed",
+        ) from exc
 
 
 @router.post(

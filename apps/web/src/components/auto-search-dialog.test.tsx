@@ -45,6 +45,7 @@ afterEach(() => {
 describe("AutoSearchDialog", () => {
   it("shows persisted rules and runs one immediately", async () => {
     const requests: Array<{ path: string; method: string }> = [];
+    const onVacanciesChanged = vi.fn();
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -68,7 +69,13 @@ describe("AutoSearchDialog", () => {
       }),
     );
 
-    render(<AutoSearchDialog open onClose={vi.fn()} />);
+    render(
+      <AutoSearchDialog
+        open
+        onClose={vi.fn()}
+        onVacanciesChanged={onVacanciesChanged}
+      />,
+    );
 
     expect(await screen.findByText(schedule.name)).toBeInTheDocument();
     expect(screen.getByText("LinkedIn")).toBeInTheDocument();
@@ -86,6 +93,7 @@ describe("AutoSearchDialog", () => {
         method: "POST",
       });
     });
+    expect(onVacanciesChanged).toHaveBeenCalledTimes(1);
     expect(
       await screen.findByText(/12 found · 7 added/),
     ).toBeInTheDocument();
