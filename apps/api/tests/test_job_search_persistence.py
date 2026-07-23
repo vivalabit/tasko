@@ -30,7 +30,7 @@ def test_job_search_records_are_owner_scoped_and_prevent_duplicate_automatic_run
                 name="Weekday morning search",
                 config=config,
                 sources=["linkedin", "jobs_ch"],
-                frequency="weekly",
+                frequency="selected_days",
                 weekdays=[1, 2, 3, 4, 5],
                 local_time=time(7, 30),
                 timezone="Europe/Zurich",
