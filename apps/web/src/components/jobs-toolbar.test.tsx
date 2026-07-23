@@ -1,9 +1,22 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 
 import { JobsToolbar } from "@/components/jobs-toolbar";
 
-it("renders the requested action order and opens settings locally", () => {
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+it("renders the requested action order and opens auto-searches locally", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => [],
+    }),
+  );
+
   render(
     <JobsToolbar
       savedJobsCount={2}
@@ -38,8 +51,12 @@ it("renders the requested action order and opens settings locally", () => {
   ]);
 
   fireEvent.click(within(toolbar).getByRole("button", { name: "Jobs settings" }));
-  expect(screen.getByRole("dialog", { name: "Jobs settings" })).toBeInTheDocument();
+  expect(
+    screen.getByRole("dialog", { name: "Automatic searches" }),
+  ).toBeInTheDocument();
 
   fireEvent.keyDown(window, { key: "Escape" });
-  expect(screen.queryByRole("dialog", { name: "Jobs settings" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("dialog", { name: "Automatic searches" }),
+  ).not.toBeInTheDocument();
 });

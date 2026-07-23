@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Archive,
   Bookmark,
@@ -8,9 +8,9 @@ import {
   Plus,
   Search,
   Settings,
-  X,
 } from "lucide-react";
 
+import { AutoSearchDialog } from "@/components/auto-search-dialog";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -55,17 +55,6 @@ export function JobsToolbar({
   onRunAnalysis,
 }: JobsToolbarProps) {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-
-  useEffect(() => {
-    if (!isSettingsOpen) return;
-
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") setIsSettingsOpen(false);
-    }
-
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [isSettingsOpen]);
 
   return (
     <>
@@ -198,77 +187,10 @@ export function JobsToolbar({
         </div>
       </div>
 
-      {isSettingsOpen ? (
-        <div
-          className="fixed inset-0 z-50 grid place-items-center bg-black/72 p-4 backdrop-blur-sm"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setIsSettingsOpen(false);
-          }}
-        >
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="jobs-toolbar-settings-title"
-            className="panel w-full max-w-md border-white/[0.11] bg-[#111820]/98 p-5 shadow-[0_24px_70px_rgba(0,0,0,0.52)]"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2
-                  id="jobs-toolbar-settings-title"
-                  className="text-xl font-bold text-white"
-                >
-                  Jobs settings
-                </h2>
-                <p className="mt-1 text-sm font-medium text-muted">
-                  Manage vacancy search options without leaving the Jobs workspace.
-                </p>
-              </div>
-              <button
-                type="button"
-                aria-label="Close jobs settings"
-                onClick={() => setIsSettingsOpen(false)}
-                className="grid h-9 w-9 shrink-0 place-items-center rounded-md text-muted transition hover:bg-white/[0.08] hover:text-white"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="mt-5 rounded-lg border border-border bg-black/15 p-4">
-              <p className="text-sm font-bold text-white">Vacancy search</p>
-              <p className="mt-1 text-xs leading-5 text-muted">
-                Configure sources, filters, and saved searches in the vacancy search dialog.
-              </p>
-              <div className="mt-4 flex items-center gap-2 text-xs font-semibold text-[#cbd3df]">
-                <span className="rounded-full border border-border bg-white/[0.04] px-2.5 py-1">
-                  {savedJobsCount} saved
-                </span>
-                <span className="rounded-full border border-border bg-white/[0.04] px-2.5 py-1">
-                  {archivedJobsCount} archived
-                </span>
-              </div>
-            </div>
-
-            <div className="mt-5 flex justify-end gap-2">
-              <Button
-                variant="ghost"
-                className="border border-border"
-                onClick={() => setIsSettingsOpen(false)}
-              >
-                Close
-              </Button>
-              <Button
-                onClick={() => {
-                  setIsSettingsOpen(false);
-                  onSearchVacancies();
-                }}
-              >
-                <Search className="h-4 w-4" />
-                Search settings
-              </Button>
-            </div>
-          </section>
-        </div>
-      ) : null}
+      <AutoSearchDialog
+        open={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+      />
     </>
   );
 }
