@@ -99,6 +99,9 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             "job_match_feedback",
             "candidate_match_snapshots",
             "stored_jobs",
+            "job_search_configs",
+            "job_search_schedules",
+            "job_search_runs",
         }
         for table_name in owner_tables:
             owner_column = next(
@@ -116,11 +119,23 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "20260723_0014"
+            assert revision == "20260723_0015"
         assert inspect(engine).get_pk_constraint("stored_jobs")["constrained_columns"] == [
             "owner_id",
             "id",
         ]
+        automatic_run_indexes = {
+            index["name"]: index
+            for index in inspect(engine).get_indexes("job_search_runs")
+        }
+        automatic_run_index = automatic_run_indexes[
+            "uq_job_search_runs_automatic_schedule_time"
+        ]
+        assert automatic_run_index["column_names"] == [
+            "schedule_id",
+            "scheduled_for",
+        ]
+        assert automatic_run_index["unique"] == 1
     finally:
         engine.dispose()
 
@@ -404,7 +419,7 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260723_0014"
+        assert revision == "20260723_0015"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))
