@@ -1573,7 +1573,7 @@ def test_ai_match_endpoint_updates_and_persists_job_scores(monkeypatch: pytest.M
         assert rerun_payload["aiMatch"]["calibration"]["feedback"] == "bad_match"
 
         with testing_session_local() as db:
-            stored_job = db.get(StoredJobRecord, job["id"])
+            stored_job = db.get(StoredJobRecord, ("local-owner", job["id"]))
             match_records = db.query(JobMatchRecord).filter(JobMatchRecord.job_id == job["id"]).all()
             feedback_records = db.query(JobMatchFeedbackRecord).filter(JobMatchFeedbackRecord.job_id == job["id"]).all()
             snapshot_records = db.query(CandidateMatchSnapshotRecord).all()

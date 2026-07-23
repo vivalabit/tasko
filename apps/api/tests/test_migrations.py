@@ -96,7 +96,9 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             "conversations",
             "applied_assistant_actions",
             "job_matches",
+            "job_match_feedback",
             "candidate_match_snapshots",
+            "stored_jobs",
         }
         for table_name in owner_tables:
             owner_column = next(
@@ -114,7 +116,11 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "20260722_0013"
+            assert revision == "20260723_0014"
+        assert inspect(engine).get_pk_constraint("stored_jobs")["constrained_columns"] == [
+            "owner_id",
+            "id",
+        ]
     finally:
         engine.dispose()
 
@@ -398,7 +404,7 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260722_0013"
+        assert revision == "20260723_0014"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))
@@ -427,13 +433,95 @@ def test_job_soft_delete_migration_preserves_existing_jobs(tmp_path) -> None:
         with engine.connect() as connection:
             row = connection.execute(
                 text(
-                    "SELECT data, status, dismissed_at FROM stored_jobs "
+                    "SELECT owner_id, data, status, dismissed_at FROM stored_jobs "
                     "WHERE id = 'legacy-job'"
                 )
             ).one()
+            assert row.owner_id == "local-owner"
             assert row.status == "active"
             assert row.dismissed_at is None
             assert row.data == original_data
+    finally:
+        engine.dispose()
+
+
+def test_job_owner_scoping_migration_backfills_and_allows_shared_ids(tmp_path) -> None:
+    database_url = f"sqlite:///{tmp_path / 'job-owner-scoping.sqlite'}"
+    config = get_alembic_config(database_url)
+    command.upgrade(config, "20260722_0013")
+    now = datetime.now(UTC).isoformat()
+
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO stored_jobs (id, data, status) "
+                    "VALUES ('shared-job', :data, 'active')"
+                ),
+                {"data": '{"id":"shared-job","title":"Legacy vacancy"}'},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO job_match_feedback "
+                    "(id, job_id, profile_hash, matcher_version, feedback, created_at) "
+                    "VALUES ('legacy-feedback', 'shared-job', :profile_hash, "
+                    "'ai-match-v3', 'good_match', :created_at)"
+                ),
+                {"profile_hash": "a" * 64, "created_at": now},
+            )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+
+    engine = create_engine(database_url)
+    try:
+        inspector = inspect(engine)
+        assert inspector.get_pk_constraint("stored_jobs")["constrained_columns"] == [
+            "owner_id",
+            "id",
+        ]
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO stored_jobs (owner_id, id, data, status) "
+                    "VALUES ('owner-b', 'shared-job', :data, 'active')"
+                ),
+                {"data": '{"id":"shared-job","title":"Owner B vacancy"}'},
+            )
+            jobs = connection.execute(
+                text(
+                    "SELECT owner_id, data FROM stored_jobs "
+                    "WHERE id = 'shared-job' ORDER BY owner_id"
+                )
+            ).all()
+            feedback_owner = connection.execute(
+                text(
+                    "SELECT owner_id FROM job_match_feedback "
+                    "WHERE id = 'legacy-feedback'"
+                )
+            ).scalar_one()
+
+        assert [row.owner_id for row in jobs] == ["local-owner", "owner-b"]
+        assert feedback_owner == "local-owner"
+    finally:
+        engine.dispose()
+
+    command.downgrade(config, "20260722_0013")
+
+    engine = create_engine(database_url)
+    try:
+        inspector = inspect(engine)
+        assert inspector.get_pk_constraint("stored_jobs")["constrained_columns"] == ["id"]
+        assert "owner_id" not in {
+            column["name"] for column in inspector.get_columns("job_match_feedback")
+        }
+        with engine.connect() as connection:
+            retained_job = connection.execute(
+                text("SELECT data FROM stored_jobs WHERE id = 'shared-job'")
+            ).scalar_one()
+        assert retained_job == '{"id":"shared-job","title":"Legacy vacancy"}'
     finally:
         engine.dispose()
 

@@ -8,7 +8,7 @@ from typing import Any
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.core.identity import DEFAULT_OWNER_ID, current_owner_id
+from app.core.identity import get_bound_owner_id
 from app.core.settings import get_settings
 from app.models.applications import CandidateConfirmationRecord, StoredApplicationRecord
 from app.models.documents import DocumentTemplateRecord
@@ -330,7 +330,7 @@ def load_authoritative_application_generation_context(
     )
     if not job_id:
         raise GenerationContextError("Application does not reference a vacancy")
-    job_record = db.get(StoredJobRecord, job_id)
+    job_record = db.get(StoredJobRecord, (get_bound_owner_id(), job_id))
     if not job_record or not isinstance(job_record.data, dict):
         raise GenerationContextError("Stored application vacancy is unavailable")
     vacancy = dict(job_record.data)
@@ -472,7 +472,7 @@ def current_authoritative_match_record(
     candidate_snapshot = get_candidate_match_snapshot(db, profile=profile, settings=settings)
     return authoritative_match_record(
         db,
-        owner_id=current_owner_id.get() or DEFAULT_OWNER_ID,
+        owner_id=get_bound_owner_id(),
         job_id=job_id,
         profile_hash=candidate_snapshot.profile_hash,
         vacancy_hash=build_job_snapshot_hash(build_job_snapshot(vacancy)),

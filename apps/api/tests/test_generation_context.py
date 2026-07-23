@@ -322,7 +322,7 @@ def test_rejects_generation_when_stored_profile_changes() -> None:
 
 def test_rejects_generation_when_stored_vacancy_changes() -> None:
     with generation_context_session() as db:
-        vacancy = db.get(StoredJobRecord, "job-context")
+        vacancy = db.get(StoredJobRecord, ("local-owner", "job-context"))
         assert vacancy is not None
         vacancy.data = {**vacancy.data, "title": "Principal Platform Engineer"}
         db.commit()

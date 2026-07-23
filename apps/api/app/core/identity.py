@@ -17,6 +17,10 @@ current_owner_id: ContextVar[str | None] = ContextVar(
 )
 
 
+def get_bound_owner_id() -> str:
+    return current_owner_id.get() or DEFAULT_OWNER_ID
+
+
 @dataclass(frozen=True)
 class RequestIdentity:
     owner_id: str

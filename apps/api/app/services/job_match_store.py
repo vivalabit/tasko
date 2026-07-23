@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from app.core.identity import get_bound_owner_id
 from app.models.jobs import JobMatchFeedbackRecord, JobMatchRecord, StoredJobRecord
 from app.services.ai_match import MATCHER_VERSION
 
@@ -135,7 +136,7 @@ def persist_job_and_match(db: Session, *, job: dict[str, Any], profile_hash: str
         return
 
     job_data = strip_ai_match(job)
-    record = db.get(StoredJobRecord, job_id)
+    record = db.get(StoredJobRecord, (get_bound_owner_id(), job_id))
     if record and record.status == "dismissed":
         return
     if record:

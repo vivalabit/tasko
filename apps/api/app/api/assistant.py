@@ -22,6 +22,7 @@ from app.core.database import get_db
 from app.core.identity import (
     RequestIdentity,
     bind_request_identity,
+    get_bound_owner_id,
     get_request_identity,
 )
 from app.core.settings import Settings, get_settings
@@ -1100,7 +1101,7 @@ def load_server_job_context(
         return None
 
     try:
-        record = db.get(StoredJobRecord, job_id)
+        record = db.get(StoredJobRecord, (get_bound_owner_id(), job_id))
         if not record or not isinstance(record.data, dict):
             return None
         job_data = dict(record.data)

@@ -6,11 +6,18 @@ from sqlalchemy import JSON, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base, OwnerScoped
+from app.core.identity import DEFAULT_OWNER_ID
 
 
-class StoredJobRecord(Base):
+class StoredJobRecord(OwnerScoped, Base):
     __tablename__ = "stored_jobs"
 
+    owner_id: Mapped[str] = mapped_column(
+        String(160),
+        primary_key=True,
+        default=DEFAULT_OWNER_ID,
+        index=True,
+    )
     id: Mapped[str] = mapped_column(String(160), primary_key=True)
     data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     status: Mapped[str] = mapped_column(
@@ -52,7 +59,7 @@ class JobMatchRecord(OwnerScoped, Base):
     )
 
 
-class JobMatchFeedbackRecord(Base):
+class JobMatchFeedbackRecord(OwnerScoped, Base):
     __tablename__ = "job_match_feedback"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

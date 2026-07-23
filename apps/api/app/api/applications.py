@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.database import get_db
-from app.core.identity import bind_request_identity
+from app.core.identity import bind_request_identity, get_bound_owner_id
 from app.models.applications import (
     CandidateConfirmationPayload,
     CandidateConfirmationRecord,
@@ -41,7 +41,11 @@ def application_payload(
     data = dict(record.data) if isinstance(record.data, dict) else {}
     raw_job = data.get("job")
     job_id = str(raw_job.get("id") or "").strip() if isinstance(raw_job, dict) else ""
-    stored_job = db.get(StoredJobRecord, job_id) if job_id else None
+    stored_job = (
+        db.get(StoredJobRecord, (get_bound_owner_id(), job_id))
+        if job_id
+        else None
+    )
     if stored_job and isinstance(stored_job.data, dict):
         job = dict(stored_job.data)
         job["id"] = job_id

@@ -112,7 +112,10 @@ def test_job_can_be_deleted() -> None:
         assert read_response.json() == []
 
         with testing_session_local() as db:
-            dismissed_job = db.get(StoredJobRecord, "linkedin-product-designer")
+            dismissed_job = db.get(
+                StoredJobRecord,
+                ("local-owner", "linkedin-product-designer"),
+            )
             assert dismissed_job is not None
             assert dismissed_job.status == "dismissed"
             assert dismissed_job.dismissed_at is not None

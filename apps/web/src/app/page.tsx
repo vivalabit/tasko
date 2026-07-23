@@ -8771,7 +8771,7 @@ function SettingsView({
         </section>
 
         <section className="panel p-5 2xl:p-7">
-          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="flex flex-col gap-4 md:flex-row md:items-start">
             <div className="flex min-w-0 items-start gap-3">
               <div className="grid h-11 w-11 shrink-0 place-items-center rounded-md bg-accent/18 text-accent 2xl:h-12 2xl:w-12">
                 <BrainCircuit className="h-5 w-5 2xl:h-6 2xl:w-6" />
@@ -8783,16 +8783,6 @@ function SettingsView({
                 </p>
               </div>
             </div>
-            <span
-              className={cn(
-                "inline-flex h-8 w-fit items-center gap-2 rounded-md border px-3 text-xs font-bold",
-                aiBackendDraft === "openai_api" && !settings.openai_api_key_configured && !openAiApiKeyDraft.trim()
-                  ? "border-[#d94d4d]/45 bg-[#d94d4d]/13 text-[#ff8a8a]"
-                  : "border-success/35 bg-success/12 text-success",
-              )}
-            >
-              {aiBackendDraft === "openai_api" ? "OpenAI API" : "Codex credits via OpenClaw"}
-            </span>
           </div>
 
           <div className="mt-6 grid gap-5">

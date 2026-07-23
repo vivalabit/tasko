@@ -7,7 +7,12 @@ from sqlalchemy.orm import Session, sessionmaker
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.core.database import get_db
-from app.core.identity import RequestIdentity, bind_request_identity, get_request_identity
+from app.core.identity import (
+    RequestIdentity,
+    bind_request_identity,
+    get_bound_owner_id,
+    get_request_identity,
+)
 from app.core.settings import Settings, get_settings
 from app.models.jobs import (
     AiMatchJobStatus,
@@ -75,7 +80,7 @@ def upsert_jobs(request: StoredJobsRequest, db: Session = Depends(get_db)) -> li
     try:
         now = datetime.now(UTC).isoformat()
         for job in request.jobs:
-            record = db.get(StoredJobRecord, job.id)
+            record = db.get(StoredJobRecord, (get_bound_owner_id(), job.id))
             if record and record.status == DISMISSED_JOB_STATUS:
                 continue
             job_data = prepare_job_data(job.data, record, now)
@@ -114,7 +119,7 @@ def match_jobs(
         now = datetime.now(UTC).isoformat()
         jobs_to_match = []
         for job in request.jobs:
-            record = db.get(StoredJobRecord, job.id)
+            record = db.get(StoredJobRecord, (get_bound_owner_id(), job.id))
             if record and record.status == DISMISSED_JOB_STATUS:
                 continue
             jobs_to_match.append(prepare_job_data(job.data, record, now))
@@ -192,7 +197,7 @@ def run_match_jobs(
         now = datetime.now(UTC).isoformat()
         jobs_to_match = []
         for job in request.jobs:
-            record = db.get(StoredJobRecord, job.id)
+            record = db.get(StoredJobRecord, (get_bound_owner_id(), job.id))
             if record and record.status == DISMISSED_JOB_STATUS:
                 continue
             jobs_to_match.append(prepare_job_data(job.data, record, now))
@@ -325,7 +330,10 @@ def import_dismissed_job_ids(
             normalized_job_id = job_id.strip()
             if not normalized_job_id or len(normalized_job_id) > 160:
                 continue
-            record = db.get(StoredJobRecord, normalized_job_id)
+            record = db.get(
+                StoredJobRecord,
+                (get_bound_owner_id(), normalized_job_id),
+            )
             if not record:
                 db.add(
                     StoredJobRecord(
@@ -355,7 +363,7 @@ def save_match_feedback(
     db: Session = Depends(get_db),
 ) -> StoredJobPayload:
     try:
-        record = db.get(StoredJobRecord, job_id)
+        record = db.get(StoredJobRecord, (get_bound_owner_id(), job_id))
         if not record or record.status == DISMISSED_JOB_STATUS:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -393,7 +401,7 @@ def save_match_feedback(
 @router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_job(job_id: str, db: Session = Depends(get_db)) -> None:
     try:
-        record = db.get(StoredJobRecord, job_id)
+        record = db.get(StoredJobRecord, (get_bound_owner_id(), job_id))
         if not record:
             record = StoredJobRecord(
                 id=job_id,
