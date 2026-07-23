@@ -67,6 +67,10 @@ import {
 } from "@/components/assistant-view";
 import { ApplicationWorkspace } from "@/components/application-workspace";
 import { DashboardGreeting, useHydrationSafeCurrentTime } from "@/components/dashboard-greeting";
+import {
+  JobsToolbar,
+  type BulkAnalysisScope,
+} from "@/components/jobs-toolbar";
 import { getAiMatchAnalysisStatus, legacyAiMatchVersion } from "@/lib/ai-match";
 import { getAiSourceLabel, type AiBackend, type AiSource } from "@/lib/ai-source";
 import { findWorkspaceApplication, getHashForView, getRouteFromHash, type View } from "@/lib/app-route";
@@ -374,7 +378,6 @@ type JobFilterKey = "location" | "remote" | "salary" | "experience" | "type" | "
 type JobFilters = Record<JobFilterKey, string>;
 
 type JobSortBy = "AI Match" | "Time" | "Salary";
-type BulkAnalysisScope = "recent" | "missing";
 
 type ParserSearchConfig = {
   id: string;
@@ -5572,105 +5575,37 @@ export default function HomePage() {
             />
           </label>
 
-          <div className="flex flex-wrap gap-1.5 xl:justify-end 2xl:gap-2">
-            <Button
-              className="h-9 rounded-md border border-[#ff6a14] bg-accent px-3 text-xs text-white shadow-[0_10px_24px_rgba(255,90,0,0.22)] hover:bg-[#ff6a14] 2xl:h-12 2xl:px-5 2xl:text-sm"
-              onClick={openManualJobDialog}
-            >
-              <Plus className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
-              Add vacancy
-            </Button>
-            <Button
-              className="h-9 rounded-md border border-[#9f7aea]/60 bg-[#7c3aed] px-3 text-xs text-white shadow-[0_12px_28px_rgba(124,58,237,0.28)] hover:bg-[#8b5cf6] 2xl:h-12 2xl:px-5 2xl:text-sm"
-              onClick={() => {
-                setParserSearchStatus("idle");
-                setParserSearchMessage("");
-                setIsParserDialogOpen(true);
-              }}
-            >
-              <Search className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
-              Search vacancies
-            </Button>
-            <Button
-              variant="ghost"
-              className={cn(
-                "h-9 rounded-md border border-border bg-white/[0.03] px-3 text-xs text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
-                showSavedJobs && "border-accent/70 text-white",
-              )}
-              onClick={() => {
-                setShowSavedJobs((current) => !current);
-                setShowArchivedJobs(false);
-                setSelectedJobId("");
-                setActiveTab("Overview");
-              }}
-            >
-              <Bookmark className={cn("h-[18px] w-[18px] 2xl:h-5 2xl:w-5", (showSavedJobs || savedJobsCount > 0) && "fill-accent text-accent")} />
-              Saved Jobs {savedJobsCount > 0 ? `(${savedJobsCount})` : ""}
-            </Button>
-            <Button
-              variant="ghost"
-              className={cn(
-                "h-9 rounded-md border border-border bg-white/[0.03] px-3 text-xs text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
-                showArchivedJobs && "border-accent/70 text-white",
-              )}
-              onClick={() => {
-                setShowArchivedJobs((current) => !current);
-                setShowSavedJobs(false);
-                setSelectedJobId("");
-                setActiveTab("Overview");
-              }}
-            >
-              <Archive className="h-[18px] w-[18px] 2xl:h-5 2xl:w-5" />
-              Archived {archivedJobsCount > 0 ? `(${archivedJobsCount})` : ""}
-            </Button>
-            <div className="relative" onKeyDown={(event) => event.key === "Escape" && setIsAnalysisMenuOpen(false)}>
-              <Button
-                variant="ghost"
-                aria-haspopup="menu"
-                aria-expanded={isAnalysisMenuOpen}
-                className={cn(
-                  "h-9 rounded-md border border-border bg-white/[0.03] px-3 text-xs text-[#e6ebf3] hover:bg-white/[0.075] 2xl:h-12 2xl:px-5 2xl:text-sm",
-                  (isAnalysisMenuOpen || bulkAnalysisScope) && "border-accent/70 text-white",
-                )}
-                disabled={bulkAnalysisScope !== null}
-                onClick={() => setIsAnalysisMenuOpen((isOpen) => !isOpen)}
-              >
-                <Sparkles className={cn("h-[18px] w-[18px] 2xl:h-5 2xl:w-5", bulkAnalysisScope && "animate-pulse text-accent")} />
-                {bulkAnalysisScope ? "Analyzing..." : "Analysis"}
-                {!bulkAnalysisScope ? <ChevronDown className="h-3.5 w-3.5 text-muted" /> : null}
-              </Button>
-
-              {isAnalysisMenuOpen ? (
-                <div
-                  role="menu"
-                  aria-label="Bulk AI analysis"
-                  className="absolute right-0 top-11 z-40 grid w-[300px] gap-1 rounded-md border border-border bg-[#101720] p-2 shadow-[0_18px_40px_rgba(0,0,0,0.48)] 2xl:top-14"
-                >
-                  <p className="px-2 pb-1 pt-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-muted">Run AI analysis</p>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    disabled={recentAnalysisJobs.length === 0}
-                    onClick={() => void runBulkAiAnalysis("recent")}
-                    className="rounded-md px-2.5 py-2 text-left transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
-                  >
-                    <span className="block text-xs font-bold text-[#e6ebf3]">Vacancies added in the last 24 hours</span>
-                    <span className="mt-1 block text-[11px] leading-4 text-muted">Re-run analysis for {recentAnalysisJobs.length} active vacancies.</span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    disabled={missingAnalysisJobs.length === 0}
-                    onClick={() => void runBulkAiAnalysis("missing")}
-                    className="rounded-md px-2.5 py-2 text-left transition hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
-                  >
-                    <span className="block text-xs font-bold text-[#e6ebf3]">Vacancies without current analysis</span>
-                    <span className="mt-1 block text-[11px] leading-4 text-muted">Analyze {missingAnalysisJobs.length} vacancies with missing or outdated results.</span>
-                  </button>
-                </div>
-              ) : null}
-            </div>
-          </div>
+          <JobsToolbar
+            className="xl:col-span-3"
+            savedJobsCount={savedJobsCount}
+            archivedJobsCount={archivedJobsCount}
+            showSavedJobs={showSavedJobs}
+            showArchivedJobs={showArchivedJobs}
+            isAnalysisMenuOpen={isAnalysisMenuOpen}
+            bulkAnalysisScope={bulkAnalysisScope}
+            recentAnalysisCount={recentAnalysisJobs.length}
+            missingAnalysisCount={missingAnalysisJobs.length}
+            onAddVacancy={openManualJobDialog}
+            onSearchVacancies={() => {
+              setParserSearchStatus("idle");
+              setParserSearchMessage("");
+              setIsParserDialogOpen(true);
+            }}
+            onToggleSavedJobs={() => {
+              setShowSavedJobs((current) => !current);
+              setShowArchivedJobs(false);
+              setSelectedJobId("");
+              setActiveTab("Overview");
+            }}
+            onToggleArchivedJobs={() => {
+              setShowArchivedJobs((current) => !current);
+              setShowSavedJobs(false);
+              setSelectedJobId("");
+              setActiveTab("Overview");
+            }}
+            onAnalysisMenuOpenChange={setIsAnalysisMenuOpen}
+            onRunAnalysis={(scope) => void runBulkAiAnalysis(scope)}
+          />
         </header>
 
         <div className="mt-3 flex shrink-0 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between 2xl:mt-5 2xl:gap-3">
