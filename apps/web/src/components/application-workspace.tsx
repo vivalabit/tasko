@@ -500,7 +500,7 @@ function hasStructuredReplacements(document: GeneratedDocument | undefined) {
 }
 
 function documentFileName(document: GeneratedDocument, version = document.currentVersion) {
-  const base = document.title.trim().normalize("NFC").replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-").replace(/^[._-]+|[._-]+$/g, "") || "tasko-document";
+  const base = document.title.trim().normalize("NFC").replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-").replace(/^[._-]+|[._-]+$/g, "") || "rufina-document";
   return `${base}-v${version}.docx`;
 }
 
@@ -695,11 +695,11 @@ function buildDocumentCorrectionPrompt(
 }
 
 function documentValidationFailureMessage(documentLabel: string) {
-  return `Tasko could not safely verify the ${documentLabel} after an automatic correction. No document was saved. Add the missing experience details to your profile or try generating again.`;
+  return `Rufina could not safely verify the ${documentLabel} after an automatic correction. No document was saved. Add the missing experience details to your profile or try generating again.`;
 }
 
 function noSafeDocumentChangesMessage(documentLabel: string) {
-  return `Tasko did not find any evidence-backed changes for the ${documentLabel}. The original document was not duplicated. Check the application analysis and profile evidence, then try again.`;
+  return `Rufina did not find any evidence-backed changes for the ${documentLabel}. The original document was not duplicated. Check the application analysis and profile evidence, then try again.`;
 }
 
 function structuredReplacementCount(content: string) {
@@ -2217,7 +2217,7 @@ export function ApplicationWorkspace({
 
             <section className="workspace-card overflow-hidden">
               <div className="flex flex-col gap-4 border-b border-white/[0.07] px-5 py-5 sm:flex-row sm:items-center sm:justify-between sm:px-6">
-                <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent"><Sparkles className="h-[18px] w-[18px]" /></span><div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">03 · Build your application pack</p><h2 className="mt-1 text-lg font-bold text-white">Tailored documents</h2><p className="mt-1 text-xs leading-5 text-muted">Select your originals. Tasko rewrites the content and preserves the DOCX design.</p></div></div>
+                <div className="flex items-start gap-3"><span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-accent/12 text-accent"><Sparkles className="h-[18px] w-[18px]" /></span><div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">03 · Build your application pack</p><h2 className="mt-1 text-lg font-bold text-white">Tailored documents</h2><p className="mt-1 text-xs leading-5 text-muted">Select your originals. Rufina rewrites the content and preserves the DOCX design.</p></div></div>
                 <div className="flex flex-col gap-2 sm:items-end">
                   <div className="flex items-center gap-2 text-[9px] text-muted"><span>AI provider: <strong className="text-white">{aiConfiguration.providerName}</strong></span>{aiDisclosureAccepted ? <button type="button" onClick={revokeAiConsent} className="font-bold text-amber-200 hover:text-white">Revoke consent</button> : <span className="font-bold text-amber-200">Consent required</span>}</div>
                   <label className="flex items-center gap-2 text-[9px] font-bold text-muted"><span>On cover failure</span><select value={packPersistenceMode} disabled={isGeneratingPack} onChange={(event) => setPackPersistenceMode(event.target.value as PackPersistenceMode)} className="h-8 rounded-lg border border-white/[0.08] bg-[#151c24] px-2 text-[10px] font-bold text-white outline-none focus:border-accent/60 disabled:opacity-50"><option value="atomic">Roll back pack</option><option value="partial">Keep validated CV</option></select></label>
@@ -2318,7 +2318,7 @@ export function ApplicationWorkspace({
             </section>
 
             <section className="relative overflow-hidden rounded-2xl border border-[#7c5cff]/20 bg-gradient-to-br from-[#17142a] via-[#111722] to-[#111821] p-5 sm:p-6">
-              <div className="absolute -right-12 -top-14 h-44 w-44 rounded-full bg-[#7c5cff]/12 blur-3xl" /><div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[#9f7aea]/25 bg-[#9f7aea]/12 text-[#c4a7ff]"><Rocket className="h-5 w-5" /></span><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-sm font-bold text-white">Auto Apply</h2><span className="rounded-full border border-[#9f7aea]/25 bg-[#9f7aea]/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-wider text-[#c4a7ff]">Coming soon</span></div><p className="mt-1 max-w-2xl text-xs leading-5 text-muted">Tasko will fill the employer form with your approved answers and pause before submission.</p><p className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-bold text-[#b8c0cc]"><ShieldCheck className="h-3.5 w-3.5 text-success" /> You remain in control of the final submission.</p></div></div><Button disabled className="h-10 shrink-0 rounded-xl border border-[#9f7aea]/25 bg-[#9f7aea]/10 px-4 text-xs font-bold text-[#c4a7ff] opacity-70"><LockKeyhole className="h-4 w-4" /> Auto Apply</Button></div>
+              <div className="absolute -right-12 -top-14 h-44 w-44 rounded-full bg-[#7c5cff]/12 blur-3xl" /><div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div className="flex gap-3"><span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-[#9f7aea]/25 bg-[#9f7aea]/12 text-[#c4a7ff]"><Rocket className="h-5 w-5" /></span><div><div className="flex flex-wrap items-center gap-2"><h2 className="text-sm font-bold text-white">Auto Apply</h2><span className="rounded-full border border-[#9f7aea]/25 bg-[#9f7aea]/10 px-2 py-0.5 text-[8px] font-black uppercase tracking-wider text-[#c4a7ff]">Coming soon</span></div><p className="mt-1 max-w-2xl text-xs leading-5 text-muted">Rufina will fill the employer form with your approved answers and pause before submission.</p><p className="mt-2 inline-flex items-center gap-1.5 text-[10px] font-bold text-[#b8c0cc]"><ShieldCheck className="h-3.5 w-3.5 text-success" /> You remain in control of the final submission.</p></div></div><Button disabled className="h-10 shrink-0 rounded-xl border border-[#9f7aea]/25 bg-[#9f7aea]/10 px-4 text-xs font-bold text-[#c4a7ff] opacity-70"><LockKeyhole className="h-4 w-4" /> Auto Apply</Button></div>
             </section>
           </main>
 
@@ -2348,10 +2348,10 @@ export function ApplicationWorkspace({
             <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-accent/25 bg-accent/10 text-accent"><ShieldCheck className="h-5 w-5" /></span>
             <div><p className="text-[10px] font-black uppercase tracking-[0.14em] text-accent">AI data disclosure · {aiConfiguration.consentVersion}</p><h2 id="ai-disclosure-title" className="mt-1 text-lg font-bold text-white">Your application context will be sent to {aiConfiguration.providerName}</h2></div>
           </div>
-          <p className="mt-4 text-xs leading-5 text-[#cbd3df]">To tailor your application, Tasko sends the selected source document together with relevant profile details, vacancy text, and your confirmations using {aiConfiguration.providerName}.</p>
+          <p className="mt-4 text-xs leading-5 text-[#cbd3df]">To tailor your application, Rufina sends the selected source document together with relevant profile details, vacancy text, and your confirmations using {aiConfiguration.providerName}.</p>
           <div className="mt-4 space-y-2 rounded-xl border border-white/[0.08] bg-black/20 p-4 text-[11px] leading-5 text-muted">
             <p><span className="font-bold text-white">Purpose:</span> provide the AI assistance or generate the application documents you requested.</p>
-            <p><span className="font-bold text-white">Tasko storage:</span> source templates remain until you delete them; AI results are deleted after your selected retention period.</p>
+            <p><span className="font-bold text-white">Rufina storage:</span> source templates remain until you delete them; AI results are deleted after your selected retention period.</p>
             <p><span className="font-bold text-white">AI provider:</span> {aiConfiguration.providerName}.</p>
             <p><span className="font-bold text-white">Provider retention:</span> processing and retention follow {aiConfiguration.providerName}&apos;s policy.</p>
           </div>

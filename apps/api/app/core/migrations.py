@@ -119,7 +119,7 @@ def upgrade_database(database_url: str | None = None) -> None:
                     if unexpected:
                         details.append(f"unexpected tables: {', '.join(unexpected)}")
                     raise LegacyDatabaseMismatchError(
-                        "Unversioned database does not match the Tasko legacy baseline"
+                        "Unversioned database does not match the Rufina legacy baseline"
                         + (f" ({'; '.join(details)})" if details else "")
                     )
                 column_mismatches = []
@@ -132,7 +132,7 @@ def upgrade_database(database_url: str | None = None) -> None:
                         column_mismatches.append(table_name)
                 if column_mismatches:
                     raise LegacyDatabaseMismatchError(
-                        "Unversioned database does not match the Tasko legacy baseline "
+                        "Unversioned database does not match the Rufina legacy baseline "
                         f"(column mismatch: {', '.join(sorted(column_mismatches))})"
                     )
                 command.stamp(config, LEGACY_BASELINE_REVISION)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create or update Tasko's isolated OpenClaw assistant agent."""
+"""Create or update Rufina's isolated OpenClaw assistant agent."""
 
 from __future__ import annotations
 
@@ -88,7 +88,7 @@ def configure_agent(command: str, workspace: Path, model: str) -> None:
     prefix = f"agents.list[{index}]"
     operations = [
         {"path": "plugins.allow", "value": sorted({*allowed_plugins, "codex"})},
-        {"path": f"{prefix}.name", "value": "Tasko Assistant"},
+        {"path": f"{prefix}.name", "value": "Rufina Assistant"},
         {"path": f"{prefix}.workspace", "value": f"~/.openclaw/workspace-{AGENT_ID}"},
         {"path": f"{prefix}.agentDir", "value": f"~/.openclaw/agents/{AGENT_ID}/agent"},
         {

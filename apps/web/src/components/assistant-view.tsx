@@ -465,7 +465,7 @@ function documentFileName(document: Pick<AssistantDocument, "title" | "currentVe
     .trim()
     .normalize("NFC")
     .replace(/[^\p{L}\p{M}\p{N}._-]+/gu, "-")
-    .replace(/^[._-]+|[._-]+$/g, "") || "tasko-document";
+    .replace(/^[._-]+|[._-]+$/g, "") || "rufina-document";
   return `${base}-v${document.currentVersion}.docx`;
 }
 
@@ -1556,7 +1556,7 @@ export function AssistantView({
                     <div className={cn("min-w-0 max-w-[88%]", message.role === "user" && "rounded-xl rounded-tr-sm bg-accent px-3.5 py-2.5 text-white shadow-[0_8px_24px_rgba(255,90,0,0.14)]")}>
                       {message.role === "assistant" && (
                         <p className="mb-1.5 flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.1em] text-accent">
-                          Tasko Assistant
+                          Rufina Assistant
                           {message.source && (
                             <span className="rounded border border-border bg-white/[0.035] px-1.5 py-0.5 text-[8px] tracking-[0.08em] text-muted">
                               {getAiSourceLabel(message.source)}
@@ -1715,7 +1715,7 @@ export function AssistantView({
                 )}
               </div>
             </div>
-            <p className="mt-1.5 text-center text-[9px] text-muted">Tasko may make mistakes. Verify generated claims before using them. {aiPrivacy.hasCurrentConsent ? <button type="button" onClick={() => void revokeAiConsent()} className="font-bold text-amber-200 hover:text-white">Revoke AI consent</button> : <span className="font-bold text-amber-200">AI consent required</span>}</p>
+            <p className="mt-1.5 text-center text-[9px] text-muted">Rufina may make mistakes. Verify generated claims before using them. {aiPrivacy.hasCurrentConsent ? <button type="button" onClick={() => void revokeAiConsent()} className="font-bold text-amber-200 hover:text-white">Revoke AI consent</button> : <span className="font-bold text-amber-200">AI consent required</span>}</p>
           </div>
         </main>
 
@@ -1785,7 +1785,7 @@ export function AssistantView({
           </div>
 
           <div className="p-3.5 2xl:p-4">
-            <p className="text-xs font-bold text-white">How Tasko uses context</p>
+            <p className="text-xs font-bold text-white">How Rufina uses context</p>
             <p className="mt-2 text-[11px] leading-5 text-muted">Answers are grounded in the selected data. Missing evidence is called out instead of being invented.</p>
             {selectedJob?.skills.length ? (
               <div className="mt-3 flex flex-wrap gap-1.5">
@@ -1933,7 +1933,7 @@ export function AssistantView({
             <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-accent/25 bg-accent/10 text-accent"><ShieldCheck className="h-5 w-5" /></span>
             <div><p className="text-[10px] font-black uppercase tracking-[0.12em] text-accent">AI data disclosure · {aiPrivacy.currentConsentVersion}</p><h2 id="assistant-ai-consent-title" className="mt-1 text-lg font-bold text-white">Send selected context to {aiPrivacy.providerName}</h2></div>
           </div>
-          <p className="mt-4 text-xs leading-5 text-[#cbd3df]">Tasko sends your message and selected profile, vacancy, or application context using {aiPrivacy.providerName}. AI results are deleted after your selected retention period.</p>
+          <p className="mt-4 text-xs leading-5 text-[#cbd3df]">Rufina sends your message and selected profile, vacancy, or application context using {aiPrivacy.providerName}. AI results are deleted after your selected retention period.</p>
           <label className="mt-4 block text-xs font-semibold text-[#dce2ea]">Keep AI results for (days)
             <input type="number" min={1} max={365} value={aiPrivacy.retentionDays} onChange={(event) => setAiPrivacy((privacy) => ({ ...privacy, retentionDays: Math.min(365, Math.max(1, Number(event.target.value) || 1)) }))} className="mt-2 h-10 w-full rounded-lg border border-border bg-[#0b1119] px-3 text-xs text-white" />
           </label>

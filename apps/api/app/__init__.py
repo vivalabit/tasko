@@ -1,1 +1,1 @@
-"""tasko API package."""
+"""Rufina API package."""

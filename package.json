@@ -1,13 +1,13 @@
 {
-  "name": "tasko",
+  "name": "rufina",
   "private": true,
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev": "pnpm -r --parallel dev",
-    "dev:web": "pnpm --filter @tasko/web dev",
-    "build:web": "pnpm --filter @tasko/web build",
-    "lint:web": "pnpm --filter @tasko/web lint",
-    "typecheck:web": "pnpm --filter @tasko/web typecheck",
+    "dev:web": "pnpm --filter @rufina/web dev",
+    "build:web": "pnpm --filter @rufina/web build",
+    "lint:web": "pnpm --filter @rufina/web lint",
+    "typecheck:web": "pnpm --filter @rufina/web typecheck",
     "test:e2e:workspace": "bash scripts/run_workspace_e2e.sh",
     "openclaw:setup": "python3 scripts/setup_openclaw_tasko_assistant.py",
     "docker:up": "docker compose up --build",

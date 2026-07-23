@@ -1250,7 +1250,7 @@ def build_action_preview(
             description=(
                 "Create a document and attach it to the selected application."
                 if application_id
-                else "Create a saved document in Tasko."
+                else "Create a saved document in Rufina."
             ),
             contextKind=context_kind,
             contextId=context_id,

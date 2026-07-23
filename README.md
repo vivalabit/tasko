@@ -1,4 +1,4 @@
-# tasko
+# Rufina
 
 Personal AI assistant for job search workflows: profile setup, vacancy search, matching, document generation, application tracking, and future auto-apply automation.
 
@@ -10,10 +10,11 @@ requests. A migration or database connection failure aborts startup.
 ### Request identity and ownership
 
 Application data is scoped by the authenticated owner identity supplied in the
-`X-Tasko-Owner-Id` header. In non-local environments the header is required and
+`X-Rufina-Owner-Id` header. In non-local environments the header is required and
 must be injected by a trusted authentication proxy; that proxy must strip any
 client-supplied value before forwarding the request. Local development falls
-back to `local-owner` for compatibility with the single-user setup.
+back to `local-owner` for compatibility with the single-user setup. The legacy
+`X-Tasko-Owner-Id` header remains accepted during the rename transition.
 
 Applications, application events, confirmations, document templates, workspace
 sources, documents, validation artifacts, pack jobs, and DOCX downloads are
@@ -43,7 +44,7 @@ alembic upgrade head
 - Automation: Playwright Python
 - Storage: S3-compatible storage later
 
-## Tasko OpenClaw agent
+## Rufina OpenClaw agent
 
 The AI Assistant uses its own isolated `tasko-assistant` agent instead of the
 personal `main` agent. Set it up once before starting the API:
@@ -54,7 +55,7 @@ pnpm openclaw:setup
 
 The setup is idempotent. It creates a separate workspace and agent state,
 selects `openai/gpt-5.6-terra`, disables reasoning, caps answers at 1,200
-tokens, and disables all external skills and tools. Tasko conversations and
+tokens, and disables all external skills and tools. Rufina conversations and
 memory are therefore kept separate from the personal assistant.
 
 Docker Compose keeps OpenClaw's mutable SQLite plugin state in the dedicated
@@ -65,7 +66,7 @@ the host configuration, Codex plugin registration, and provider credentials.
 
 GPT-5.6 Terra requires OpenClaw 2026.7.1 or newer.
 It runs through OpenClaw's native Codex harness while retaining the isolated
-Tasko workspace, memory, token cap, and disabled tool policy.
+Rufina workspace, memory, token cap, and disabled tool policy.
 
 Assistant responses use resumable SSE through `POST /assistant/chat/stream`.
 Clients reconnect with the same `requestId` and last received `offset`; active
@@ -126,7 +127,7 @@ the stored generation payload.
 ### Document storage and AI disclosure
 
 DOCX templates are deduplicated per document type by the SHA-256 digest of the
-uploaded bytes. Before storage, Tasko rejects unsafe ZIP paths, encrypted or
+uploaded bytes. Before storage, Rufina rejects unsafe ZIP paths, encrypted or
 symlinked entries, malformed XML, DTDs/entities, and packages that exceed the
 entry-count, uncompressed-size, XML-size, or XML-element limits.
 
@@ -156,7 +157,7 @@ temporary generation artifacts are covered; source templates and manually
 confirmed candidate facts are preserved. Provider-side processing and
 retention remain governed by the provider configured for the deployment.
 
-OpenClaw can propose a small allowlist of Tasko actions: application notes and
+OpenClaw can propose a small allowlist of Rufina actions: application notes and
 next steps, interview events, documents, and individual profile fields. These
 proposals are stored with the assistant message and rendered as previews. No
 mutation runs during generation; FastAPI executes an idempotent action only

@@ -70,7 +70,7 @@ def test_manual_run_accepts_inline_config_without_creating_schedule(
     api_context: ApiContext,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    headers = {"X-Tasko-Owner-Id": "manual-owner"}
+    headers = {"X-Rufina-Owner-Id": "manual-owner"}
     job = parsed_job(
         title="Manual Backend Engineer",
         url="https://www.linkedin.com/jobs/view/manual-1",
@@ -125,8 +125,8 @@ def test_run_now_persists_jobs_snapshot_and_no_consent_warning(
     api_context: ApiContext,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    owner_a = {"X-Tasko-Owner-Id": "owner-a"}
-    owner_b = {"X-Tasko-Owner-Id": "owner-b"}
+    owner_a = {"X-Rufina-Owner-Id": "owner-a"}
+    owner_b = {"X-Rufina-Owner-Id": "owner-b"}
     job = parsed_job(
         title="Platform Engineer",
         url="https://www.linkedin.com/jobs/view/123?trackingId=ignored",
@@ -197,7 +197,7 @@ def test_run_now_does_not_restore_existing_or_dismissed_jobs_and_matches_only_ne
     api_context: ApiContext,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    headers = {"X-Tasko-Owner-Id": "dedup-owner"}
+    headers = {"X-Rufina-Owner-Id": "dedup-owner"}
     existing = parsed_job(
         title="Existing Engineer",
         url="https://www.linkedin.com/jobs/view/existing",
@@ -289,7 +289,7 @@ def test_run_now_persists_partial_source_failure(
     api_context: ApiContext,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    headers = {"X-Tasko-Owner-Id": "partial-owner"}
+    headers = {"X-Rufina-Owner-Id": "partial-owner"}
     linkedin_job = parsed_job(
         title="Resilient Search Result",
         url="https://www.linkedin.com/jobs/view/partial-1",
@@ -364,7 +364,7 @@ def parsed_job(*, title: str, url: str) -> ParsedJob:
     return ParsedJob(
         source="linkedin",
         title=title,
-        company="Tasko Test AG",
+        company="Rufina Test AG",
         location="Zurich",
         url=url,
         employment_type="Full-time",

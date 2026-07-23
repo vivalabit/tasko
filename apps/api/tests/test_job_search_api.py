@@ -30,8 +30,8 @@ def test_job_search_config_and_schedule_crud_is_owner_scoped(
     monkeypatch.setattr(job_search_api, "utc_now", lambda: now)
     app.dependency_overrides[get_db] = override_get_db
     client = TestClient(app)
-    owner_a = {"X-Tasko-Owner-Id": "owner-a"}
-    owner_b = {"X-Tasko-Owner-Id": "owner-b"}
+    owner_a = {"X-Rufina-Owner-Id": "owner-a"}
+    owner_b = {"X-Rufina-Owner-Id": "owner-b"}
 
     try:
         create_config = client.post(

@@ -38,7 +38,7 @@ def test_parse_experience_from_resume_text() -> None:
     entries = parse_experience_from_text(
         """
         PROFESSIONAL EXPERIENCE
-        Senior Frontend Engineer | Tasko Labs | Jan 2024 - Present | Zurich, Switzerland
+        Senior Frontend Engineer | Rufina Labs | Jan 2024 - Present | Zurich, Switzerland
         Built job matching dashboards and profile workflows.
         Improved resume onboarding for candidates.
 
@@ -53,7 +53,7 @@ def test_parse_experience_from_resume_text() -> None:
 
     assert len(entries) == 2
     assert entries[0].title == "Senior Frontend Engineer"
-    assert entries[0].company == "Tasko Labs"
+    assert entries[0].company == "Rufina Labs"
     assert entries[0].start_date == "2024-01"
     assert entries[0].is_current is True
     assert "profile workflows" in entries[0].description
@@ -399,7 +399,7 @@ def test_extract_openclaw_experience_payload_reads_json_result_wrapper() -> None
           "status": "ok",
           "result": {
             "payloads": [
-              {"text": "{\\"experience\\":[{\\"title\\":\\"Developer\\",\\"company\\":\\"Tasko\\",\\"employment_type\\":\\"Full-time\\",\\"location\\":\\"\\",\\"start_date\\":\\"2024-01\\",\\"end_date\\":\\"\\",\\"is_current\\":true,\\"description\\":\\"Built imports.\\"}]}"}
+              {"text": "{\\"experience\\":[{\\"title\\":\\"Developer\\",\\"company\\":\\"Rufina\\",\\"employment_type\\":\\"Full-time\\",\\"location\\":\\"\\",\\"start_date\\":\\"2024-01\\",\\"end_date\\":\\"\\",\\"is_current\\":true,\\"description\\":\\"Built imports.\\"}]}"}
             ]
           }
         }
@@ -419,7 +419,7 @@ def test_openclaw_resume_import_uses_a_fresh_isolated_session() -> None:
                             "experience": [
                                 {
                                     "title": "Developer",
-                                    "company": "Tasko",
+                                    "company": "Rufina",
                                     "employment_type": "Full-time",
                                     "location": "",
                                     "start_date": "2024-01",
@@ -439,7 +439,7 @@ def test_openclaw_resume_import_uses_a_fresh_isolated_session() -> None:
     with patch("app.services.resume_import.subprocess.run", return_value=completed) as run:
         for _ in range(2):
             parse_experience_with_openclaw(
-                text="Developer at Tasko",
+                text="Developer at Rufina",
                 command="openclaw",
                 agent_id="tasko-assistant",
                 thinking="high",
@@ -474,7 +474,7 @@ def test_resume_import_passes_strict_pydantic_output_model_to_backend() -> None:
             )
 
     assert parse_experience_with_openclaw(
-        text="Developer at Tasko",
+        text="Developer at Rufina",
         command="openclaw",
         agent_id="tasko-assistant",
         thinking="low",
@@ -515,11 +515,11 @@ def test_extract_openclaw_education_payload_reads_json_result_wrapper() -> None:
           "status": "ok",
           "result": {
             "payloads": [
-              {"text": "{\\"education\\":[{\\"institution\\":\\"Tasko University\\",\\"credential\\":\\"Certificate\\",\\"field_of_study\\":\\"AI\\",\\"location\\":\\"\\",\\"start_date\\":\\"2024-01\\",\\"end_date\\":\\"2024-12\\",\\"is_current\\":false,\\"description\\":\\"Built imports.\\"}]}"}
+              {"text": "{\\"education\\":[{\\"institution\\":\\"Rufina University\\",\\"credential\\":\\"Certificate\\",\\"field_of_study\\":\\"AI\\",\\"location\\":\\"\\",\\"start_date\\":\\"2024-01\\",\\"end_date\\":\\"2024-12\\",\\"is_current\\":false,\\"description\\":\\"Built imports.\\"}]}"}
             ]
           }
         }
         """
     )
 
-    assert payload["education"][0]["institution"] == "Tasko University"
+    assert payload["education"][0]["institution"] == "Rufina University"

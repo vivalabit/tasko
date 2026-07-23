@@ -28,7 +28,7 @@ class IndeedSearchRequest(LinkedInSearchRequest):
 
 
 class JobsChSearchRequest(LinkedInSearchRequest):
-    """Tasko search fields accepted by the jobs.ch source."""
+    """Rufina search fields accepted by the jobs.ch source."""
 
 
 class ParsedJob(BaseModel):

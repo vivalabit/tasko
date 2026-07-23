@@ -87,7 +87,7 @@ class WorkspaceDockerE2E(unittest.TestCase):
             cls.repo_root / "compose.yaml",
             cls.repo_root / "tests/e2e/compose.e2e.yaml",
         ]
-        cls.headers = {"X-Tasko-Owner-Id": OWNER_ID}
+        cls.headers = {"X-Rufina-Owner-Id": OWNER_ID}
         cls.wait_for_api()
 
     @classmethod

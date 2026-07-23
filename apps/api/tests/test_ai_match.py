@@ -636,7 +636,7 @@ def test_ai_match_passes_strict_pydantic_output_model_to_backend() -> None:
                 {
                     "id": "job-schema",
                     "title": "Python Engineer",
-                    "company": "Tasko",
+                    "company": "Rufina",
                     "skills": ["Python"],
                 }
             )

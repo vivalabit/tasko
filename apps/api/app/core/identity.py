@@ -12,7 +12,7 @@ DEFAULT_OWNER_ID = "local-owner"
 OWNER_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,159}$")
 
 current_owner_id: ContextVar[str | None] = ContextVar(
-    "tasko_current_owner_id",
+    "rufina_current_owner_id",
     default=None,
 )
 
@@ -29,11 +29,20 @@ class RequestIdentity:
 def get_request_identity(
     owner_id: Annotated[
         str | None,
+        Header(alias="X-Rufina-Owner-Id"),
+    ] = None,
+    legacy_owner_id: Annotated[
+        str | None,
         Header(alias="X-Tasko-Owner-Id"),
     ] = None,
     settings: Settings = Depends(get_settings),
 ) -> RequestIdentity:
-    normalized = (owner_id or "").strip()
+    normalized = (owner_id or legacy_owner_id or "").strip()
+    if owner_id and legacy_owner_id and owner_id.strip() != legacy_owner_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Conflicting authenticated owner identities",
+        )
     if not normalized and settings.app_env == "local":
         normalized = DEFAULT_OWNER_ID
     if not normalized:

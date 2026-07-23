@@ -5079,7 +5079,7 @@ export default function HomePage() {
 
   async function saveResumeFile(file: File) {
     if (!file.name.toLowerCase().endsWith(".docx")) {
-      window.alert("Upload a DOCX resume so Tasko can preserve its design during generation.");
+      window.alert("Upload a DOCX resume so Rufina can preserve its design during generation.");
       return;
     }
 
@@ -8695,7 +8695,7 @@ function SettingsView({
               <div className="min-w-0">
                 <h2 className="text-base font-bold text-white 2xl:text-lg">AI backend</h2>
                 <p className="mt-1 text-[13px] leading-5 text-muted 2xl:text-sm 2xl:leading-6">
-                  Choose how Tasko sends new AI operations. Running operations keep the mode they started with.
+                  Choose how Rufina sends new AI operations. Running operations keep the mode they started with.
                 </p>
               </div>
             </div>
@@ -11269,7 +11269,7 @@ function DocumentEditorDialog({
                   <option value="English">English</option>
                   <option value="German">German</option>
                 </select>
-                <span className="text-[11px] leading-4 text-muted">Add separate English and German DOCX versions so Tasko can select the right one for each vacancy.</span>
+                <span className="text-[11px] leading-4 text-muted">Add separate English and German DOCX versions so Rufina can select the right one for each vacancy.</span>
               </label>
             ) : null}
 
@@ -11925,13 +11925,13 @@ function AppSidebar({
     <aside className="app-sidebar hidden h-screen w-[190px] shrink-0 overflow-y-auto border-r border-border bg-white/[0.025] px-2.5 py-4 lg:flex lg:flex-col 2xl:w-[220px] 2xl:px-3 2xl:py-5">
       <div className="app-sidebar-brand mb-5 flex items-center gap-2 px-2 2xl:mb-7 2xl:gap-2.5">
         <img
-          src="/brand/tasko-mark.png"
+          src="/brand/rufina-mark.png"
           alt=""
           className="app-sidebar-mark h-[42px] w-[42px] object-contain 2xl:h-12 2xl:w-12"
           aria-hidden="true"
         />
         <div className="min-w-0">
-          <p className="text-[19px] font-extrabold leading-none tracking-[-0.025em] text-[#f5f2f0] 2xl:text-[22px]">tasko</p>
+          <p className="text-[19px] font-extrabold leading-none tracking-[-0.025em] text-[#f5f2f0] 2xl:text-[22px]">Rufina</p>
           <p className="mt-1.5 whitespace-nowrap text-[10px] font-medium leading-none tracking-[0.015em] text-[#aeb5c2] 2xl:text-[11px]">
             Career Assistant
           </p>

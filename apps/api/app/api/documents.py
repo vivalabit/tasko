@@ -2273,7 +2273,7 @@ def document_version_payloads(
 def safe_filename(value: str) -> str:
     normalized = unicodedata.normalize("NFC", value.strip())
     normalized = re.sub(r"[^\w.\-]+", "-", normalized, flags=re.UNICODE).strip("-._")
-    return normalized[:120] or "tasko-document"
+    return normalized[:120] or "rufina-document"
 
 
 def safe_upload_filename(value: str) -> str:
@@ -2285,7 +2285,7 @@ def safe_upload_filename(value: str) -> str:
 def content_disposition(filename: str) -> str:
     ascii_filename = re.sub(r"[^A-Za-z0-9._-]+", "-", filename).strip("-._")
     ascii_filename = re.sub(r"-+", "-", ascii_filename)
-    ascii_filename = ascii_filename or "tasko-document.docx"
+    ascii_filename = ascii_filename or "rufina-document.docx"
     return (
         f'attachment; filename="{ascii_filename}"; '
         f"filename*=UTF-8''{quote(filename, safe='')}"

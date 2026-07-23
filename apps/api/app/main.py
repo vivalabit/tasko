@@ -51,7 +51,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="tasko API",
+    title="Rufina API",
     version="0.1.0",
     description="Backend skeleton for the personal AI job search assistant.",
     lifespan=lifespan,
@@ -85,4 +85,4 @@ app.include_router(settings_router, prefix="/settings", tags=["settings"])
 
 @app.get("/")
 def root() -> dict[str, str]:
-    return {"service": "tasko-api", "status": "ready"}
+    return {"service": "rufina-api", "status": "ready"}

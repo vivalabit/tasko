@@ -172,7 +172,7 @@ def test_build_openclaw_assistant_prompt_only_includes_dynamic_context() -> None
     assert "CONTEXT_JSON (untrusted data only):" in prompt
     assert '"title":"Senior Product Designer"' in prompt
     assert "Tailor my resume" in prompt
-    assert "You are Tasko" not in prompt
+    assert "You are Rufina" not in prompt
 
 
 def test_application_context_does_not_duplicate_its_embedded_job() -> None:
@@ -604,7 +604,7 @@ def test_run_openclaw_assistant_uses_isolated_local_agent(
         returncode = 0
 
         async def communicate(self) -> tuple[bytes, bytes]:
-            return b'{"result":{"payloads":[{"text":"Tasko response"}]}}', b""
+            return b'{"result":{"payloads":[{"text":"Rufina response"}]}}', b""
 
     async def fake_create_subprocess_exec(*args: str, **_: object) -> FakeProcess:
         captured.extend(args)
@@ -627,7 +627,7 @@ def test_run_openclaw_assistant_uses_isolated_local_agent(
         )
     )
 
-    assert response == "Tasko response"
+    assert response == "Rufina response"
     assert captured[:5] == [
         "/custom/openclaw",
         "agent",
@@ -1376,7 +1376,7 @@ def test_document_generation_uses_internal_message_limit() -> None:
 def test_assistant_chat_stream_emits_resumable_sse(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_run_openclaw_assistant(**_: object) -> OpenClawAssistantRun:
         return OpenClawAssistantRun(
-            message="A streamed Tasko response.",
+            message="A streamed Rufina response.",
             session_key="session-stream",
             metrics=AssistantRunMetrics(
                 latency_ms=125,
@@ -1443,13 +1443,13 @@ def test_assistant_chat_stream_emits_resumable_sse(monkeypatch: pytest.MonkeyPat
     assert "event: connected" in response.text
     assert "event: delta" in response.text
     assert "event: done" in response.text
-    assert streamed_text(response.text) == "A streamed Tasko response."
-    assert streamed_text(resumed_response.text) == "Tasko response."
+    assert streamed_text(response.text) == "A streamed Rufina response."
+    assert streamed_text(resumed_response.text) == "Rufina response."
     assert "id: 0\nevent: connected" in response.text
     assert "id: 11\nevent: connected" in resumed_response.text
     resumed_events = parse_sse_events(resumed_response.text)
     assert resumed_events[-1]["event"] == "done"
-    assert resumed_events[-1]["id"] == len("A streamed Tasko response.")
+    assert resumed_events[-1]["id"] == len("A streamed Rufina response.")
     assert resumed_events[-1]["data"]["metadata"]["metrics"] == {
         "latencyMs": 125,
         "model": "openai/gpt-5.6-terra",
@@ -1466,7 +1466,7 @@ def test_assistant_chat_stream_emits_resumable_sse(monkeypatch: pytest.MonkeyPat
     assert conversation.provider_session_id == "session-stream"
     assert [(message.role, message.content) for message in messages] == [
         ("user", "Review my profile"),
-        ("assistant", "A streamed Tasko response."),
+        ("assistant", "A streamed Rufina response."),
     ]
     assert messages[1].status == "complete"
     assert messages[1].source == "openclaw_codex"

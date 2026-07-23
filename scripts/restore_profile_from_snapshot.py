@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restore a Tasko profile from the richest stored candidate-match snapshot."""
+"""Restore a Rufina profile from the richest stored candidate-match snapshot."""
 
 from __future__ import annotations
 

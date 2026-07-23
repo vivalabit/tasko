@@ -598,7 +598,7 @@ def add_footer(document: Document, document_type: str, version: int) -> None:
     paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     paragraph.paragraph_format.space_before = Pt(0)
     paragraph.paragraph_format.space_after = Pt(0)
-    run = paragraph.add_run(f"Tasko · {label} · v{version} · ")
+    run = paragraph.add_run(f"Rufina · {label} · v{version} · ")
     set_run_font(run, BODY_FONT, 8, MUTED)
     append_page_field(paragraph)
 

@@ -42,7 +42,7 @@ def test_profile_can_be_updated_and_read() -> None:
             "github": "github.com/eduard",
             "portfolio": "eduard.dev",
             "personal_site": "ishchenko.dev",
-            "experience": "Built Tasko profile onboarding",
+            "experience": "Built Rufina profile onboarding",
             "skills": "React\nFastAPI\nProduct engineering",
             "education": "Computer Science",
             "job_preferences": "Remote or hybrid\nProduct-focused teams",

@@ -126,13 +126,25 @@ def test_application_data_is_scoped_to_request_owner() -> None:
             )
         db.commit()
 
-    owner_a = {"X-Tasko-Owner-Id": "owner-a"}
-    owner_b = {"X-Tasko-Owner-Id": "owner-b"}
+    owner_a = {"X-Rufina-Owner-Id": "owner-a"}
+    owner_b = {"X-Rufina-Owner-Id": "owner-b"}
+    legacy_owner_a = {"X-Tasko-Owner-Id": "owner-a"}
     app.dependency_overrides[get_db] = override_get_db
     client = TestClient(app)
     try:
         applications_a = client.get("/applications", headers=owner_a)
         applications_b = client.get("/applications", headers=owner_b)
+        applications_a_legacy_header = client.get(
+            "/applications",
+            headers=legacy_owner_a,
+        )
+        conflicting_owner_headers = client.get(
+            "/applications",
+            headers={
+                "X-Rufina-Owner-Id": "owner-a",
+                "X-Tasko-Owner-Id": "owner-b",
+            },
+        )
         confirmations_a = client.get(
             "/applications/application-a/confirmations",
             headers=owner_a,
@@ -185,6 +197,10 @@ def test_application_data_is_scoped_to_request_owner() -> None:
 
     assert [item["id"] for item in applications_a.json()] == ["application-a"]
     assert [item["id"] for item in applications_b.json()] == ["application-b"]
+    assert [item["id"] for item in applications_a_legacy_header.json()] == [
+        "application-a"
+    ]
+    assert conflicting_owner_headers.status_code == 400
     assert [item["questionId"] for item in confirmations_a.json()] == ["question-a"]
     assert foreign_confirmations.status_code == 404
     assert [item["id"] for item in templates_a.json()] == ["template-a"]

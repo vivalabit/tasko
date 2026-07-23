@@ -51,7 +51,7 @@ def test_ai_calls_require_current_server_side_consent(monkeypatch) -> None:
 
     monkeypatch.setattr(assistant_api, "generate_assistant_with_facade", run_assistant)
     client, testing_session_local = privacy_client()
-    headers = {"X-Tasko-Owner-Id": "privacy-owner"}
+    headers = {"X-Rufina-Owner-Id": "privacy-owner"}
     with testing_session_local() as db:
         db.add(ProfileRecord(id="default", data=ProfilePayload().model_dump()))
         db.commit()
@@ -159,7 +159,7 @@ def test_ai_calls_require_current_server_side_consent(monkeypatch) -> None:
 
 def test_ai_consent_is_invalidated_when_backend_changes() -> None:
     client, testing_session_local = privacy_client()
-    headers = {"X-Tasko-Owner-Id": "backend-consent-owner"}
+    headers = {"X-Rufina-Owner-Id": "backend-consent-owner"}
 
     try:
         granted = client.put(
@@ -384,7 +384,7 @@ def test_revoke_consent_deletes_owner_ai_data_but_preserves_other_owners() -> No
     try:
         revoked = client.delete(
             "/privacy/ai-consent",
-            headers={"X-Tasko-Owner-Id": "delete-owner"},
+            headers={"X-Rufina-Owner-Id": "delete-owner"},
         )
     finally:
         app.dependency_overrides.clear()

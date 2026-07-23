@@ -1,7 +1,7 @@
 [project]
-name = "tasko-api"
+name = "rufina-api"
 version = "0.1.0"
-description = "FastAPI backend for the tasko personal job search assistant."
+description = "FastAPI backend for the Rufina personal job search assistant."
 requires-python = ">=3.12"
 dependencies = [
   "alembic>=1.14.0",
