@@ -2,7 +2,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import re
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import ValidationError
@@ -58,46 +58,63 @@ def execute_job_search(
     config: JobSearchConfigRecord,
     runner: VacancySearchRunner,
     settings: Settings,
-    run_type: str,
+    run_type: Literal["manual", "automatic"],
     scheduled_for: datetime | None = None,
     now: datetime | None = None,
+    reserved_run: JobSearchRunRecord | None = None,
+    recalculate_schedule: bool = True,
 ) -> JobSearchExecutionResult:
     started_at = now or datetime.now(UTC)
-    config_snapshot = build_config_snapshot(config)
-    sources = list(schedule.sources)
-    run = JobSearchRunRecord(
-        id=uuid4().hex,
-        schedule_id=schedule.id,
-        run_type=run_type,
-        scheduled_for=scheduled_for,
-        config_snapshot=config_snapshot,
-        sources=sources,
-        status="running",
-        jobs_found=0,
-        jobs_added=0,
-        source_errors={},
-        started_at=started_at,
-    )
-    db.add(run)
+    if reserved_run is None:
+        run = JobSearchRunRecord(
+            id=uuid4().hex,
+            schedule_id=schedule.id,
+            run_type=run_type,
+            scheduled_for=scheduled_for,
+            config_snapshot=build_config_snapshot(config),
+            sources=list(schedule.sources),
+            status="running",
+            jobs_found=0,
+            jobs_added=0,
+            source_errors={},
+            started_at=started_at,
+        )
+        db.add(run)
+    else:
+        run = reserved_run
+        run.status = "running"
+        run.started_at = started_at
+        run.completed_at = None
     db.commit()
 
     try:
-        request = search_request_from_config(config.filters)
+        filters = run.config_snapshot.get("filters", config.filters)
+        request = search_request_from_config(filters)
         search_result = runner.run(
-            sources=sources,
+            sources=list(run.sources),
             request=request,
             wait_for_snapshots=True,
         )
     except (ValidationError, ValueError) as exc:
-        run.status = "failed"
-        run.source_errors = {"config": str(exc)[:500]}
-        run.completed_at = datetime.now(UTC)
+        completed_at = datetime.now(UTC)
+        finish_failed_run(
+            run,
+            schedule,
+            completed_at=completed_at,
+            source_errors={"config": str(exc)[:500]},
+            recalculate_schedule=recalculate_schedule,
+        )
         db.commit()
         raise JobSearchExecutionError("Stored job search config is invalid") from exc
     except Exception as exc:
-        run.status = "failed"
-        run.source_errors = {"runner": str(exc)[:500]}
-        run.completed_at = datetime.now(UTC)
+        completed_at = datetime.now(UTC)
+        finish_failed_run(
+            run,
+            schedule,
+            completed_at=completed_at,
+            source_errors={"runner": str(exc)[:500]},
+            recalculate_schedule=recalculate_schedule,
+        )
         db.commit()
         raise
 
@@ -113,16 +130,8 @@ def execute_job_search(
     run.status = run_status(search_result)
     run.completed_at = completed_at
     schedule.last_run_at = completed_at
-    if schedule.enabled:
-        schedule.next_run_at = calculate_next_run_at(
-            frequency=schedule.frequency,
-            weekdays=schedule.weekdays,
-            local_time=schedule.local_time,
-            timezone=schedule.timezone,
-            now=completed_at,
-        )
-    else:
-        schedule.next_run_at = None
+    if recalculate_schedule:
+        recalculate_next_schedule_run(schedule, now=completed_at)
     schedule.updated_at = completed_at
     db.commit()
 
@@ -135,6 +144,40 @@ def execute_job_search(
     )
     db.refresh(run)
     return JobSearchExecutionResult(run=run, warning=warning)
+
+
+def finish_failed_run(
+    run: JobSearchRunRecord,
+    schedule: JobSearchScheduleRecord,
+    *,
+    completed_at: datetime,
+    source_errors: dict[str, str],
+    recalculate_schedule: bool,
+) -> None:
+    run.status = "failed"
+    run.source_errors = source_errors
+    run.completed_at = completed_at
+    schedule.last_run_at = completed_at
+    if recalculate_schedule:
+        recalculate_next_schedule_run(schedule, now=completed_at)
+    schedule.updated_at = completed_at
+
+
+def recalculate_next_schedule_run(
+    schedule: JobSearchScheduleRecord,
+    *,
+    now: datetime,
+) -> None:
+    if not schedule.enabled:
+        schedule.next_run_at = None
+        return
+    schedule.next_run_at = calculate_next_run_at(
+        frequency=schedule.frequency,
+        weekdays=schedule.weekdays,
+        local_time=schedule.local_time,
+        timezone=schedule.timezone,
+        now=now,
+    )
 
 
 def search_request_from_config(filters: dict[str, Any]) -> LinkedInSearchRequest:

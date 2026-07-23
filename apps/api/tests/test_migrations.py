@@ -604,6 +604,8 @@ def test_lifespan_propagates_database_initialization_error(monkeypatch) -> None:
 def test_lifespan_starts_and_stops_scheduled_expiration_cleanup(monkeypatch) -> None:
     started = asyncio.Event()
     stopped = asyncio.Event()
+    worker_started = asyncio.Event()
+    worker_stopped = asyncio.Event()
 
     async def scheduled_cleanup(interval_seconds: int) -> None:
         assert interval_seconds == main_module.settings.storage_cleanup_interval_seconds
@@ -613,12 +615,26 @@ def test_lifespan_starts_and_stops_scheduled_expiration_cleanup(monkeypatch) -> 
         finally:
             stopped.set()
 
+    async def scheduled_job_search(
+        interval_seconds: float,
+        *,
+        settings,
+        stop_event: asyncio.Event,
+    ) -> None:
+        assert interval_seconds == settings.job_search_poll_interval_seconds
+        worker_started.set()
+        await stop_event.wait()
+        worker_stopped.set()
+
     monkeypatch.setattr(main_module, "upgrade_database", lambda: None)
     monkeypatch.setattr(main_module, "run_expiration_cleanup", scheduled_cleanup)
+    monkeypatch.setattr(main_module, "run_job_search_worker", scheduled_job_search)
 
     async def start_application() -> None:
         async with main_module.lifespan(main_module.app):
             await asyncio.wait_for(started.wait(), timeout=1)
+            await asyncio.wait_for(worker_started.wait(), timeout=1)
         await asyncio.wait_for(stopped.wait(), timeout=1)
+        await asyncio.wait_for(worker_stopped.wait(), timeout=1)
 
     asyncio.run(start_application())

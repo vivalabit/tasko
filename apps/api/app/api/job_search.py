@@ -31,6 +31,10 @@ from app.services.job_search_schedule import (
     calculate_next_run_at,
     validate_search_schedule,
 )
+from app.services.job_search_worker import (
+    has_active_schedule_run,
+    schedule_execution_lock,
+)
 from app.services.vacancy_search import create_vacancy_search_runner
 
 router = APIRouter(dependencies=[Depends(bind_request_identity)])
@@ -315,14 +319,20 @@ def run_schedule_now(
     try:
         schedule = require_schedule(db, schedule_id)
         config = require_config(db, schedule.config_id)
-        result = execute_job_search(
-            db,
-            schedule=schedule,
-            config=config,
-            runner=create_vacancy_search_runner(settings),
-            settings=settings,
-            run_type="manual",
-        )
+        with schedule_execution_lock(db, schedule.id) as acquired:
+            if not acquired or has_active_schedule_run(db, schedule.id):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Job search schedule is already running",
+                )
+            result = execute_job_search(
+                db,
+                schedule=schedule,
+                config=config,
+                runner=create_vacancy_search_runner(settings),
+                settings=settings,
+                run_type="manual",
+            )
         payload = JobSearchRunPayload.model_validate(result.run)
         return payload.model_copy(update={"warning": result.warning})
     except JobSearchExecutionError as exc:

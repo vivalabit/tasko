@@ -18,6 +18,7 @@ from app.api.privacy import router as privacy_router
 from app.api.settings import router as settings_router
 from app.core.migrations import upgrade_database
 from app.core.settings import get_settings
+from app.services.job_search_worker import run_job_search_worker
 from app.services.storage_cleanup import run_expiration_cleanup
 
 settings = get_settings()
@@ -26,13 +27,24 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     upgrade_database()
+    job_search_stop = asyncio.Event()
     cleanup_task = asyncio.create_task(
         run_expiration_cleanup(settings.storage_cleanup_interval_seconds),
         name="storage-expiration-cleanup",
     )
+    job_search_task = asyncio.create_task(
+        run_job_search_worker(
+            settings.job_search_poll_interval_seconds,
+            settings=settings,
+            stop_event=job_search_stop,
+        ),
+        name="automatic-job-search-worker",
+    )
     try:
         yield
     finally:
+        job_search_stop.set()
+        await job_search_task
         cleanup_task.cancel()
         with suppress(asyncio.CancelledError):
             await cleanup_task
