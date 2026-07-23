@@ -1,7 +1,8 @@
 from datetime import UTC, datetime, time
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import (
     JSON,
     Boolean,
@@ -172,3 +173,152 @@ class JobSearchRunRecord(OwnerScoped, Base):
     schedule: Mapped[JobSearchScheduleRecord | None] = relationship(
         back_populates="runs",
     )
+
+
+JobSearchFrequency = Literal["daily", "weekdays", "selected_days"]
+JobSearchSource = Literal["linkedin", "indeed", "jobs_ch"]
+
+
+class JobSearchConfigCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=240)
+    filters: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("name must not be empty")
+        return normalized
+
+
+class JobSearchConfigUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=240)
+    filters: dict[str, Any] | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("name must not be empty")
+        return normalized
+
+
+class JobSearchConfigPayload(BaseModel):
+    id: str
+    name: str
+    filters: dict[str, Any]
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+    @field_validator("created_at", "updated_at", mode="before")
+    @classmethod
+    def normalize_timestamps(cls, value: datetime) -> datetime:
+        return as_utc(value)
+
+
+class JobSearchScheduleCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=240)
+    config_id: str = Field(min_length=1, max_length=36, alias="configId")
+    sources: list[JobSearchSource] = Field(min_length=1, max_length=10)
+    frequency: JobSearchFrequency
+    weekdays: list[int] = Field(default_factory=list, max_length=7)
+    local_time: time = Field(alias="localTime")
+    timezone: str = Field(min_length=1, max_length=64)
+    ai_analysis_enabled: bool = Field(default=False, alias="aiAnalysisEnabled")
+    enabled: bool = True
+
+    model_config = {"extra": "forbid", "populate_by_name": True}
+
+    @field_validator("name", "timezone")
+    @classmethod
+    def normalize_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be empty")
+        return normalized
+
+    @field_validator("sources")
+    @classmethod
+    def normalize_sources(
+        cls,
+        value: list[JobSearchSource],
+    ) -> list[JobSearchSource]:
+        return list(dict.fromkeys(value))
+
+
+class JobSearchScheduleUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=240)
+    config_id: str | None = Field(default=None, min_length=1, max_length=36, alias="configId")
+    sources: list[JobSearchSource] | None = Field(default=None, min_length=1, max_length=10)
+    frequency: JobSearchFrequency | None = None
+    weekdays: list[int] | None = Field(default=None, max_length=7)
+    local_time: time | None = Field(default=None, alias="localTime")
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
+    ai_analysis_enabled: bool | None = Field(default=None, alias="aiAnalysisEnabled")
+    enabled: bool | None = None
+
+    model_config = {"extra": "forbid", "populate_by_name": True}
+
+    @field_validator("name", "timezone")
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("value must not be empty")
+        return normalized
+
+    @field_validator("sources")
+    @classmethod
+    def normalize_sources(
+        cls,
+        value: list[JobSearchSource] | None,
+    ) -> list[JobSearchSource] | None:
+        return list(dict.fromkeys(value)) if value is not None else None
+
+
+class JobSearchSchedulePayload(BaseModel):
+    id: str
+    name: str
+    config_id: str = Field(alias="configId")
+    sources: list[JobSearchSource]
+    frequency: JobSearchFrequency
+    weekdays: list[int]
+    local_time: time = Field(alias="localTime")
+    timezone: str
+    ai_analysis_enabled: bool = Field(alias="aiAnalysisEnabled")
+    enabled: bool
+    next_run_at: datetime | None = Field(alias="nextRunAt")
+    last_run_at: datetime | None = Field(alias="lastRunAt")
+    created_at: datetime = Field(alias="createdAt")
+    updated_at: datetime = Field(alias="updatedAt")
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+    @field_validator(
+        "next_run_at",
+        "last_run_at",
+        "created_at",
+        "updated_at",
+        mode="before",
+    )
+    @classmethod
+    def normalize_timestamps(cls, value: datetime | None) -> datetime | None:
+        return as_utc(value) if value is not None else None
+
+
+def as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)

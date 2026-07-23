@@ -1,0 +1,364 @@
+from datetime import UTC, datetime, time
+from typing import Any
+
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from fastapi import APIRouter, Depends, HTTPException, status
+
+from app.core.database import get_db
+from app.core.identity import bind_request_identity
+from app.models.job_search import (
+    JobSearchConfigCreateRequest,
+    JobSearchConfigPayload,
+    JobSearchConfigRecord,
+    JobSearchConfigUpdateRequest,
+    JobSearchScheduleCreateRequest,
+    JobSearchSchedulePayload,
+    JobSearchScheduleRecord,
+    JobSearchScheduleUpdateRequest,
+)
+from app.services.job_search_schedule import (
+    JobSearchScheduleValidationError,
+    calculate_next_run_at,
+    validate_search_schedule,
+)
+
+router = APIRouter(dependencies=[Depends(bind_request_identity)])
+
+SCHEDULE_FIELDS = {
+    "frequency",
+    "weekdays",
+    "local_time",
+    "timezone",
+}
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+@router.get("/configs", response_model=list[JobSearchConfigPayload])
+def list_configs(db: Session = Depends(get_db)) -> list[JobSearchConfigRecord]:
+    try:
+        return list(
+            db.scalars(
+                select(JobSearchConfigRecord).order_by(
+                    JobSearchConfigRecord.updated_at.desc(),
+                    JobSearchConfigRecord.id.desc(),
+                )
+            ).all()
+        )
+    except SQLAlchemyError as exc:
+        raise database_unavailable(exc) from exc
+
+
+@router.post(
+    "/configs",
+    response_model=JobSearchConfigPayload,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_config(
+    request: JobSearchConfigCreateRequest,
+    db: Session = Depends(get_db),
+) -> JobSearchConfigRecord:
+    now = utc_now()
+    record = JobSearchConfigRecord(
+        name=request.name,
+        filters=request.filters,
+        created_at=now,
+        updated_at=now,
+    )
+    try:
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        return record
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+
+
+@router.get("/configs/{config_id}", response_model=JobSearchConfigPayload)
+def get_config(
+    config_id: str,
+    db: Session = Depends(get_db),
+) -> JobSearchConfigRecord:
+    try:
+        return require_config(db, config_id)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        raise database_unavailable(exc) from exc
+
+
+@router.patch("/configs/{config_id}", response_model=JobSearchConfigPayload)
+@router.put("/configs/{config_id}", response_model=JobSearchConfigPayload)
+def update_config(
+    config_id: str,
+    request: JobSearchConfigUpdateRequest,
+    db: Session = Depends(get_db),
+) -> JobSearchConfigRecord:
+    try:
+        record = require_config(db, config_id)
+        fields = request.model_fields_set
+        if "name" in fields:
+            record.name = require_patch_value(request.name, "name")
+        if "filters" in fields:
+            record.filters = require_patch_value(request.filters, "filters")
+        record.updated_at = utc_now()
+        db.commit()
+        db.refresh(record)
+        return record
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+
+
+@router.delete("/configs/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_config(config_id: str, db: Session = Depends(get_db)) -> None:
+    try:
+        record = require_config(db, config_id)
+        schedule_id = db.scalar(
+            select(JobSearchScheduleRecord.id).where(JobSearchScheduleRecord.config_id == config_id)
+        )
+        if schedule_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Config is used by one or more schedules",
+            )
+        db.delete(record)
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+
+
+@router.get("/schedules", response_model=list[JobSearchSchedulePayload])
+def list_schedules(db: Session = Depends(get_db)) -> list[JobSearchScheduleRecord]:
+    try:
+        return list(
+            db.scalars(
+                select(JobSearchScheduleRecord).order_by(
+                    JobSearchScheduleRecord.updated_at.desc(),
+                    JobSearchScheduleRecord.id.desc(),
+                )
+            ).all()
+        )
+    except SQLAlchemyError as exc:
+        raise database_unavailable(exc) from exc
+
+
+@router.post(
+    "/schedules",
+    response_model=JobSearchSchedulePayload,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_schedule(
+    request: JobSearchScheduleCreateRequest,
+    db: Session = Depends(get_db),
+) -> JobSearchScheduleRecord:
+    try:
+        require_config(db, request.config_id)
+        now = utc_now()
+        next_run_at = calculate_schedule_next_run(
+            frequency=request.frequency,
+            weekdays=request.weekdays,
+            local_time=request.local_time,
+            timezone=request.timezone,
+            enabled=request.enabled,
+            now=now,
+        )
+        record = JobSearchScheduleRecord(
+            name=request.name,
+            config_id=request.config_id,
+            sources=request.sources,
+            frequency=request.frequency,
+            weekdays=request.weekdays,
+            local_time=request.local_time,
+            timezone=request.timezone,
+            ai_analysis_enabled=request.ai_analysis_enabled,
+            enabled=request.enabled,
+            next_run_at=next_run_at,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        return record
+    except JobSearchScheduleValidationError as exc:
+        db.rollback()
+        raise invalid_schedule(exc) from exc
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+
+
+@router.get("/schedules/{schedule_id}", response_model=JobSearchSchedulePayload)
+def get_schedule(
+    schedule_id: str,
+    db: Session = Depends(get_db),
+) -> JobSearchScheduleRecord:
+    try:
+        return require_schedule(db, schedule_id)
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        raise database_unavailable(exc) from exc
+
+
+@router.patch("/schedules/{schedule_id}", response_model=JobSearchSchedulePayload)
+@router.put("/schedules/{schedule_id}", response_model=JobSearchSchedulePayload)
+def update_schedule(
+    schedule_id: str,
+    request: JobSearchScheduleUpdateRequest,
+    db: Session = Depends(get_db),
+) -> JobSearchScheduleRecord:
+    try:
+        record = require_schedule(db, schedule_id)
+        fields = request.model_fields_set
+        if "config_id" in fields:
+            config_id = require_patch_value(request.config_id, "configId")
+            require_config(db, config_id)
+            record.config_id = config_id
+        if "name" in fields:
+            record.name = require_patch_value(request.name, "name")
+        if "sources" in fields:
+            record.sources = require_patch_value(request.sources, "sources")
+        if "frequency" in fields:
+            record.frequency = require_patch_value(request.frequency, "frequency")
+        if "weekdays" in fields:
+            record.weekdays = require_patch_value(request.weekdays, "weekdays")
+        if "local_time" in fields:
+            record.local_time = require_patch_value(request.local_time, "localTime")
+        if "timezone" in fields:
+            record.timezone = require_patch_value(request.timezone, "timezone")
+        if "ai_analysis_enabled" in fields:
+            record.ai_analysis_enabled = require_patch_value(
+                request.ai_analysis_enabled,
+                "aiAnalysisEnabled",
+            )
+        if "enabled" in fields:
+            record.enabled = require_patch_value(request.enabled, "enabled")
+
+        validate_search_schedule(
+            frequency=record.frequency,
+            weekdays=record.weekdays,
+            local_time=record.local_time,
+            timezone=record.timezone,
+        )
+        if SCHEDULE_FIELDS.intersection(fields) or "enabled" in fields:
+            record.next_run_at = calculate_schedule_next_run(
+                frequency=record.frequency,
+                weekdays=record.weekdays,
+                local_time=record.local_time,
+                timezone=record.timezone,
+                enabled=record.enabled,
+                now=utc_now(),
+            )
+        record.updated_at = utc_now()
+        db.commit()
+        db.refresh(record)
+        return record
+    except JobSearchScheduleValidationError as exc:
+        db.rollback()
+        raise invalid_schedule(exc) from exc
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+
+
+@router.delete("/schedules/{schedule_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_schedule(schedule_id: str, db: Session = Depends(get_db)) -> None:
+    try:
+        db.delete(require_schedule(db, schedule_id))
+        db.commit()
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+
+
+def require_config(db: Session, config_id: str) -> JobSearchConfigRecord:
+    record = db.get(JobSearchConfigRecord, config_id)
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job search config not found",
+        )
+    return record
+
+
+def require_schedule(db: Session, schedule_id: str) -> JobSearchScheduleRecord:
+    record = db.get(JobSearchScheduleRecord, schedule_id)
+    if not record:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job search schedule not found",
+        )
+    return record
+
+
+def calculate_schedule_next_run(
+    *,
+    frequency: str,
+    weekdays: list[int],
+    local_time: time,
+    timezone: str,
+    enabled: bool,
+    now: datetime,
+) -> datetime | None:
+    if not enabled:
+        validate_search_schedule(
+            frequency=frequency,
+            weekdays=weekdays,
+            local_time=local_time,
+            timezone=timezone,
+        )
+        return None
+    return calculate_next_run_at(
+        frequency=frequency,
+        weekdays=weekdays,
+        local_time=local_time,
+        timezone=timezone,
+        now=now,
+    )
+
+
+def require_patch_value(value: Any, field_name: str) -> Any:
+    if value is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=f"{field_name} must not be null",
+        )
+    return value
+
+
+def invalid_schedule(exc: JobSearchScheduleValidationError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=str(exc),
+    )
+
+
+def database_unavailable(exc: SQLAlchemyError) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Job search database is unavailable",
+    )
