@@ -318,6 +318,34 @@ class JobSearchSchedulePayload(BaseModel):
         return as_utc(value) if value is not None else None
 
 
+class JobSearchRunPayload(BaseModel):
+    id: str
+    schedule_id: str | None = Field(alias="scheduleId")
+    run_type: Literal["manual", "automatic"] = Field(alias="runType")
+    scheduled_for: datetime | None = Field(alias="scheduledFor")
+    config_snapshot: dict[str, Any] = Field(alias="configSnapshot")
+    sources: list[JobSearchSource]
+    status: str
+    jobs_found: int = Field(alias="jobsFound")
+    jobs_added: int = Field(alias="jobsAdded")
+    source_errors: dict[str, str] = Field(alias="sourceErrors")
+    started_at: datetime = Field(alias="startedAt")
+    completed_at: datetime | None = Field(alias="completedAt")
+    warning: str | None = None
+
+    model_config = {"from_attributes": True, "populate_by_name": True}
+
+    @field_validator(
+        "scheduled_for",
+        "started_at",
+        "completed_at",
+        mode="before",
+    )
+    @classmethod
+    def normalize_timestamps(cls, value: datetime | None) -> datetime | None:
+        return as_utc(value) if value is not None else None
+
+
 def as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)

@@ -5,25 +5,33 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.core.database import get_db
 from app.core.identity import bind_request_identity
+from app.core.settings import Settings, get_settings
 from app.models.job_search import (
     JobSearchConfigCreateRequest,
     JobSearchConfigPayload,
     JobSearchConfigRecord,
     JobSearchConfigUpdateRequest,
+    JobSearchRunPayload,
+    JobSearchRunRecord,
     JobSearchScheduleCreateRequest,
     JobSearchSchedulePayload,
     JobSearchScheduleRecord,
     JobSearchScheduleUpdateRequest,
+)
+from app.services.job_search_execution import (
+    JobSearchExecutionError,
+    execute_job_search,
 )
 from app.services.job_search_schedule import (
     JobSearchScheduleValidationError,
     calculate_next_run_at,
     validate_search_schedule,
 )
+from app.services.vacancy_search import create_vacancy_search_runner
 
 router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
@@ -292,6 +300,70 @@ def delete_schedule(schedule_id: str, db: Session = Depends(get_db)) -> None:
         raise
     except SQLAlchemyError as exc:
         db.rollback()
+        raise database_unavailable(exc) from exc
+
+
+@router.post(
+    "/schedules/{schedule_id}/run",
+    response_model=JobSearchRunPayload,
+)
+def run_schedule_now(
+    schedule_id: str,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> JobSearchRunPayload:
+    try:
+        schedule = require_schedule(db, schedule_id)
+        config = require_config(db, schedule.config_id)
+        result = execute_job_search(
+            db,
+            schedule=schedule,
+            config=config,
+            runner=create_vacancy_search_runner(settings),
+            settings=settings,
+            run_type="manual",
+        )
+        payload = JobSearchRunPayload.model_validate(result.run)
+        return payload.model_copy(update={"warning": result.warning})
+    except JobSearchExecutionError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Vacancy search execution failed",
+        ) from exc
+
+
+@router.get("/runs", response_model=list[JobSearchRunPayload])
+def list_runs(
+    schedule_id: str | None = Query(default=None, alias="scheduleId"),
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[JobSearchRunRecord]:
+    try:
+        query = select(JobSearchRunRecord)
+        if schedule_id is not None:
+            query = query.where(JobSearchRunRecord.schedule_id == schedule_id)
+        return list(
+            db.scalars(
+                query.order_by(
+                    JobSearchRunRecord.started_at.desc(),
+                    JobSearchRunRecord.id.desc(),
+                ).limit(limit)
+            ).all()
+        )
+    except SQLAlchemyError as exc:
         raise database_unavailable(exc) from exc
 
 
