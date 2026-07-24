@@ -106,6 +106,7 @@ def execute_job_search(
     now: datetime | None = None,
     reserved_run: JobSearchRunRecord | None = None,
     recalculate_schedule: bool = True,
+    screening_required: bool = False,
 ) -> JobSearchExecutionResult:
     started_at = now or datetime.now(UTC)
     if config_snapshot is None:
@@ -154,6 +155,19 @@ def execute_job_search(
             config.filters if config is not None else {},
         )
         normalized_config = normalize_job_search_config(config_data)
+        if screening_required and not normalized_config.screening.enabled:
+            normalized_config = normalized_config.model_copy(
+                update={
+                    "screening": ScreeningConfig(
+                        enabled=True,
+                        targetRoles=(
+                            [normalized_config.search.keywords]
+                            if normalized_config.search.keywords
+                            else []
+                        ),
+                    )
+                }
+            )
         run.config_snapshot = {
             **run.config_snapshot,
             "filters": normalized_config.model_dump(

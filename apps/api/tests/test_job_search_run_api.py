@@ -115,6 +115,13 @@ def test_manual_run_accepts_inline_config_without_creating_schedule(
         "create_vacancy_search_runner",
         lambda _settings: runner,
     )
+    screening = FakeScreeningFacade({job.title: "keep"})
+    monkeypatch.setattr(
+        job_search_execution,
+        "create_job_screening_ai_facade",
+        lambda _settings: screening,
+    )
+    grant_ai_consent(api_context, owner_id="manual-owner")
 
     response = api_context.client.post(
         "/job-search/run",
@@ -139,13 +146,20 @@ def test_manual_run_accepts_inline_config_without_creating_schedule(
     assert payload["runType"] == "manual"
     assert payload["jobsFound"] == 1
     assert payload["jobsAlreadyKnown"] == 0
-    assert payload["jobsScreened"] == 0
-    assert payload["jobsPassed"] == 0
+    assert payload["jobsScreened"] == 1
+    assert payload["jobsPassed"] == 1
     assert payload["jobsRejected"] == 0
     assert payload["jobsUncertain"] == 0
     assert payload["jobsAdded"] == 1
     assert payload["jobsAnalyzed"] == 0
     assert payload["screeningErrors"] == 0
+    assert payload["configSnapshot"]["filters"]["screening"][
+        "enabled"
+    ] is True
+    assert payload["configSnapshot"]["filters"]["screening"][
+        "targetRoles"
+    ] == ["Backend Engineer"]
+    assert len(screening.calls) == 1
     assert payload["configSnapshot"]["name"] == "Unsaved manual search"
     assert runner.requests[0]["wait_for_snapshots"] is True
     assert runner.requests[0]["request"].results_limit == 15
@@ -154,6 +168,117 @@ def test_manual_run_accepts_inline_config_without_creating_schedule(
         api_context.sessions,
         owner_id="manual-owner",
     )] == ["Manual Backend Engineer"]
+
+
+def test_manual_parser_run_persists_and_analyzes_only_accepted_vacancies(
+    api_context: ApiContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_id = "manual-parser-screening-owner"
+    headers = {"X-Rufina-Owner-Id": owner_id}
+    accepted = parsed_job(
+        title="Product Manager",
+        url="https://www.linkedin.com/jobs/view/manual-accepted",
+    )
+    rejected = parsed_job(
+        title="Cashier",
+        url="https://www.linkedin.com/jobs/view/manual-rejected",
+    )
+    jobs = [accepted, rejected]
+    runner = FakeRunner(
+        VacancySearchRunResult(
+            jobs=jobs,
+            source_results={"linkedin": completed_response("linkedin", jobs)},
+            source_errors={},
+        )
+    )
+    screening = FakeScreeningFacade(
+        {
+            accepted.title: "keep",
+            rejected.title: "reject",
+        }
+    )
+    analyzed: list[list[str]] = []
+
+    def capture_analysis(_db, *, jobs, **_kwargs):
+        analyzed.append([job["title"] for job in jobs])
+        return None
+
+    monkeypatch.setattr(
+        job_search_api,
+        "create_vacancy_search_runner",
+        lambda _settings: runner,
+    )
+    monkeypatch.setattr(
+        job_search_execution,
+        "create_job_screening_ai_facade",
+        lambda _settings: screening,
+    )
+    monkeypatch.setattr(
+        job_search_execution,
+        "match_new_jobs_if_allowed",
+        capture_analysis,
+    )
+    grant_ai_consent(api_context, owner_id=owner_id)
+
+    response = api_context.client.post(
+        "/job-search/run",
+        headers=headers,
+        json={
+            "config": {
+                "name": "Manual Product search",
+                "filters": {
+                    "keywords": "Product Manager",
+                    "location": "Zurich",
+                },
+            },
+            "sources": ["linkedin"],
+            "aiAnalysisEnabled": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["jobsScreened"] == 2
+    assert response.json()["jobsPassed"] == 1
+    assert response.json()["jobsRejected"] == 1
+    assert response.json()["jobsAdded"] == 1
+    assert response.json()["jobsAnalyzed"] == 1
+    assert analyzed == [["Product Manager"]]
+    assert [
+        item["data"]["title"]
+        for item in api_context.client.get("/jobs", headers=headers).json()
+    ] == ["Product Manager"]
+    assert {entry["title"] for entry in api_context.client.get(
+        "/job-search/screening-audit",
+        headers=headers,
+    ).json()} == {"Product Manager", "Cashier"}
+    rejected_id = parsed_job_id(rejected, index=1)
+    rejected_payload = {
+        "jobs": [
+            {
+                "id": rejected_id,
+                "data": {
+                    "id": rejected_id,
+                    **imported_stored_job(
+                        "Cashier",
+                        source="linkedin",
+                    ),
+                },
+            }
+        ]
+    }
+    assert api_context.client.post(
+        "/jobs/ai-match",
+        headers=headers,
+        json=rejected_payload,
+    ).json() == []
+    async_match = api_context.client.post(
+        "/jobs/ai-match/run",
+        headers=headers,
+        json=rejected_payload,
+    )
+    assert async_match.status_code == 202
+    assert async_match.json()["status"] == "completed"
 
 
 def test_manual_screening_persists_and_matches_only_keep_and_reuses_cache(

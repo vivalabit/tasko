@@ -360,6 +360,9 @@ it("adds a manual vacancy to Jobs, persists it, and starts AI analysis", async (
     expect(requests.some((request) => request.path === "/jobs" && request.method === "PUT")).toBe(true);
     expect(requests.some((request) => request.path === "/jobs/ai-match/run" && request.method === "POST")).toBe(true);
   });
+  expect(
+    requests.some((request) => request.path === "/job-search/run"),
+  ).toBe(false);
 
   const persistedRequest = requests.find((request) => request.path === "/jobs" && request.method === "PUT");
   const persistedJob = (persistedRequest?.body as { jobs: Array<{ data: { title: string; logo: string } }> }).jobs[0].data;
@@ -444,6 +447,15 @@ it("searches LinkedIn, Indeed, and jobs.ch together when all sources are selecte
   expect(runBodies[0]).toMatchObject({
     sources: ["linkedin", "indeed", "jobs_ch"],
     aiAnalysisEnabled: true,
+    config: {
+      filters: {
+        schemaVersion: 2,
+        screening: {
+          enabled: true,
+          targetRoles: [],
+        },
+      },
+    },
   });
   expect(runBodies[0]).toHaveProperty("config");
   expect(
@@ -534,18 +546,29 @@ it("loads a server config and refreshes backend-persisted search results", async
     createdAt: "2026-07-21T00:00:00.000Z",
     updatedAt: "2026-07-21T00:00:00.000Z",
     filters: {
-      sources: ["linkedin"],
-      keywords: "entry IT",
-      location: "Zurich, Switzerland",
-      remote: "Any",
-      experienceLevel: "Any",
-      jobType: "Any",
-      datePosted: "Past 24 hours",
-      resultsLimit: "50",
-      country: "Switzerland",
-      deduplicate: true,
-      searchName: "Entry IT",
-      folder: "",
+      schemaVersion: 2,
+      search: {
+        sources: ["linkedin"],
+        keywords: "entry IT",
+        location: "Zurich, Switzerland",
+        remote: "Any",
+        experienceLevel: "Any",
+        jobType: "Any",
+        datePosted: "Past 24 hours",
+        resultsLimit: 50,
+        country: "Switzerland",
+        deduplicate: true,
+        searchName: "Entry IT",
+        folder: "",
+      },
+      screening: {
+        enabled: true,
+        targetRoles: ["entry IT"],
+        excludedRoles: ["Cashier"],
+        allowedSeniority: ["entry", "junior"],
+        excludedSeniority: ["senior"],
+        hardRules: [],
+      },
     },
   };
   const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
@@ -605,16 +628,9 @@ it("loads a server config and refreshes backend-persisted search results", async
   ).toBeInTheDocument();
   expect(runBodies[0]).toMatchObject({
     sources: ["linkedin"],
-    config: {
-      name: "Entry IT",
-      filters: {
-        keywords: "entry IT",
-        location: "Zurich, Switzerland",
-        resultsLimit: 50,
-        deduplicate: true,
-      },
-    },
+    configId: "entry-it",
   });
+  expect(runBodies[0]).not.toHaveProperty("config");
   expect(screen.getAllByText("Junior Python Developer").length).toBeGreaterThan(0);
   expect(
     screen.getAllByText("Werkstudent Embedded-Software-Entwicklung").length,
@@ -704,11 +720,18 @@ it("imports legacy local search configs to the server only once", async () => {
   expect(configWrites[0]).toMatchObject({
     name: "Legacy Zurich",
     filters: {
-      sources: ["linkedin", "indeed"],
-      keywords: "Platform Engineer",
-      location: "Zurich",
-      resultsLimit: 25,
-      deduplicate: true,
+      schemaVersion: 2,
+      search: {
+        sources: ["linkedin", "indeed"],
+        keywords: "Platform Engineer",
+        location: "Zurich",
+        resultsLimit: 25,
+        deduplicate: true,
+      },
+      screening: {
+        enabled: true,
+        targetRoles: ["Platform Engineer"],
+      },
     },
   });
   expect(
@@ -829,10 +852,17 @@ it("saves and deletes manual-search configs through the API", async () => {
     body: {
       name: "Remote platform roles",
       filters: {
-        keywords: "Platform Engineer",
-        sources: ["linkedin"],
-        resultsLimit: 10,
-        deduplicate: true,
+        schemaVersion: 2,
+        search: {
+          keywords: "Platform Engineer",
+          sources: ["linkedin"],
+          resultsLimit: 10,
+          deduplicate: true,
+        },
+        screening: {
+          enabled: true,
+          targetRoles: ["Platform Engineer"],
+        },
       },
     },
   });

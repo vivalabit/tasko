@@ -10,7 +10,7 @@ from app.main import app
 from app.models.jobs import StoredJobRecord
 
 
-def test_jobs_can_be_upserted_and_read() -> None:
+def test_manual_jobs_can_be_upserted_but_parser_imports_require_screening() -> None:
     engine = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},
@@ -47,6 +47,22 @@ def test_jobs_can_be_upserted_and_read() -> None:
                         "match": 72,
                         "logo": "linkedin",
                     },
+                },
+                {
+                    "id": "manual-job-product-designer",
+                    "data": {
+                        "id": "manual-job-product-designer",
+                        "company": "Figma",
+                        "title": "Manually added Product Designer",
+                        "location": "Remote",
+                        "type": "Full-time",
+                        "salary": "Not specified",
+                        "posted": "Today",
+                        "experience": "Mid-Senior level",
+                        "department": "Manual",
+                        "match": 0,
+                        "logo": "manual",
+                    },
                 }
             ]
         }
@@ -56,8 +72,12 @@ def test_jobs_can_be_upserted_and_read() -> None:
 
         assert upsert_response.status_code == 200
         assert read_response.status_code == 200
-        assert read_response.json()[0]["id"] == "linkedin-product-designer"
-        assert read_response.json()[0]["data"]["title"] == "Product Designer"
+        assert [item["id"] for item in read_response.json()] == [
+            "manual-job-product-designer"
+        ]
+        assert read_response.json()[0]["data"]["title"] == (
+            "Manually added Product Designer"
+        )
     finally:
         app.dependency_overrides.clear()
 
@@ -103,7 +123,16 @@ def test_job_can_be_deleted() -> None:
             ]
         }
 
-        client.put("/jobs", json=payload)
+        with testing_session_local() as db:
+            db.add(
+                StoredJobRecord(
+                    owner_id="local-owner",
+                    id="linkedin-product-designer",
+                    data=payload["jobs"][0]["data"],
+                    status="active",
+                )
+            )
+            db.commit()
         delete_response = client.delete("/jobs/linkedin-product-designer")
         read_response = client.get("/jobs")
 

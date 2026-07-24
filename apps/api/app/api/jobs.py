@@ -43,6 +43,8 @@ router = APIRouter(dependencies=[Depends(bind_request_identity)])
 
 ACTIVE_JOB_STATUS = "active"
 DISMISSED_JOB_STATUS = "dismissed"
+PARSER_JOB_ID_PREFIXES = ("linkedin-", "indeed-", "jobs_ch-")
+PARSER_JOB_LOGOS = {"linkedin", "indeed", "jobs_ch", "jobs.ch"}
 
 
 @router.get("", response_model=list[StoredJobPayload])
@@ -81,6 +83,8 @@ def upsert_jobs(request: StoredJobsRequest, db: Session = Depends(get_db)) -> li
         now = datetime.now(UTC).isoformat()
         for job in request.jobs:
             record = db.get(StoredJobRecord, (get_bound_owner_id(), job.id))
+            if record is None and is_parser_import(job.id, job.data):
+                continue
             if record and record.status != ACTIVE_JOB_STATUS:
                 continue
             job_data = prepare_job_data(job.data, record, now)
@@ -120,6 +124,8 @@ def match_jobs(
         jobs_to_match = []
         for job in request.jobs:
             record = db.get(StoredJobRecord, (get_bound_owner_id(), job.id))
+            if record is None and is_parser_import(job.id, job.data):
+                continue
             if record and record.status != ACTIVE_JOB_STATUS:
                 continue
             jobs_to_match.append(prepare_job_data(job.data, record, now))
@@ -198,6 +204,8 @@ def run_match_jobs(
         jobs_to_match = []
         for job in request.jobs:
             record = db.get(StoredJobRecord, (get_bound_owner_id(), job.id))
+            if record is None and is_parser_import(job.id, job.data):
+                continue
             if record and record.status != ACTIVE_JOB_STATUS:
                 continue
             jobs_to_match.append(prepare_job_data(job.data, record, now))
@@ -288,6 +296,16 @@ def prepare_job_data(
 
     next_job_data["addedAt"] = now
     return next_job_data
+
+
+def is_parser_import(job_id: str, job_data: dict[str, Any]) -> bool:
+    if job_id.casefold().startswith(PARSER_JOB_ID_PREFIXES):
+        return True
+    logo = job_data.get("logo")
+    return (
+        isinstance(logo, str)
+        and logo.strip().casefold() in PARSER_JOB_LOGOS
+    )
 
 
 def has_added_at(job_data: dict[str, Any]) -> bool:

@@ -83,6 +83,25 @@ def valid_application_guide() -> dict[str, object]:
     }
 
 
+def persist_accepted_jobs(
+    sessions: sessionmaker[Session],
+    jobs: list[dict],
+) -> None:
+    with sessions() as db:
+        db.add_all(
+            [
+                StoredJobRecord(
+                    owner_id="local-owner",
+                    id=str(job["id"]),
+                    data=job,
+                    status="active",
+                )
+                for job in jobs
+            ]
+        )
+        db.commit()
+
+
 def valid_match_result(job_id: str = "job-strict") -> dict[str, object]:
     return {
         "id": job_id,
@@ -1279,6 +1298,7 @@ def test_ai_match_endpoint_requires_openclaw_candidate_snapshot(
             "skills": ["Python", "Machine Learning"],
         }
 
+        persist_accepted_jobs(testing_session_local, [job])
         response = client.post("/jobs/ai-match", json={"jobs": [{"id": job["id"], "data": job}]})
 
         assert response.status_code == 502
@@ -1390,6 +1410,7 @@ def test_ai_match_endpoint_ignores_cached_local_candidate_snapshot(
             "skills": ["Python", "Machine Learning"],
         }
 
+        persist_accepted_jobs(testing_session_local, [job])
         response = client.post("/jobs/ai-match", json={"jobs": [{"id": job["id"], "data": job}]})
 
         assert response.status_code == 200
@@ -1490,6 +1511,7 @@ def test_ai_match_endpoint_rejects_incomplete_openclaw_breakdown(
             "skills": ["Python", "Machine Learning"],
         }
 
+        persist_accepted_jobs(testing_session_local, [job])
         response = client.post("/jobs/ai-match", json={"jobs": [{"id": job["id"], "data": job}]})
 
         assert response.status_code == 502
@@ -1557,6 +1579,7 @@ def test_ai_match_endpoint_updates_and_persists_job_scores(monkeypatch: pytest.M
             "skills": ["Python", "Machine Learning"],
         }
 
+        persist_accepted_jobs(testing_session_local, [job])
         response = client.post("/jobs/ai-match", json={"jobs": [{"id": job["id"], "data": job}]})
         read_response = client.get("/jobs")
 
@@ -1676,6 +1699,10 @@ def test_ai_match_endpoint_force_reruns_cached_openclaw_jobs(monkeypatch: pytest
         recent_job = build_job("linkedin-recent-force-ml-engineer", now.isoformat())
         old_job = build_job("linkedin-old-force-ml-engineer", (now - timedelta(days=3)).isoformat())
 
+        persist_accepted_jobs(
+            testing_session_local,
+            [recent_job, old_job],
+        )
         first_response = client.post(
             "/jobs/ai-match",
             json={
@@ -1768,6 +1795,7 @@ def test_ai_match_run_endpoint_updates_status_and_persists_job_scores(monkeypatc
             "skills": ["Python", "Machine Learning"],
         }
 
+        persist_accepted_jobs(testing_session_local, [job])
         run_response = client.post(
             "/jobs/ai-match/run",
             json={"jobs": [{"id": job["id"], "data": job}]},
@@ -1890,6 +1918,7 @@ def test_ai_match_run_endpoint_batches_openclaw_scoring(monkeypatch: pytest.Monk
             }
 
         jobs = [build_job(index) for index in range(5)]
+        persist_accepted_jobs(testing_session_local, jobs)
         run_response = client.post(
             "/jobs/ai-match/run",
             json={"jobs": [{"id": job["id"], "data": job} for job in jobs]},

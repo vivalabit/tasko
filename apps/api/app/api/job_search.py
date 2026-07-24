@@ -488,6 +488,7 @@ def run_manual_search(
             settings=settings,
             run_type="manual",
             recalculate_schedule=False,
+            screening_required=True,
         )
         payload = JobSearchRunPayload.model_validate(result.run)
         return payload.model_copy(update={"warning": result.warning})

@@ -389,6 +389,7 @@ type ParserSearchConfig = {
   id: string;
   name: string;
   form: ParserSearchForm;
+  filters: Record<string, unknown>;
   updatedAt: string;
 };
 
@@ -1993,6 +1994,10 @@ function createClientId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function normalizeParserSearchConfigs(configs: ParserSearchConfig[]) {
   const normalizedConfigs = configs
     .filter((config) => config.id && config.name && config.form)
@@ -2003,6 +2008,9 @@ function normalizeParserSearchConfigs(configs: ParserSearchConfig[]) {
         ...config.form,
         parsers: normalizeParserIds(config.form),
       },
+      filters: isRecord(config.filters)
+        ? config.filters
+        : parserSearchFiltersFromForm(config.form),
     }));
   const uniqueConfigs = new Map<string, ParserSearchConfig>();
 
@@ -2015,20 +2023,45 @@ function normalizeParserSearchConfigs(configs: ParserSearchConfig[]) {
 
 function parserSearchFiltersFromForm(
   form: ParserSearchForm,
+  currentFilters: Record<string, unknown> = {},
 ): Record<string, unknown> {
+  const versioned =
+    isRecord(currentFilters.search) ||
+    isRecord(currentFilters.screening);
+  const currentSearch = versioned && isRecord(currentFilters.search)
+    ? currentFilters.search
+    : versioned
+      ? {}
+      : currentFilters;
+  const currentScreening = isRecord(currentFilters.screening)
+    ? currentFilters.screening
+    : null;
   return {
-    keywords: form.keywords.trim(),
-    location: form.location.trim(),
-    remote: form.remote,
-    experienceLevel: form.experienceLevel,
-    jobType: form.jobType,
-    datePosted: form.datePosted,
-    resultsLimit: Number.parseInt(form.resultsLimit, 10) || 10,
-    country: form.country,
-    deduplicate: form.deduplicate,
-    searchName: form.searchName.trim(),
-    folder: form.folder,
-    sources: normalizeParserIds(form),
+    ...(versioned ? currentFilters : {}),
+    schemaVersion: 2,
+    search: {
+      ...currentSearch,
+      keywords: form.keywords.trim(),
+      location: form.location.trim(),
+      remote: form.remote,
+      experienceLevel: form.experienceLevel,
+      jobType: form.jobType,
+      datePosted: form.datePosted,
+      resultsLimit: Number.parseInt(form.resultsLimit, 10) || 10,
+      country: form.country,
+      deduplicate: form.deduplicate,
+      searchName: form.searchName.trim(),
+      folder: form.folder,
+      sources: normalizeParserIds(form),
+    },
+    screening: currentScreening ?? {
+      enabled: true,
+      targetRoles: form.keywords.trim() ? [form.keywords.trim()] : [],
+      excludedRoles: [],
+      allowedSeniority: [],
+      excludedSeniority: [],
+      hardRules: [],
+    },
   };
 }
 
@@ -2036,8 +2069,11 @@ function parserSearchConfigFromApi(
   config: JobSearchConfigPayload,
 ): ParserSearchConfig {
   const filters = config.filters;
-  const sources = Array.isArray(filters.sources)
-    ? filters.sources.filter(
+  const searchFilters = isRecord(filters.search)
+    ? filters.search
+    : filters;
+  const sources = Array.isArray(searchFilters.sources)
+    ? searchFilters.sources.filter(
         (source): source is ParserId =>
           source === "linkedin" || source === "indeed" || source === "jobs_ch",
       )
@@ -2045,31 +2081,44 @@ function parserSearchConfigFromApi(
   return {
     id: config.id,
     name: config.name,
+    filters,
     updatedAt: config.updatedAt,
     form: {
       ...defaultParserSearchForm,
       parsers: sources.length > 0 ? sources : [...defaultParserSearchForm.parsers],
-      keywords: filterString(filters, "keywords"),
-      location: filterString(filters, "location"),
-      remote: filterString(filters, "remote") || defaultParserSearchForm.remote,
+      keywords: filterString(searchFilters, "keywords"),
+      location: filterString(searchFilters, "location"),
+      remote:
+        filterString(searchFilters, "remote") ||
+        defaultParserSearchForm.remote,
       experienceLevel:
-        filterString(filters, "experienceLevel", "experience_level") ||
+        filterString(
+          searchFilters,
+          "experienceLevel",
+          "experience_level",
+        ) ||
         defaultParserSearchForm.experienceLevel,
       jobType:
-        filterString(filters, "jobType", "job_type") ||
+        filterString(searchFilters, "jobType", "job_type") ||
         defaultParserSearchForm.jobType,
       datePosted:
-        filterString(filters, "datePosted", "date_posted") ||
+        filterString(searchFilters, "datePosted", "date_posted") ||
         defaultParserSearchForm.datePosted,
       resultsLimit: String(
-        filterNumber(filters, "resultsLimit", "results_limit") ?? 10,
+        filterNumber(
+          searchFilters,
+          "resultsLimit",
+          "results_limit",
+        ) ?? 10,
       ),
-      country: filterString(filters, "country") || defaultParserSearchForm.country,
+      country:
+        filterString(searchFilters, "country") ||
+        defaultParserSearchForm.country,
       deduplicate:
-        filterBoolean(filters, "deduplicate") ??
+        filterBoolean(searchFilters, "deduplicate") ??
         defaultParserSearchForm.deduplicate,
       searchName: config.name,
-      folder: filterString(filters, "folder"),
+      folder: filterString(searchFilters, "folder"),
     },
   };
 }
@@ -4069,6 +4118,29 @@ export default function HomePage() {
     );
 
     try {
+      let currentFilters =
+        parserSearchConfigs.find(
+          (config) => config.id === selectedParserSearchConfigId,
+        )?.filters ?? {};
+      if (isUpdate) {
+        const currentResponse = await fetch(
+          `${apiBaseUrl}/job-search/configs/${encodeURIComponent(
+            selectedParserSearchConfigId,
+          )}`,
+          { cache: "no-store" },
+        );
+        if (!currentResponse.ok) {
+          throw new Error(
+            await readApiErrorMessage(
+              currentResponse,
+              "Current search config could not be loaded",
+            ),
+          );
+        }
+        currentFilters = (
+          (await currentResponse.json()) as JobSearchConfigPayload
+        ).filters;
+      }
       const response = await fetch(
         `${apiBaseUrl}/job-search/configs${
           isUpdate
@@ -4080,7 +4152,10 @@ export default function HomePage() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name: configName,
-            filters: parserSearchFiltersFromForm(formToSave),
+            filters: parserSearchFiltersFromForm(
+              formToSave,
+              currentFilters,
+            ),
           }),
         },
       );
@@ -5382,14 +5457,24 @@ export default function HomePage() {
     });
 
     try {
+      const selectedConfig = parserSearchConfigs.find(
+        (config) => config.id === selectedParserSearchConfigId,
+      );
       const response = await fetch(`${apiBaseUrl}/job-search/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          config: {
-            name: parserSearchForm.searchName.trim() || "Manual search",
-            filters: parserSearchFiltersFromForm(parserSearchForm),
-          },
+          ...(selectedConfig
+            ? { configId: selectedConfig.id }
+            : {
+                config: {
+                  name:
+                    parserSearchForm.searchName.trim() ||
+                    "Manual search",
+                  filters:
+                    parserSearchFiltersFromForm(parserSearchForm),
+                },
+              }),
           sources: parsers,
           aiAnalysisEnabled: true,
         }),
