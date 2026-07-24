@@ -36,6 +36,18 @@ class Settings(BaseSettings):
     openclaw_ai_match_timeout_seconds: int = 120
     openclaw_ai_match_max_jobs: int = 1
     openclaw_ai_match_max_attempts: int = Field(default=2, ge=1, le=4)
+    job_screening_model: str = Field(default="openai/gpt-5-mini", min_length=1, max_length=256)
+    job_screening_reasoning: Literal[
+        "none", "low", "medium", "high", "xhigh", "max"
+    ] = "none"
+    job_screening_batch_size: int = Field(default=10, ge=1, le=100)
+    job_screening_timeout_seconds: int = Field(default=60, ge=10, le=600)
+    job_screening_max_attempts: int = Field(default=2, ge=1, le=4)
+    job_screening_max_description_chars: int = Field(
+        default=12_000,
+        ge=1_000,
+        le=200_000,
+    )
     openclaw_assistant_enabled: bool = True
     openclaw_assistant_agent_id: str = "rufina-assistant"
     openclaw_assistant_model: str = "openai/gpt-5.6-terra"

@@ -108,6 +108,12 @@ These values can also be changed from the Settings screen. Settings updates are
 partial, and the OpenAI API key is returned to the browser only as configured
 state plus a masked preview.
 
+Vacancy screening has an independent, lower-cost model budget configured with
+`JOB_SCREENING_MODEL`, `JOB_SCREENING_REASONING`,
+`JOB_SCREENING_BATCH_SIZE`, `JOB_SCREENING_TIMEOUT_SECONDS`,
+`JOB_SCREENING_MAX_ATTEMPTS`, and `JOB_SCREENING_MAX_DESCRIPTION_CHARS`.
+Changing these values does not change the model used for the full AI Match.
+
 Both modes return the same internal result contract: text, structured data,
 model, backend, token usage, latency, and session/response ID.
 

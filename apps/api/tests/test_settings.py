@@ -91,6 +91,38 @@ def test_ai_backend_uses_canonical_env_and_direct_api_parameters(monkeypatch) ->
     assert settings.ai_retry_backoff_for(0) == 1.25
 
 
+def test_job_screening_settings_have_independent_defaults() -> None:
+    settings = Settings()
+
+    assert settings.job_screening_model == "openai/gpt-5-mini"
+    assert settings.job_screening_reasoning == "none"
+    assert settings.job_screening_batch_size == 10
+    assert settings.job_screening_timeout_seconds == 60
+    assert settings.job_screening_max_attempts == 2
+    assert settings.job_screening_max_description_chars == 12_000
+    assert settings.openclaw_ai_match_model == "openai/gpt-5.6-terra"
+
+
+def test_job_screening_settings_use_dedicated_environment_variables(monkeypatch) -> None:
+    monkeypatch.setenv("JOB_SCREENING_MODEL", "openai/gpt-screening")
+    monkeypatch.setenv("JOB_SCREENING_REASONING", "low")
+    monkeypatch.setenv("JOB_SCREENING_BATCH_SIZE", "25")
+    monkeypatch.setenv("JOB_SCREENING_TIMEOUT_SECONDS", "45")
+    monkeypatch.setenv("JOB_SCREENING_MAX_ATTEMPTS", "3")
+    monkeypatch.setenv("JOB_SCREENING_MAX_DESCRIPTION_CHARS", "18000")
+    monkeypatch.setenv("OPENAI_API_MODEL", "gpt-full-match")
+
+    settings = Settings()
+
+    assert settings.job_screening_model == "openai/gpt-screening"
+    assert settings.job_screening_reasoning == "low"
+    assert settings.job_screening_batch_size == 25
+    assert settings.job_screening_timeout_seconds == 45
+    assert settings.job_screening_max_attempts == 3
+    assert settings.job_screening_max_description_chars == 18_000
+    assert settings.openai_api_model == "gpt-full-match"
+
+
 def test_settings_never_returns_full_openai_key(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-openai-key")
     get_settings.cache_clear()
@@ -157,6 +189,88 @@ def test_ai_settings_update_is_partial_and_refreshes_cache(
     assert refreshed.openai_api_reasoning_effort == "low"
     assert refreshed.openai_api_timeout_seconds == 90
     assert "BRIGHTDATA_API_KEY=bright-existing-key" in env_path.read_text(encoding="utf-8")
+
+
+def test_job_screening_settings_api_updates_only_screening_configuration(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "OPENAI_API_MODEL=gpt-full-match\n"
+        "OPENCLAW_AI_MATCH_MODEL=openai/gpt-full-match\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings_api, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("AI_BACKEND", "openclaw_codex")
+    monkeypatch.setenv("OPENAI_API_MODEL", "gpt-full-match")
+    monkeypatch.setenv("OPENCLAW_AI_MATCH_MODEL", "openai/gpt-full-match")
+    monkeypatch.setenv("JOB_SCREENING_MODEL", "openai/gpt-5-mini")
+    monkeypatch.setenv("JOB_SCREENING_REASONING", "none")
+    monkeypatch.setenv("JOB_SCREENING_BATCH_SIZE", "10")
+    monkeypatch.setenv("JOB_SCREENING_TIMEOUT_SECONDS", "60")
+    monkeypatch.setenv("JOB_SCREENING_MAX_ATTEMPTS", "2")
+    monkeypatch.setenv("JOB_SCREENING_MAX_DESCRIPTION_CHARS", "12000")
+    get_settings.cache_clear()
+
+    try:
+        response = TestClient(app).put(
+            "/settings",
+            json={
+                "job_screening_model": "openai/gpt-screening",
+                "job_screening_reasoning": "low",
+                "job_screening_batch_size": 20,
+                "job_screening_timeout_seconds": 75,
+                "job_screening_max_attempts": 3,
+                "job_screening_max_description_chars": 16_000,
+            },
+        )
+        refreshed = get_settings()
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["job_screening_model"] == "openai/gpt-screening"
+    assert response.json()["job_screening_reasoning"] == "low"
+    assert response.json()["job_screening_batch_size"] == 20
+    assert response.json()["job_screening_timeout_seconds"] == 75
+    assert response.json()["job_screening_max_attempts"] == 3
+    assert response.json()["job_screening_max_description_chars"] == 16_000
+    assert refreshed.openai_api_model == "gpt-full-match"
+    assert refreshed.openclaw_ai_match_model == "openai/gpt-full-match"
+    env_text = env_path.read_text(encoding="utf-8")
+    assert "OPENAI_API_MODEL=gpt-full-match" in env_text
+    assert "OPENCLAW_AI_MATCH_MODEL=openai/gpt-full-match" in env_text
+    assert 'JOB_SCREENING_MODEL="openai/gpt-screening"' in env_text
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("job_screening_model", "  "),
+        ("job_screening_reasoning", "off"),
+        ("job_screening_batch_size", 0),
+        ("job_screening_timeout_seconds", 9),
+        ("job_screening_max_attempts", 5),
+        ("job_screening_max_description_chars", 999),
+    ],
+)
+def test_job_screening_settings_api_rejects_invalid_values(
+    monkeypatch,
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    monkeypatch.setattr(settings_api, "REPO_ROOT", tmp_path)
+    get_settings.cache_clear()
+
+    try:
+        response = TestClient(app).put("/settings", json={field: value})
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 422
+    assert not (tmp_path / ".env").exists()
 
 
 def test_openai_api_cannot_be_enabled_without_a_key(

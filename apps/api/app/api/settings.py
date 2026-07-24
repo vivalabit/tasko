@@ -17,6 +17,12 @@ OPENAI_API_REASONING_EFFORT_ENV = "OPENAI_API_REASONING_EFFORT"
 OPENAI_API_TIMEOUT_SECONDS_ENV = "OPENAI_API_TIMEOUT_SECONDS"
 OPENAI_API_MAX_ATTEMPTS_ENV = "OPENAI_API_MAX_ATTEMPTS"
 OPENAI_API_RETRY_BACKOFF_SECONDS_ENV = "OPENAI_API_RETRY_BACKOFF_SECONDS"
+JOB_SCREENING_MODEL_ENV = "JOB_SCREENING_MODEL"
+JOB_SCREENING_REASONING_ENV = "JOB_SCREENING_REASONING"
+JOB_SCREENING_BATCH_SIZE_ENV = "JOB_SCREENING_BATCH_SIZE"
+JOB_SCREENING_TIMEOUT_SECONDS_ENV = "JOB_SCREENING_TIMEOUT_SECONDS"
+JOB_SCREENING_MAX_ATTEMPTS_ENV = "JOB_SCREENING_MAX_ATTEMPTS"
+JOB_SCREENING_MAX_DESCRIPTION_CHARS_ENV = "JOB_SCREENING_MAX_DESCRIPTION_CHARS"
 
 AIBackendName = Literal["openclaw_codex", "openai_api"]
 ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
@@ -33,6 +39,12 @@ class AppSettingsResponse(BaseModel):
     openai_api_timeout_seconds: int
     openai_api_max_attempts: int
     openai_api_retry_backoff_seconds: float
+    job_screening_model: str
+    job_screening_reasoning: ReasoningEffort
+    job_screening_batch_size: int
+    job_screening_timeout_seconds: int
+    job_screening_max_attempts: int
+    job_screening_max_description_chars: int
 
 
 class BrightDataApiKeyResponse(BaseModel):
@@ -48,6 +60,16 @@ class AppSettingsUpdateRequest(BaseModel):
     openai_api_timeout_seconds: int | None = Field(default=None, ge=10, le=600)
     openai_api_max_attempts: int | None = Field(default=None, ge=1, le=4)
     openai_api_retry_backoff_seconds: float | None = Field(default=None, ge=0, le=10)
+    job_screening_model: str | None = Field(default=None, max_length=256)
+    job_screening_reasoning: ReasoningEffort | None = None
+    job_screening_batch_size: int | None = Field(default=None, ge=1, le=100)
+    job_screening_timeout_seconds: int | None = Field(default=None, ge=10, le=600)
+    job_screening_max_attempts: int | None = Field(default=None, ge=1, le=4)
+    job_screening_max_description_chars: int | None = Field(
+        default=None,
+        ge=1_000,
+        le=200_000,
+    )
 
 
 def mask_secret(value: str | None) -> str:
@@ -119,6 +141,12 @@ def build_settings_response() -> AppSettingsResponse:
         openai_api_timeout_seconds=settings.openai_api_timeout_seconds,
         openai_api_max_attempts=settings.openai_api_max_attempts,
         openai_api_retry_backoff_seconds=settings.openai_api_retry_backoff_seconds,
+        job_screening_model=settings.job_screening_model,
+        job_screening_reasoning=settings.job_screening_reasoning,
+        job_screening_batch_size=settings.job_screening_batch_size,
+        job_screening_timeout_seconds=settings.job_screening_timeout_seconds,
+        job_screening_max_attempts=settings.job_screening_max_attempts,
+        job_screening_max_description_chars=settings.job_screening_max_description_chars,
     )
 
 
@@ -171,6 +199,30 @@ def update_app_settings(payload: AppSettingsUpdateRequest) -> AppSettingsRespons
     if payload.openai_api_retry_backoff_seconds is not None:
         updates[OPENAI_API_RETRY_BACKOFF_SECONDS_ENV] = str(
             payload.openai_api_retry_backoff_seconds
+        )
+    if payload.job_screening_model is not None:
+        screening_model = payload.job_screening_model.strip()
+        if not screening_model:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="Job screening model cannot be empty",
+            )
+        updates[JOB_SCREENING_MODEL_ENV] = screening_model
+    if payload.job_screening_reasoning is not None:
+        updates[JOB_SCREENING_REASONING_ENV] = payload.job_screening_reasoning
+    if payload.job_screening_batch_size is not None:
+        updates[JOB_SCREENING_BATCH_SIZE_ENV] = str(payload.job_screening_batch_size)
+    if payload.job_screening_timeout_seconds is not None:
+        updates[JOB_SCREENING_TIMEOUT_SECONDS_ENV] = str(
+            payload.job_screening_timeout_seconds
+        )
+    if payload.job_screening_max_attempts is not None:
+        updates[JOB_SCREENING_MAX_ATTEMPTS_ENV] = str(
+            payload.job_screening_max_attempts
+        )
+    if payload.job_screening_max_description_chars is not None:
+        updates[JOB_SCREENING_MAX_DESCRIPTION_CHARS_ENV] = str(
+            payload.job_screening_max_description_chars
         )
 
     next_backend = payload.ai_backend or current.ai_backend_mode
