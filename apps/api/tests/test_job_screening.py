@@ -54,6 +54,7 @@ def enabled_config(**overrides: object) -> dict[str, object]:
     return {
         "enabled": True,
         "targetRoles": ["Software Engineer"],
+        "excludedRoles": ["Sales Manager"],
         "allowedSeniority": ["mid", "senior"],
         "excludedSeniority": ["director"],
         "hardRules": [],
@@ -301,6 +302,9 @@ def test_hard_rule_ids_are_stable_when_disabled_rules_are_present() -> None:
         rule["id"]
         for rule in input_payload["screeningConfig"]["hardRules"]
     ] == ["rule-1", "rule-2"]
+    assert input_payload["screeningConfig"]["excludedRoles"] == [
+        "Sales Manager"
+    ]
 
 
 def test_retryable_backend_errors_are_retried_and_nonretryable_errors_fail_closed() -> None:

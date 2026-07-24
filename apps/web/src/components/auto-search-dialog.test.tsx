@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -80,6 +86,7 @@ describe("AutoSearchDialog", () => {
     expect(await screen.findByText(schedule.name)).toBeInTheDocument();
     expect(screen.getByText("LinkedIn")).toBeInTheDocument();
     expect(screen.getByText(config.name)).toBeInTheDocument();
+    expect(screen.getByText("Screening off")).toBeInTheDocument();
     expect(screen.getByText("Weekdays · 13:00")).toBeInTheDocument();
     expect(screen.getByText("Enabled")).toBeInTheDocument();
 
@@ -210,6 +217,31 @@ describe("AutoSearchDialog", () => {
     fireEvent.change(screen.getByLabelText("Location"), {
       target: { value: "Remote" },
     });
+    fireEvent.click(screen.getByRole("switch", { name: "Pre-screening" }));
+    fireEvent.change(screen.getByLabelText("Target professions"), {
+      target: { value: "Backend Engineer\nSoftware Engineer" },
+    });
+    fireEvent.change(screen.getByLabelText("Excluded professions"), {
+      target: { value: "Sales Manager, Recruiter" },
+    });
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "Allowed seniority" }))
+        .getByRole("button", { name: "Mid" }),
+    );
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "Excluded seniority" }))
+        .getByRole("button", { name: "Director" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add hard rule" }));
+    fireEvent.change(screen.getByLabelText("Hard rule 1 field"), {
+      target: { value: "location" },
+    });
+    fireEvent.change(screen.getByLabelText("Hard rule 1 operator"), {
+      target: { value: "equals" },
+    });
+    fireEvent.change(screen.getByLabelText("Hard rule 1 value"), {
+      target: { value: "Remote" },
+    });
     fireEvent.click(
       screen.getByRole("button", { name: "Create auto-search" }),
     );
@@ -220,10 +252,28 @@ describe("AutoSearchDialog", () => {
       body: {
         name: "Backend roles",
         filters: {
-          keywords: "Backend Engineer",
-          location: "Remote",
-          resultsLimit: 50,
-          deduplicate: true,
+          schemaVersion: 2,
+          search: {
+            keywords: "Backend Engineer",
+            location: "Remote",
+            resultsLimit: 50,
+            deduplicate: true,
+          },
+          screening: {
+            enabled: true,
+            targetRoles: ["Backend Engineer", "Software Engineer"],
+            excludedRoles: ["Sales Manager", "Recruiter"],
+            allowedSeniority: ["mid"],
+            excludedSeniority: ["director"],
+            hardRules: [
+              {
+                field: "location",
+                operator: "equals",
+                value: "Remote",
+                enabled: true,
+              },
+            ],
+          },
         },
       },
     });
@@ -233,6 +283,192 @@ describe("AutoSearchDialog", () => {
         name: "Daily backend roles",
         configId: config.id,
         sources: ["linkedin"],
+      },
+    });
+  });
+
+  it("reads versioned screening, summarizes it, and preserves unknown JSON", async () => {
+    const versionedConfig: JobSearchConfig = {
+      ...config,
+      id: "versioned-config",
+      filters: {
+        schemaVersion: 2,
+        futureRoot: { mode: "preview" },
+        search: {
+          keywords: "Platform Engineer",
+          location: "Zurich",
+          resultsLimit: 30,
+          deduplicate: true,
+          futureSearch: ["keep"],
+        },
+        screening: {
+          enabled: true,
+          targetRoles: ["Platform Engineer"],
+          excludedRoles: ["Sales Manager"],
+          allowedSeniority: ["mid", "senior"],
+          excludedSeniority: ["director"],
+          futureScreening: { threshold: 0.8 },
+          hardRules: [
+            {
+              field: "location",
+              operator: "equals",
+              value: "Zurich",
+              enabled: true,
+              futureRule: "keep",
+            },
+          ],
+        },
+      },
+    };
+    const versionedSchedule = {
+      ...schedule,
+      configId: versionedConfig.id,
+    };
+    const configWrites: Array<Record<string, unknown>> = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input)).pathname;
+        const method = init?.method ?? "GET";
+        if (path === "/job-search/configs" && method === "GET") {
+          return response([versionedConfig]);
+        }
+        if (path === "/job-search/schedules" && method === "GET") {
+          return response([versionedSchedule]);
+        }
+        if (
+          path === `/job-search/configs/${versionedConfig.id}` &&
+          method === "PATCH"
+        ) {
+          const body = JSON.parse(String(init?.body));
+          configWrites.push(body);
+          return response({ ...versionedConfig, ...body });
+        }
+        if (
+          path === `/job-search/schedules/${versionedSchedule.id}` &&
+          method === "PATCH"
+        ) {
+          return response({
+            ...versionedSchedule,
+            ...JSON.parse(String(init?.body)),
+          });
+        }
+        throw new Error(`Unexpected request: ${method} ${path}`);
+      }),
+    );
+
+    render(<AutoSearchDialog open onClose={vi.fn()} />);
+
+    expect(
+      await screen.findByText(
+        "Screening on · 1 target role · 1 excluded role · 3 seniority filters · 1 hard rule",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: `Edit ${schedule.name}` }),
+    );
+    expect(screen.getByLabelText("Target professions")).toHaveValue(
+      "Platform Engineer",
+    );
+    expect(screen.getByLabelText("Excluded professions")).toHaveValue(
+      "Sales Manager",
+    );
+    fireEvent.change(screen.getByLabelText("Target professions"), {
+      target: { value: "Platform Engineer\nBackend Engineer" },
+    });
+    fireEvent.change(screen.getByLabelText("Results limit"), {
+      target: { value: "35" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(configWrites).toHaveLength(1));
+    const filters = configWrites[0].filters as Record<string, unknown>;
+    expect(filters.futureRoot).toEqual({ mode: "preview" });
+    expect(filters.search).toMatchObject({
+      resultsLimit: 35,
+      futureSearch: ["keep"],
+    });
+    expect(filters.screening).toMatchObject({
+      targetRoles: ["Platform Engineer", "Backend Engineer"],
+      futureScreening: { threshold: 0.8 },
+      hardRules: [
+        expect.objectContaining({
+          futureRule: "keep",
+        }),
+      ],
+    });
+  });
+
+  it("upgrades a legacy config only when screening is edited", async () => {
+    const legacyConfig: JobSearchConfig = {
+      ...config,
+      id: "legacy-config",
+      filters: {
+        ...config.filters,
+        futureLegacySearch: { keep: true },
+      },
+    };
+    const legacySchedule = { ...schedule, configId: legacyConfig.id };
+    let savedFilters: Record<string, unknown> | null = null;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input)).pathname;
+        const method = init?.method ?? "GET";
+        if (path === "/job-search/configs" && method === "GET") {
+          return response([legacyConfig]);
+        }
+        if (path === "/job-search/schedules" && method === "GET") {
+          return response([legacySchedule]);
+        }
+        if (
+          path === `/job-search/configs/${legacyConfig.id}` &&
+          method === "PATCH"
+        ) {
+          const body = JSON.parse(String(init?.body));
+          savedFilters = body.filters;
+          return response({ ...legacyConfig, ...body });
+        }
+        if (
+          path === `/job-search/schedules/${legacySchedule.id}` &&
+          method === "PATCH"
+        ) {
+          return response({
+            ...legacySchedule,
+            ...JSON.parse(String(init?.body)),
+          });
+        }
+        throw new Error(`Unexpected request: ${method} ${path}`);
+      }),
+    );
+
+    render(<AutoSearchDialog open onClose={vi.fn()} />);
+    await screen.findByText("Screening off");
+    fireEvent.click(
+      screen.getByRole("button", { name: `Edit ${schedule.name}` }),
+    );
+    expect(screen.getByLabelText("Results limit")).toHaveValue(40);
+    fireEvent.click(screen.getByRole("switch", { name: "Pre-screening" }));
+    fireEvent.change(screen.getByLabelText("Target professions"), {
+      target: { value: "Software Engineer" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(savedFilters).not.toBeNull());
+    expect(savedFilters).toMatchObject({
+      schemaVersion: 2,
+      search: {
+        keywords: "Software Engineer",
+        location: "Zurich",
+        resultsLimit: 40,
+        deduplicate: true,
+        futureLegacySearch: { keep: true },
+      },
+      screening: {
+        enabled: true,
+        targetRoles: ["Software Engineer"],
       },
     });
   });

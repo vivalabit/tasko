@@ -424,6 +424,7 @@ def test_run_now_persists_jobs_snapshot_and_no_consent_warning(
     assert normalized_config["screening"] == {
         "enabled": False,
         "targetRoles": [],
+        "excludedRoles": [],
         "allowedSeniority": [],
         "excludedSeniority": [],
         "hardRules": [],
@@ -476,6 +477,7 @@ def test_manual_run_accepts_v2_config_and_only_sends_search_to_parser(
         "screening": {
             "enabled": True,
             "targetRoles": ["Product Manager"],
+            "excludedRoles": [],
             "allowedSeniority": ["entry", "junior", "associate"],
             "excludedSeniority": ["senior", "lead", "director"],
             "hardRules": [],
@@ -512,7 +514,6 @@ def test_manual_run_accepts_v2_config_and_only_sends_search_to_parser(
 @pytest.mark.parametrize(
     "screening",
     [
-        {"enabled": False, "hardRules": [], "unknown": True},
         {"enabled": "yes", "hardRules": []},
         {
             "enabled": True,
@@ -555,6 +556,50 @@ def test_versioned_config_rejects_unknown_or_invalid_screening(
     )
 
     assert response.status_code == 422
+
+
+def test_versioned_config_preserves_unknown_json_fields(
+    api_context: ApiContext,
+) -> None:
+    response = api_context.client.post(
+        "/job-search/configs",
+        headers={"X-Rufina-Owner-Id": "future-config-owner"},
+        json={
+            "name": "Forward-compatible screening",
+            "filters": {
+                "schemaVersion": 2,
+                "futureRoot": {"mode": "preview"},
+                "search": {
+                    "keywords": "Python",
+                    "futureSearch": ["one", "two"],
+                },
+                "screening": {
+                    "enabled": True,
+                    "targetRoles": ["Software Engineer"],
+                    "excludedRoles": ["Sales Manager"],
+                    "futureScreening": {"threshold": 0.8},
+                    "hardRules": [
+                        {
+                            "field": "location",
+                            "operator": "equals",
+                            "value": "Zurich",
+                            "futureRule": "preserve-me",
+                        }
+                    ],
+                },
+            },
+        },
+    )
+
+    assert response.status_code == 201
+    filters = response.json()["filters"]
+    assert filters["futureRoot"] == {"mode": "preview"}
+    assert filters["search"]["futureSearch"] == ["one", "two"]
+    assert filters["screening"]["futureScreening"] == {"threshold": 0.8}
+    assert (
+        filters["screening"]["hardRules"][0]["futureRule"]
+        == "preserve-me"
+    )
 
 
 def test_run_now_does_not_restore_existing_or_dismissed_jobs_and_matches_only_new(

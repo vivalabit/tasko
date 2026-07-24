@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import UTC, datetime, time
 from typing import Any, Literal
 from uuid import uuid4
@@ -331,6 +332,11 @@ class ScreeningConfig(BaseModel):
         max_length=50,
         alias="targetRoles",
     )
+    excluded_roles: list[str] = Field(
+        default_factory=list,
+        max_length=50,
+        alias="excludedRoles",
+    )
     allowed_seniority: list[ScreeningSeniority] = Field(
         default_factory=list,
         max_length=9,
@@ -353,14 +359,14 @@ class ScreeningConfig(BaseModel):
         "strict": True,
     }
 
-    @field_validator("target_roles")
+    @field_validator("target_roles", "excluded_roles")
     @classmethod
-    def normalize_target_roles(cls, value: list[str]) -> list[str]:
+    def normalize_roles(cls, value: list[str]) -> list[str]:
         normalized = list(dict.fromkeys(role.strip() for role in value))
         if any(not role for role in normalized):
-            raise ValueError("targetRoles must not contain empty roles")
+            raise ValueError("role lists must not contain empty roles")
         if any(len(role) > 160 for role in normalized):
-            raise ValueError("targetRoles entries must be at most 160 characters")
+            raise ValueError("role entries must be at most 160 characters")
         return normalized
 
     @field_validator("allowed_seniority", "excluded_seniority")
@@ -408,7 +414,29 @@ VERSIONED_CONFIG_FIELDS = {"schemaVersion", "schema_version", "search", "screeni
 
 def normalize_job_search_config(config: dict[str, Any]) -> JobSearchConfigV2:
     if VERSIONED_CONFIG_FIELDS.intersection(config):
-        return JobSearchConfigV2.model_validate(config)
+        projected = project_known_model_fields(config, JobSearchConfigV2)
+        search = projected.get("search")
+        if isinstance(search, dict):
+            projected["search"] = project_known_model_fields(
+                search,
+                SearchFilters,
+            )
+        screening = projected.get("screening")
+        if isinstance(screening, dict):
+            projected_screening = project_known_model_fields(
+                screening,
+                ScreeningConfig,
+            )
+            hard_rules = projected_screening.get("hardRules")
+            if isinstance(hard_rules, list):
+                projected_screening["hardRules"] = [
+                    project_known_model_fields(rule, ScreeningRule)
+                    if isinstance(rule, dict)
+                    else rule
+                    for rule in hard_rules
+                ]
+            projected["screening"] = projected_screening
+        return JobSearchConfigV2.model_validate(projected)
 
     search_field_names = set(SearchFilters.model_fields)
     normalized_search = {
@@ -425,10 +453,72 @@ def normalize_job_search_config(config: dict[str, Any]) -> JobSearchConfigV2:
 def validate_versioned_job_search_config(config: dict[str, Any]) -> dict[str, Any]:
     if not VERSIONED_CONFIG_FIELDS.intersection(config):
         return config
-    return normalize_job_search_config(config).model_dump(
+    normalized = normalize_job_search_config(config).model_dump(
         by_alias=True,
         exclude_none=True,
     )
+    preserved = deepcopy(config)
+    preserved["schemaVersion"] = normalized["schemaVersion"]
+    preserved["search"] = merge_preserving_unknown(
+        config.get("search"),
+        normalized["search"],
+    )
+    preserved["screening"] = merge_screening_preserving_unknown(
+        config.get("screening"),
+        normalized["screening"],
+    )
+    return preserved
+
+
+def project_known_model_fields(
+    value: dict[str, Any],
+    model: type[BaseModel],
+) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    for name, field in model.model_fields.items():
+        alias = field.alias or name
+        if alias in value:
+            projected[alias] = value[alias]
+        elif name in value:
+            projected[name] = value[name]
+    return projected
+
+
+def merge_preserving_unknown(
+    original: object,
+    normalized: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        **(deepcopy(original) if isinstance(original, dict) else {}),
+        **normalized,
+    }
+
+
+def merge_screening_preserving_unknown(
+    original: object,
+    normalized: dict[str, Any],
+) -> dict[str, Any]:
+    merged = merge_preserving_unknown(original, normalized)
+    original_rules = (
+        original.get("hardRules")
+        if isinstance(original, dict)
+        else None
+    )
+    normalized_rules = normalized.get("hardRules")
+    if isinstance(normalized_rules, list):
+        merged["hardRules"] = [
+            merge_preserving_unknown(
+                original_rules[index]
+                if isinstance(original_rules, list)
+                and index < len(original_rules)
+                else None,
+                rule,
+            )
+            if isinstance(rule, dict)
+            else rule
+            for index, rule in enumerate(normalized_rules)
+        ]
+    return merged
 
 
 class JobSearchConfigCreateRequest(BaseModel):

@@ -43,9 +43,57 @@ const timezoneSuggestions = [
   "Asia/Singapore",
   "UTC",
 ];
+const seniorityOptions = [
+  { id: "intern", label: "Intern" },
+  { id: "entry", label: "Entry" },
+  { id: "junior", label: "Junior" },
+  { id: "associate", label: "Associate" },
+  { id: "mid", label: "Mid" },
+  { id: "senior", label: "Senior" },
+  { id: "lead", label: "Lead" },
+  { id: "director", label: "Director" },
+  { id: "executive", label: "Executive" },
+] as const;
+const screeningFieldOptions = [
+  ["title", "Title"],
+  ["company", "Company"],
+  ["location", "Location"],
+  ["description", "Description"],
+  ["employmentType", "Employment type"],
+  ["seniority", "Seniority"],
+  ["salaryMin", "Minimum salary"],
+  ["salaryMax", "Maximum salary"],
+  ["postedAt", "Posted at"],
+  ["source", "Source"],
+] as const;
+const screeningOperatorOptions = [
+  ["equals", "equals"],
+  ["notEquals", "does not equal"],
+  ["contains", "contains"],
+  ["notContains", "does not contain"],
+  ["startsWith", "starts with"],
+  ["endsWith", "ends with"],
+  ["greaterThan", "is greater than"],
+  ["greaterThanOrEqual", "is at least"],
+  ["lessThan", "is less than"],
+  ["lessThanOrEqual", "is at most"],
+  ["in", "is one of"],
+  ["notIn", "is not one of"],
+  ["matches", "matches regex"],
+] as const;
 
 type JobSearchSource = (typeof sourceOptions)[number]["id"];
 type JobSearchFrequency = "daily" | "weekdays" | "selected_days";
+type ScreeningSeniority = (typeof seniorityOptions)[number]["id"];
+
+type ScreeningHardRuleDraft = {
+  id: string;
+  field: string;
+  operator: string;
+  value: string;
+  enabled: boolean;
+  original: Record<string, unknown>;
+};
 
 export type JobSearchConfig = {
   id: string;
@@ -96,6 +144,12 @@ type ScheduleDraft = {
   timezone: string;
   resultsLimit: string;
   deduplicate: boolean;
+  screeningEnabled: boolean;
+  targetRoles: string;
+  excludedRoles: string;
+  allowedSeniority: ScreeningSeniority[];
+  excludedSeniority: ScreeningSeniority[];
+  hardRules: ScreeningHardRuleDraft[];
   aiAnalysisEnabled: boolean;
   enabled: boolean;
 };
@@ -117,6 +171,12 @@ function defaultDraft(): ScheduleDraft {
     timezone: localTimezone(),
     resultsLimit: "50",
     deduplicate: true,
+    screeningEnabled: false,
+    targetRoles: "",
+    excludedRoles: "",
+    allowedSeniority: [],
+    excludedSeniority: [],
+    hardRules: [],
     aiAnalysisEnabled: true,
     enabled: true,
   };
@@ -554,6 +614,11 @@ function AutoSearchList({
                       <span className="line-clamp-2 text-xs font-semibold text-[#d9e0ea]">
                         {config?.name ?? "Missing config"}
                       </span>
+                      {config ? (
+                        <span className="mt-0.5 block line-clamp-2 text-[10px] leading-4 text-muted">
+                          {screeningSummary(config.filters)}
+                        </span>
+                      ) : null}
                     </ListField>
                     <ListField label="Schedule">
                       <span className="text-xs font-semibold text-[#d9e0ea]">
@@ -636,6 +701,36 @@ function AutoSearchForm({
 }) {
   function patch(update: Partial<ScheduleDraft>) {
     onChange({ ...draft, ...update });
+  }
+
+  function toggleSeniority(
+    field: "allowedSeniority" | "excludedSeniority",
+    value: ScreeningSeniority,
+  ) {
+    const opposite =
+      field === "allowedSeniority"
+        ? "excludedSeniority"
+        : "allowedSeniority";
+    const selected = draft[field].includes(value);
+    patch({
+      [field]: selected
+        ? draft[field].filter((item) => item !== value)
+        : [...draft[field], value],
+      [opposite]: selected
+        ? draft[opposite]
+        : draft[opposite].filter((item) => item !== value),
+    });
+  }
+
+  function updateHardRule(
+    id: string,
+    update: Partial<ScreeningHardRuleDraft>,
+  ) {
+    patch({
+      hardRules: draft.hardRules.map((rule) =>
+        rule.id === id ? { ...rule, ...update } : rule,
+      ),
+    });
   }
 
   return (
@@ -824,6 +919,204 @@ function AutoSearchForm({
           ) : null}
         </FormSection>
 
+        <FormSection title="Screening" className="lg:col-span-2">
+          <Field label="Pre-screening">
+            <button
+              type="button"
+              role="switch"
+              aria-label="Pre-screening"
+              aria-checked={draft.screeningEnabled}
+              onClick={() =>
+                patch({ screeningEnabled: !draft.screeningEnabled })
+              }
+              className="flex min-h-12 w-full items-center justify-between rounded-lg border border-border bg-white/[0.025] px-3 text-left"
+            >
+              <span>
+                <span className="block text-xs font-bold text-[#dce3ec]">
+                  Filter vacancies before saving
+                </span>
+                <span className="mt-0.5 block text-[10px] text-muted">
+                  Only vacancies that pass screening are shown and analyzed.
+                </span>
+              </span>
+              <Toggle enabled={draft.screeningEnabled} />
+            </button>
+          </Field>
+
+          {draft.screeningEnabled ? (
+            <>
+              <div className="grid gap-3 lg:grid-cols-2">
+                <Field label="Target professions">
+                  <textarea
+                    aria-label="Target professions"
+                    value={draft.targetRoles}
+                    onChange={(event) =>
+                      patch({ targetRoles: event.target.value })
+                    }
+                    className={textareaClass}
+                    placeholder={"Software Engineer\nBackend Engineer"}
+                  />
+                  <span className="text-[10px] leading-4 text-muted">
+                    One profession per line or separated by commas.
+                  </span>
+                </Field>
+                <Field label="Excluded professions">
+                  <textarea
+                    aria-label="Excluded professions"
+                    value={draft.excludedRoles}
+                    onChange={(event) =>
+                      patch({ excludedRoles: event.target.value })
+                    }
+                    className={textareaClass}
+                    placeholder={"Sales Manager\nRecruiter"}
+                  />
+                  <span className="text-[10px] leading-4 text-muted">
+                    Clear role conflicts are rejected before persistence.
+                  </span>
+                </Field>
+              </div>
+
+              <div className="grid gap-3 lg:grid-cols-2">
+                <SeniorityPicker
+                  label="Allowed seniority"
+                  selected={draft.allowedSeniority}
+                  onToggle={(value) =>
+                    toggleSeniority("allowedSeniority", value)
+                  }
+                />
+                <SeniorityPicker
+                  label="Excluded seniority"
+                  selected={draft.excludedSeniority}
+                  onToggle={(value) =>
+                    toggleSeniority("excludedSeniority", value)
+                  }
+                />
+              </div>
+
+              <Field label="Hard rules">
+                <div className="grid gap-2">
+                  {draft.hardRules.length === 0 ? (
+                    <div className="rounded-lg border border-dashed border-border bg-black/10 px-3 py-4 text-center text-[11px] text-muted">
+                      No additional hard rules.
+                    </div>
+                  ) : (
+                    draft.hardRules.map((rule, index) => (
+                      <div
+                        key={rule.id}
+                        className="grid gap-2 rounded-lg border border-border bg-black/10 p-2.5 lg:grid-cols-[minmax(130px,.8fr)_minmax(150px,1fr)_minmax(160px,1.4fr)_auto_auto] lg:items-center"
+                      >
+                        <select
+                          aria-label={`Hard rule ${index + 1} field`}
+                          value={rule.field}
+                          onChange={(event) =>
+                            updateHardRule(rule.id, {
+                              field: event.target.value,
+                            })
+                          }
+                          className={inputClass}
+                        >
+                          {!screeningFieldOptions.some(
+                            ([value]) => value === rule.field,
+                          ) ? (
+                            <option value={rule.field}>{rule.field}</option>
+                          ) : null}
+                          {screeningFieldOptions.map(([value, label]) => (
+                            <option key={value} value={value}>
+                              {label}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          aria-label={`Hard rule ${index + 1} operator`}
+                          value={rule.operator}
+                          onChange={(event) =>
+                            updateHardRule(rule.id, {
+                              operator: event.target.value,
+                            })
+                          }
+                          className={inputClass}
+                        >
+                          {!screeningOperatorOptions.some(
+                            ([value]) => value === rule.operator,
+                          ) ? (
+                            <option value={rule.operator}>
+                              {rule.operator}
+                            </option>
+                          ) : null}
+                          {screeningOperatorOptions.map(([value, label]) => (
+                            <option key={value} value={value}>
+                              {label}
+                            </option>
+                          ))}
+                        </select>
+                        <input
+                          aria-label={`Hard rule ${index + 1} value`}
+                          value={rule.value}
+                          onChange={(event) =>
+                            updateHardRule(rule.id, {
+                              value: event.target.value,
+                            })
+                          }
+                          className={inputClass}
+                          placeholder="Rule value"
+                        />
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-label={`Hard rule ${index + 1} enabled`}
+                          aria-checked={rule.enabled}
+                          onClick={() =>
+                            updateHardRule(rule.id, {
+                              enabled: !rule.enabled,
+                            })
+                          }
+                          className="flex h-10 items-center justify-center rounded-lg border border-border px-3"
+                        >
+                          <Toggle enabled={rule.enabled} />
+                        </button>
+                        <IconAction
+                          label={`Remove hard rule ${index + 1}`}
+                          danger
+                          onClick={() =>
+                            patch({
+                              hardRules: draft.hardRules.filter(
+                                (item) => item.id !== rule.id,
+                              ),
+                            })
+                          }
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </IconAction>
+                      </div>
+                    ))
+                  )}
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="justify-self-start"
+                    onClick={() =>
+                      patch({
+                        hardRules: [
+                          ...draft.hardRules,
+                          newHardRuleDraft(),
+                        ],
+                      })
+                    }
+                  >
+                    <Plus className="h-4 w-4" />
+                    Add hard rule
+                  </Button>
+                </div>
+              </Field>
+            </>
+          ) : (
+            <p className="text-[10px] leading-4 text-muted">
+              Screening is off. Parser results are saved using the existing
+              search behavior.
+            </p>
+          )}
+        </FormSection>
+
         <FormSection title="Days and time">
           <Field label="Frequency">
             <div className="grid grid-cols-3 gap-2">
@@ -971,15 +1264,62 @@ function AutoSearchForm({
 function FormSection({
   title,
   children,
+  className,
 }: {
   title: string;
   children: ReactNode;
+  className?: string;
 }) {
   return (
-    <section className="grid content-start gap-3 rounded-xl border border-border bg-white/[0.018] p-4">
+    <section
+      className={cn(
+        "grid content-start gap-3 rounded-xl border border-border bg-white/[0.018] p-4",
+        className,
+      )}
+    >
       <h3 className="text-sm font-bold text-white">{title}</h3>
       {children}
     </section>
+  );
+}
+
+function SeniorityPicker({
+  label,
+  selected,
+  onToggle,
+}: {
+  label: string;
+  selected: ScreeningSeniority[];
+  onToggle: (value: ScreeningSeniority) => void;
+}) {
+  return (
+    <Field label={label}>
+      <div
+        role="group"
+        aria-label={label}
+        className="flex flex-wrap gap-1.5 rounded-lg border border-border bg-black/10 p-2"
+      >
+        {seniorityOptions.map((option) => {
+          const active = selected.includes(option.id);
+          return (
+            <button
+              key={option.id}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onToggle(option.id)}
+              className={cn(
+                "rounded-md border px-2 py-1.5 text-[10px] font-bold transition",
+                active
+                  ? "border-violet-400/70 bg-violet-500/15 text-white"
+                  : "border-border bg-white/[0.025] text-muted hover:text-white",
+              )}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    </Field>
   );
 }
 
@@ -1085,15 +1425,39 @@ function applyConfigToDraft(
   draft: ScheduleDraft,
   config: JobSearchConfig,
 ) {
+  const { search, screening } = configSections(config.filters);
   draft.configId = config.id;
   draft.configName = config.name;
-  draft.keywords = stringFilter(config.filters, "keywords", "query");
-  draft.location = stringFilter(config.filters, "location");
+  draft.keywords = stringFilter(search, "keywords", "query");
+  draft.location = stringFilter(search, "location");
   draft.resultsLimit = String(
-    numberFilter(config.filters, "resultsLimit", "results_limit") ?? 50,
+    numberFilter(search, "resultsLimit", "results_limit") ?? 50,
   );
   draft.deduplicate =
-    booleanFilter(config.filters, "deduplicate") ?? true;
+    booleanFilter(search, "deduplicate") ?? true;
+  draft.screeningEnabled =
+    booleanFilter(screening, "enabled") ?? false;
+  draft.targetRoles = stringListFilter(
+    screening,
+    "targetRoles",
+    "target_roles",
+  ).join("\n");
+  draft.excludedRoles = stringListFilter(
+    screening,
+    "excludedRoles",
+    "excluded_roles",
+  ).join("\n");
+  draft.allowedSeniority = seniorityListFilter(
+    screening,
+    "allowedSeniority",
+    "allowed_seniority",
+  );
+  draft.excludedSeniority = seniorityListFilter(
+    screening,
+    "excludedSeniority",
+    "excluded_seniority",
+  );
+  draft.hardRules = hardRulesFromConfig(screening);
 }
 
 async function saveConfigForDraft(
@@ -1107,12 +1471,7 @@ async function saveConfigForDraft(
       headers: jsonHeaders,
       body: JSON.stringify({
         name: draft.configName.trim(),
-        filters: {
-          keywords: draft.keywords.trim(),
-          location: draft.location.trim(),
-          resultsLimit: limit,
-          deduplicate: draft.deduplicate,
-        },
+        filters: createVersionedFilters(draft, limit),
       }),
     });
     return config.id;
@@ -1120,11 +1479,10 @@ async function saveConfigForDraft(
 
   const config = configs.get(draft.configId);
   if (!config) throw new Error("Select an available search config");
-  const nextFilters = {
-    ...config.filters,
-    resultsLimit: limit,
-    deduplicate: draft.deduplicate,
-  };
+  if (!configHasEditableChanges(config.filters, draft, limit)) {
+    return config.id;
+  }
+  const nextFilters = updateVersionedFilters(config.filters, draft, limit);
   if (JSON.stringify(nextFilters) !== JSON.stringify(config.filters)) {
     await requestJson<JobSearchConfig>(
       `/job-search/configs/${encodeURIComponent(config.id)}`,
@@ -1136,6 +1494,253 @@ async function saveConfigForDraft(
     );
   }
   return config.id;
+}
+
+function configHasEditableChanges(
+  filters: Record<string, unknown>,
+  draft: ScheduleDraft,
+  limit: number,
+): boolean {
+  const { search, screening } = configSections(filters);
+  const current = {
+    resultsLimit:
+      numberFilter(search, "resultsLimit", "results_limit") ?? 50,
+    deduplicate: booleanFilter(search, "deduplicate") ?? true,
+    screening: editableScreeningState(screening),
+  };
+  const next = {
+    resultsLimit: limit,
+    deduplicate: draft.deduplicate,
+    screening: {
+      enabled: draft.screeningEnabled,
+      targetRoles: splitList(draft.targetRoles),
+      excludedRoles: splitList(draft.excludedRoles),
+      allowedSeniority: draft.allowedSeniority,
+      excludedSeniority: draft.excludedSeniority,
+      hardRules: draft.hardRules.map((rule) => ({
+        field: rule.field,
+        operator: rule.operator,
+        value: serializeHardRule(rule).value,
+        enabled: rule.enabled,
+      })),
+    },
+  };
+  return JSON.stringify(current) !== JSON.stringify(next);
+}
+
+function editableScreeningState(
+  screening: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    enabled: booleanFilter(screening, "enabled") ?? false,
+    targetRoles: stringListFilter(
+      screening,
+      "targetRoles",
+      "target_roles",
+    ),
+    excludedRoles: stringListFilter(
+      screening,
+      "excludedRoles",
+      "excluded_roles",
+    ),
+    allowedSeniority: seniorityListFilter(
+      screening,
+      "allowedSeniority",
+      "allowed_seniority",
+    ),
+    excludedSeniority: seniorityListFilter(
+      screening,
+      "excludedSeniority",
+      "excluded_seniority",
+    ),
+    hardRules: hardRulesFromConfig(screening).map((rule) => ({
+      field: rule.field,
+      operator: rule.operator,
+      value: serializeHardRule(rule).value,
+      enabled: rule.enabled,
+    })),
+  };
+}
+
+function createVersionedFilters(
+  draft: ScheduleDraft,
+  limit: number,
+): Record<string, unknown> {
+  return {
+    schemaVersion: 2,
+    search: {
+      keywords: draft.keywords.trim(),
+      location: draft.location.trim(),
+      resultsLimit: limit,
+      deduplicate: draft.deduplicate,
+    },
+    screening: screeningPayload(draft, {}),
+  };
+}
+
+function updateVersionedFilters(
+  filters: Record<string, unknown>,
+  draft: ScheduleDraft,
+  limit: number,
+): Record<string, unknown> {
+  const versioned = isRecord(filters.search) || isRecord(filters.screening);
+  const { search, screening } = configSections(filters);
+  const root = versioned ? { ...filters } : {};
+  return {
+    ...root,
+    schemaVersion: 2,
+    search: {
+      ...search,
+      resultsLimit: limit,
+      deduplicate: draft.deduplicate,
+    },
+    screening: screeningPayload(draft, screening),
+  };
+}
+
+function screeningPayload(
+  draft: ScheduleDraft,
+  original: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    ...original,
+    enabled: draft.screeningEnabled,
+    targetRoles: splitList(draft.targetRoles),
+    excludedRoles: splitList(draft.excludedRoles),
+    allowedSeniority: draft.allowedSeniority,
+    excludedSeniority: draft.excludedSeniority,
+    hardRules: draft.hardRules.map(serializeHardRule),
+  };
+}
+
+function serializeHardRule(
+  rule: ScreeningHardRuleDraft,
+): Record<string, unknown> {
+  const originalValue = rule.original.value;
+  let value: unknown = rule.value.trim();
+  if (displayRuleValue(originalValue) === rule.value) {
+    value = originalValue;
+  } else if (rule.operator === "in" || rule.operator === "notIn") {
+    value = splitList(rule.value);
+  } else if (
+    screeningFieldOptions
+      .map(([field]) => field)
+      .includes(rule.field as (typeof screeningFieldOptions)[number][0]) &&
+    (rule.field === "salaryMin" || rule.field === "salaryMax") &&
+    rule.value.trim() !== "" &&
+    Number.isFinite(Number(rule.value))
+  ) {
+    value = Number(rule.value);
+  }
+  return {
+    ...rule.original,
+    field: rule.field,
+    operator: rule.operator,
+    value,
+    enabled: rule.enabled,
+  };
+}
+
+function configSections(filters: Record<string, unknown>): {
+  search: Record<string, unknown>;
+  screening: Record<string, unknown>;
+} {
+  return {
+    search: isRecord(filters.search) ? filters.search : filters,
+    screening: isRecord(filters.screening) ? filters.screening : {},
+  };
+}
+
+function hardRulesFromConfig(
+  screening: Record<string, unknown>,
+): ScreeningHardRuleDraft[] {
+  const value = screening.hardRules ?? screening.hard_rules;
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isRecord)
+    .map((rule) => newHardRuleDraft(rule));
+}
+
+let hardRuleDraftSequence = 0;
+
+function newHardRuleDraft(
+  original: Record<string, unknown> = {},
+): ScreeningHardRuleDraft {
+  hardRuleDraftSequence += 1;
+  return {
+    id: `screening-rule-${hardRuleDraftSequence}`,
+    field:
+      typeof original.field === "string" ? original.field : "title",
+    operator:
+      typeof original.operator === "string"
+        ? original.operator
+        : "contains",
+    value: displayRuleValue(original.value),
+    enabled:
+      typeof original.enabled === "boolean" ? original.enabled : true,
+    original: { ...original },
+  };
+}
+
+function displayRuleValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item): item is string => typeof item === "string")
+      .join(", ");
+  }
+  if (
+    typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
+  ) {
+    return String(value);
+  }
+  return "";
+}
+
+function screeningSummary(filters: Record<string, unknown>): string {
+  const { screening } = configSections(filters);
+  if (!(booleanFilter(screening, "enabled") ?? false)) {
+    return "Screening off";
+  }
+  const targetCount = stringListFilter(
+    screening,
+    "targetRoles",
+    "target_roles",
+  ).length;
+  const excludedCount = stringListFilter(
+    screening,
+    "excludedRoles",
+    "excluded_roles",
+  ).length;
+  const seniorityCount =
+    seniorityListFilter(
+      screening,
+      "allowedSeniority",
+      "allowed_seniority",
+    ).length +
+    seniorityListFilter(
+      screening,
+      "excludedSeniority",
+      "excluded_seniority",
+    ).length;
+  const rawHardRules = screening.hardRules ?? screening.hard_rules;
+  const hardRuleCount = Array.isArray(rawHardRules)
+    ? rawHardRules.filter(
+        (rule) =>
+          isRecord(rule) &&
+          (typeof rule.enabled !== "boolean" || rule.enabled),
+      ).length
+    : 0;
+  const parts = [
+    targetCount ? `${targetCount} target role${targetCount === 1 ? "" : "s"}` : "",
+    excludedCount
+      ? `${excludedCount} excluded role${excludedCount === 1 ? "" : "s"}`
+      : "",
+    seniorityCount ? `${seniorityCount} seniority filter${seniorityCount === 1 ? "" : "s"}` : "",
+    hardRuleCount ? `${hardRuleCount} hard rule${hardRuleCount === 1 ? "" : "s"}` : "",
+  ].filter(Boolean);
+  return `Screening on${parts.length ? ` · ${parts.join(" · ")}` : ""}`;
 }
 
 function validateDraft(draft: ScheduleDraft): string {
@@ -1156,6 +1761,23 @@ function validateDraft(draft: ScheduleDraft): string {
   const limit = Number.parseInt(draft.resultsLimit, 10);
   if (!Number.isFinite(limit) || limit < 1 || limit > 1000) {
     return "Results limit must be between 1 and 1000";
+  }
+  if (splitList(draft.targetRoles).length > 50) {
+    return "Target professions must contain at most 50 entries";
+  }
+  if (splitList(draft.excludedRoles).length > 50) {
+    return "Excluded professions must contain at most 50 entries";
+  }
+  if (
+    draft.screeningEnabled &&
+    draft.hardRules.some(
+      (rule) =>
+        !rule.field.trim() ||
+        !rule.operator.trim() ||
+        !rule.value.trim(),
+    )
+  ) {
+    return "Every hard rule needs a field, operator, and value";
   }
   return "";
 }
@@ -1233,9 +1855,54 @@ function booleanFilter(
   return typeof filters[key] === "boolean" ? filters[key] : null;
 }
 
+function stringListFilter(
+  filters: Record<string, unknown>,
+  ...keys: string[]
+): string[] {
+  for (const key of keys) {
+    const value = filters[key];
+    if (Array.isArray(value)) {
+      return value.filter(
+        (item): item is string => typeof item === "string",
+      );
+    }
+  }
+  return [];
+}
+
+function seniorityListFilter(
+  filters: Record<string, unknown>,
+  ...keys: string[]
+): ScreeningSeniority[] {
+  const allowed = new Set<ScreeningSeniority>(
+    seniorityOptions.map((option) => option.id),
+  );
+  return stringListFilter(filters, ...keys).filter(
+    (value): value is ScreeningSeniority =>
+      allowed.has(value as ScreeningSeniority),
+  );
+}
+
+function splitList(value: string): string[] {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\n,]/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 const jsonHeaders = { "Content-Type": "application/json" };
 const inputClass =
   "h-10 w-full rounded-lg border border-border bg-[#0b1118] px-3 text-xs font-semibold text-white outline-none placeholder:text-muted/60 focus:border-violet-400/70";
+const textareaClass =
+  "min-h-20 w-full resize-y rounded-lg border border-border bg-[#0b1118] px-3 py-2 text-xs font-semibold text-white outline-none placeholder:text-muted/60 focus:border-violet-400/70";
 
 function choiceClass(selected: boolean): string {
   return cn(
