@@ -168,6 +168,7 @@ type ScheduleDraft = {
   timezone: string;
   resultsLimit: string;
   deduplicate: boolean;
+  screeningTouched: boolean;
   screeningEnabled: boolean;
   targetRoles: string;
   excludedRoles: string;
@@ -195,6 +196,7 @@ function defaultDraft(): ScheduleDraft {
     timezone: localTimezone(),
     resultsLimit: "50",
     deduplicate: true,
+    screeningTouched: false,
     screeningEnabled: false,
     targetRoles: "",
     excludedRoles: "",
@@ -963,6 +965,7 @@ function AutoSearchForm({
         : "allowedSeniority";
     const selected = draft[field].includes(value);
     patch({
+      screeningTouched: true,
       [field]: selected
         ? draft[field].filter((item) => item !== value)
         : [...draft[field], value],
@@ -977,6 +980,7 @@ function AutoSearchForm({
     update: Partial<ScreeningHardRuleDraft>,
   ) {
     patch({
+      screeningTouched: true,
       hardRules: draft.hardRules.map((rule) =>
         rule.id === id ? { ...rule, ...update } : rule,
       ),
@@ -1177,7 +1181,10 @@ function AutoSearchForm({
               aria-label="Pre-screening"
               aria-checked={draft.screeningEnabled}
               onClick={() =>
-                patch({ screeningEnabled: !draft.screeningEnabled })
+                patch({
+                  screeningTouched: true,
+                  screeningEnabled: !draft.screeningEnabled,
+                })
               }
               className="flex min-h-12 w-full items-center justify-between rounded-lg border border-border bg-white/[0.025] px-3 text-left"
             >
@@ -1201,7 +1208,10 @@ function AutoSearchForm({
                     aria-label="Target professions"
                     value={draft.targetRoles}
                     onChange={(event) =>
-                      patch({ targetRoles: event.target.value })
+                      patch({
+                        screeningTouched: true,
+                        targetRoles: event.target.value,
+                      })
                     }
                     className={textareaClass}
                     placeholder={"Software Engineer\nBackend Engineer"}
@@ -1215,7 +1225,10 @@ function AutoSearchForm({
                     aria-label="Excluded professions"
                     value={draft.excludedRoles}
                     onChange={(event) =>
-                      patch({ excludedRoles: event.target.value })
+                      patch({
+                        screeningTouched: true,
+                        excludedRoles: event.target.value,
+                      })
                     }
                     className={textareaClass}
                     placeholder={"Sales Manager\nRecruiter"}
@@ -1329,6 +1342,7 @@ function AutoSearchForm({
                           danger
                           onClick={() =>
                             patch({
+                              screeningTouched: true,
                               hardRules: draft.hardRules.filter(
                                 (item) => item.id !== rule.id,
                               ),
@@ -1346,6 +1360,7 @@ function AutoSearchForm({
                     className="justify-self-start"
                     onClick={() =>
                       patch({
+                        screeningTouched: true,
                         hardRules: [
                           ...draft.hardRules,
                           newHardRuleDraft(),
@@ -1685,6 +1700,7 @@ function applyConfigToDraft(
   );
   draft.deduplicate =
     booleanFilter(search, "deduplicate") ?? true;
+  draft.screeningTouched = false;
   draft.screeningEnabled =
     booleanFilter(screening, "enabled") ?? false;
   draft.targetRoles = stringListFilter(
@@ -1732,8 +1748,15 @@ async function saveConfigForDraft(
   if (!configHasEditableChanges(config.filters, draft, limit)) {
     return config.id;
   }
-  const nextFilters = updateVersionedFilters(config.filters, draft, limit);
-  if (JSON.stringify(nextFilters) !== JSON.stringify(config.filters)) {
+  const currentConfig = await requestJson<JobSearchConfig>(
+    `/job-search/configs/${encodeURIComponent(config.id)}`,
+  );
+  const nextFilters = updateVersionedFilters(
+    currentConfig.filters,
+    draft,
+    limit,
+  );
+  if (JSON.stringify(nextFilters) !== JSON.stringify(currentConfig.filters)) {
     await requestJson<JobSearchConfig>(
       `/job-search/configs/${encodeURIComponent(config.id)}`,
       {
@@ -1752,30 +1775,24 @@ function configHasEditableChanges(
   limit: number,
 ): boolean {
   const { search, screening } = configSections(filters);
-  const current = {
-    resultsLimit:
-      numberFilter(search, "resultsLimit", "results_limit") ?? 50,
-    deduplicate: booleanFilter(search, "deduplicate") ?? true,
-    screening: editableScreeningState(screening),
-  };
-  const next = {
-    resultsLimit: limit,
-    deduplicate: draft.deduplicate,
-    screening: {
-      enabled: draft.screeningEnabled,
-      targetRoles: splitList(draft.targetRoles),
-      excludedRoles: splitList(draft.excludedRoles),
-      allowedSeniority: draft.allowedSeniority,
-      excludedSeniority: draft.excludedSeniority,
-      hardRules: draft.hardRules.map((rule) => ({
-        field: rule.field,
-        operator: rule.operator,
-        value: serializeHardRule(rule).value,
-        enabled: rule.enabled,
-      })),
-    },
-  };
-  return JSON.stringify(current) !== JSON.stringify(next);
+  const searchChanged =
+    (numberFilter(search, "resultsLimit", "results_limit") ?? 50) !== limit ||
+    (booleanFilter(search, "deduplicate") ?? true) !== draft.deduplicate;
+  if (searchChanged) return true;
+  if (!draft.screeningTouched) return false;
+  return JSON.stringify(editableScreeningState(screening)) !== JSON.stringify({
+    enabled: draft.screeningEnabled,
+    targetRoles: splitList(draft.targetRoles),
+    excludedRoles: splitList(draft.excludedRoles),
+    allowedSeniority: draft.allowedSeniority,
+    excludedSeniority: draft.excludedSeniority,
+    hardRules: draft.hardRules.map((rule) => ({
+      field: rule.field,
+      operator: rule.operator,
+      value: serializeHardRule(rule).value,
+      enabled: rule.enabled,
+    })),
+  });
 }
 
 function editableScreeningState(
@@ -1844,7 +1861,9 @@ function updateVersionedFilters(
       resultsLimit: limit,
       deduplicate: draft.deduplicate,
     },
-    screening: screeningPayload(draft, screening),
+    screening: draft.screeningTouched
+      ? screeningPayload(draft, screening)
+      : screening,
   };
 }
 

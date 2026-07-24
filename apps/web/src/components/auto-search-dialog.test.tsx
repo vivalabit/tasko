@@ -437,6 +437,12 @@ describe("AutoSearchDialog", () => {
         }
         if (
           path === `/job-search/configs/${versionedConfig.id}` &&
+          method === "GET"
+        ) {
+          return response(versionedConfig);
+        }
+        if (
+          path === `/job-search/configs/${versionedConfig.id}` &&
           method === "PATCH"
         ) {
           const body = JSON.parse(String(init?.body));
@@ -498,6 +504,126 @@ describe("AutoSearchDialog", () => {
     });
   });
 
+  it("preserves current screening when only search settings are edited from a partial config", async () => {
+    const screening = {
+      enabled: true,
+      targetRoles: ["Product Manager"],
+      excludedRoles: ["Cashier", "Salesperson"],
+      allowedSeniority: ["entry"],
+      excludedSeniority: ["senior"],
+      futureScreening: { policy: "strict" },
+      hardRules: [
+        {
+          id: "rule-location",
+          field: "location",
+          operator: "equals",
+          value: "Zurich",
+          enabled: true,
+          futureRule: { source: "admin" },
+        },
+      ],
+    };
+    const partialConfig: JobSearchConfig = {
+      ...config,
+      id: "partial-config",
+      filters: {
+        schemaVersion: 2,
+        search: {
+          keywords: "Product Manager",
+          location: "Zurich",
+          resultsLimit: 30,
+          deduplicate: true,
+        },
+      },
+    };
+    const currentConfig: JobSearchConfig = {
+      ...partialConfig,
+      filters: {
+        schemaVersion: 2,
+        futureRoot: "keep",
+        search: {
+          ...(partialConfig.filters.search as Record<string, unknown>),
+          futureSearch: { locale: "de-CH" },
+        },
+        screening,
+      },
+    };
+    const partialSchedule = {
+      ...schedule,
+      configId: partialConfig.id,
+    };
+    let savedFilters: Record<string, unknown> | null = null;
+    const requests: Array<{ path: string; method: string }> = [];
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input)).pathname;
+        const method = init?.method ?? "GET";
+        requests.push({ path, method });
+        if (path === "/job-search/configs" && method === "GET") {
+          return response([partialConfig]);
+        }
+        if (path === "/job-search/schedules" && method === "GET") {
+          return response([partialSchedule]);
+        }
+        if (
+          path === `/job-search/configs/${partialConfig.id}` &&
+          method === "GET"
+        ) {
+          return response(currentConfig);
+        }
+        if (
+          path === `/job-search/configs/${partialConfig.id}` &&
+          method === "PATCH"
+        ) {
+          const body = JSON.parse(String(init?.body));
+          savedFilters = body.filters;
+          return response({ ...currentConfig, ...body });
+        }
+        if (
+          path === `/job-search/schedules/${partialSchedule.id}` &&
+          method === "PATCH"
+        ) {
+          return response({
+            ...partialSchedule,
+            ...JSON.parse(String(init?.body)),
+          });
+        }
+        throw new Error(`Unexpected request: ${method} ${path}`);
+      }),
+    );
+
+    render(<AutoSearchDialog open onClose={vi.fn()} />);
+    await screen.findByText("Screening off");
+    fireEvent.click(
+      screen.getByRole("button", { name: `Edit ${schedule.name}` }),
+    );
+    fireEvent.change(screen.getByLabelText("Results limit"), {
+      target: { value: "45" },
+    });
+    fireEvent.click(screen.getByRole("switch", { name: "Deduplication" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(savedFilters).not.toBeNull());
+    expect(requests).toContainEqual({
+      path: `/job-search/configs/${partialConfig.id}`,
+      method: "GET",
+    });
+    expect(savedFilters).toMatchObject({
+      schemaVersion: 2,
+      futureRoot: "keep",
+      search: {
+        resultsLimit: 45,
+        deduplicate: false,
+        futureSearch: { locale: "de-CH" },
+      },
+    });
+    expect(
+      (savedFilters as Record<string, unknown> | null)?.screening,
+    ).toEqual(screening);
+  });
+
   it("upgrades a legacy config only when screening is edited", async () => {
     const legacyConfig: JobSearchConfig = {
       ...config,
@@ -520,6 +646,12 @@ describe("AutoSearchDialog", () => {
         }
         if (path === "/job-search/schedules" && method === "GET") {
           return response([legacySchedule]);
+        }
+        if (
+          path === `/job-search/configs/${legacyConfig.id}` &&
+          method === "GET"
+        ) {
+          return response(legacyConfig);
         }
         if (
           path === `/job-search/configs/${legacyConfig.id}` &&
