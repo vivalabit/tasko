@@ -26,7 +26,9 @@ from app.services.job_screening_store import (
     latest_screening_decision,
 )
 from app.services.job_search_execution import (
+    JobImportProvenance,
     NewJobCandidate,
+    apply_job_import_provenance,
     persist_new_jobs,
     screen_new_job_candidates,
 )
@@ -113,6 +115,17 @@ def recheck_screening_decision(
         candidate=candidate,
         decision=decision.decision,
         applied_at=now,
+        provenance=JobImportProvenance(
+            search_config_id=config.id,
+            search_config_version=as_version(config.updated_at),
+            screening_config_hash=config_hash,
+            screening_config_snapshot=(
+                normalized_config.screening.model_dump(
+                    by_alias=True,
+                    exclude_none=True,
+                )
+            ),
+        ),
     )
     db.flush()
 
@@ -145,16 +158,24 @@ def allow_screening_decision_manually(
         )
     candidate = audit_candidate(record)
     now = datetime.now(UTC)
+    provenance = audit_record_provenance(db, record)
     stored = find_stored_job(db, candidate.job_id)
     if stored is not None and stored.status == DISMISSED_JOB_STATUS:
         raise JobScreeningAuditActionUnavailable(
             "A dismissed vacancy cannot be restored from the screening audit"
         )
     if stored is None:
-        persist_new_jobs(db, jobs=[candidate], added_at=now)
+        persist_new_jobs(
+            db,
+            jobs=[candidate],
+            added_at=now,
+            provenance=provenance,
+        )
     else:
         stored.status = ACTIVE_JOB_STATUS
         stored.dismissed_at = None
+        if provenance is not None:
+            apply_job_import_provenance(stored, provenance)
     record.manually_allowed_at = now
     record.invalidated_at = record.invalidated_at or now
     db.flush()
@@ -258,14 +279,22 @@ def apply_screening_decision(
     candidate: NewJobCandidate,
     decision: str,
     applied_at: datetime,
+    provenance: JobImportProvenance,
 ) -> None:
     stored = find_stored_job(db, candidate.job_id)
     if decision == "keep":
         if stored is None:
-            persist_new_jobs(db, jobs=[candidate], added_at=applied_at)
+            persist_new_jobs(
+                db,
+                jobs=[candidate],
+                added_at=applied_at,
+                provenance=provenance,
+            )
         elif stored.status == SCREENED_OUT_JOB_STATUS:
             stored.status = ACTIVE_JOB_STATUS
             stored.dismissed_at = None
+        if stored is not None:
+            apply_job_import_provenance(stored, provenance)
         return
     if stored is not None and stored.status == ACTIVE_JOB_STATUS:
         stored.status = SCREENED_OUT_JOB_STATUS
@@ -288,3 +317,34 @@ def find_stored_job(
     return db.scalar(
         select(StoredJobRecord).where(StoredJobRecord.id == job_id)
     )
+
+
+def audit_record_provenance(
+    db: Session,
+    record: JobScreeningDecisionRecord,
+) -> JobImportProvenance | None:
+    if not record.search_config_id:
+        return None
+    config = db.get(JobSearchConfigRecord, record.search_config_id)
+    if config is None:
+        return None
+    try:
+        screening = normalize_job_search_config(config.filters).screening
+    except ValidationError:
+        return None
+    return JobImportProvenance(
+        search_config_id=config.id,
+        search_config_version=as_version(config.updated_at),
+        screening_config_hash=build_screening_config_hash(screening),
+        screening_config_snapshot=screening.model_dump(
+            by_alias=True,
+            exclude_none=True,
+        ),
+    )
+
+
+def as_version(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    normalized = value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+    return normalized.astimezone(UTC).isoformat()

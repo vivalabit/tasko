@@ -120,11 +120,21 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "20260724_0018"
+            assert revision == "20260724_0019"
         assert inspect(engine).get_pk_constraint("stored_jobs")["constrained_columns"] == [
             "owner_id",
             "id",
         ]
+        stored_job_columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("stored_jobs")
+        }
+        assert stored_job_columns >= {
+            "search_config_id",
+            "search_config_version",
+            "screening_config_hash",
+            "screening_config_snapshot",
+        }
         automatic_run_indexes = {
             index["name"]: index
             for index in inspect(engine).get_indexes("job_search_runs")
@@ -516,7 +526,7 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260724_0018"
+        assert revision == "20260724_0019"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))
@@ -545,7 +555,10 @@ def test_job_soft_delete_migration_preserves_existing_jobs(tmp_path) -> None:
         with engine.connect() as connection:
             row = connection.execute(
                 text(
-                    "SELECT owner_id, data, status, dismissed_at FROM stored_jobs "
+                    "SELECT owner_id, data, status, dismissed_at, "
+                    "search_config_id, search_config_version, "
+                    "screening_config_hash, screening_config_snapshot "
+                    "FROM stored_jobs "
                     "WHERE id = 'legacy-job'"
                 )
             ).one()
@@ -553,6 +566,10 @@ def test_job_soft_delete_migration_preserves_existing_jobs(tmp_path) -> None:
             assert row.status == "active"
             assert row.dismissed_at is None
             assert row.data == original_data
+            assert row.search_config_id is None
+            assert row.search_config_version is None
+            assert row.screening_config_hash is None
+            assert row.screening_config_snapshot is None
     finally:
         engine.dispose()
 

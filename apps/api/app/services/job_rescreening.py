@@ -23,9 +23,12 @@ from app.services.job_screening_store import (
     sha256_json,
 )
 from app.services.job_search_execution import (
+    JobImportProvenance,
     NewJobCandidate,
+    apply_job_import_provenance,
     compact_screening_job,
     screen_new_job_candidates,
+    serialize_datetime,
 )
 
 ACTIVE_JOB_STATUS = "active"
@@ -86,6 +89,15 @@ def rescreen_stored_jobs(
         )
 
     config_hash = build_screening_config_hash(normalized_config.screening)
+    provenance = JobImportProvenance(
+        search_config_id=config.id,
+        search_config_version=serialize_datetime(config.updated_at),
+        screening_config_hash=config_hash,
+        screening_config_snapshot=normalized_config.screening.model_dump(
+            by_alias=True,
+            exclude_none=True,
+        ),
+    )
     decision_by_id = {
         decision.id: decision
         for decision in screening_result.decisions
@@ -126,6 +138,7 @@ def rescreen_stored_jobs(
                 else SCREENED_OUT_JOB_STATUS
             )
             item.record.dismissed_at = None
+            apply_job_import_provenance(item.record, provenance)
 
     return JobSearchRescreenPayload(
         configId=config.id,

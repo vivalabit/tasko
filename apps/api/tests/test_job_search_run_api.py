@@ -336,7 +336,7 @@ def test_manual_screening_persists_and_matches_only_keep_and_reuses_cache(
         capture_new_jobs,
     )
     grant_ai_consent(api_context, owner_id=owner_id)
-    _, schedule_id = create_search(
+    config_id, schedule_id = create_search(
         api_context.client,
         headers,
         filters=screening_filters(),
@@ -364,10 +364,46 @@ def test_manual_screening_persists_and_matches_only_keep_and_reuses_cache(
     assert first.json()["screeningErrors"] == 0
     assert first.json()["warning"] is None
     assert [job["title"] for job in matched_batches[0]] == [keep.title]
-    assert [record.data["title"] for record in stored_jobs(
+    records = stored_jobs(
         api_context.sessions,
         owner_id=owner_id,
-    )] == [keep.title]
+    )
+    assert [record.data["title"] for record in records] == [keep.title]
+    stored_keep = records[0]
+    assert stored_keep.search_config_id == config_id
+    assert stored_keep.search_config_version
+    assert len(stored_keep.screening_config_hash or "") == 64
+    assert stored_keep.screening_config_snapshot == {
+        "enabled": True,
+        "targetRoles": ["Software Engineer"],
+        "excludedRoles": [],
+        "allowedSeniority": [],
+        "excludedSeniority": [],
+        "hardRules": [],
+    }
+    assert stored_keep.data["searchConfigId"] == config_id
+    assert (
+        stored_keep.data["searchConfigVersion"]
+        == stored_keep.search_config_version
+    )
+    assert (
+        stored_keep.data["screeningConfigHash"]
+        == stored_keep.screening_config_hash
+    )
+    assert (
+        stored_keep.data["screeningConfigSnapshot"]
+        == stored_keep.screening_config_snapshot
+    )
+    jobs_response = api_context.client.get("/jobs", headers=headers)
+    assert jobs_response.status_code == 200
+    visible_keep = jobs_response.json()[0]["data"]
+    assert visible_keep["searchConfigId"] == config_id
+    assert visible_keep["searchConfigVersion"] == stored_keep.search_config_version
+    assert visible_keep["screeningConfigHash"] == stored_keep.screening_config_hash
+    assert (
+        visible_keep["screeningConfigSnapshot"]
+        == stored_keep.screening_config_snapshot
+    )
     assert len(facade.calls) == 1
     assert {job["title"] for job in facade.calls[0]} == {
         keep.title,
@@ -1023,6 +1059,27 @@ def test_existing_imported_jobs_require_dry_run_and_can_be_rescreened(
     assert statuses["linkedin-old-software"] == "active"
     assert statuses["manual-job-1"] == "active"
     assert statuses["linkedin-dismissed"] == "dismissed"
+    records_by_id = {
+        record.id: record
+        for record in stored_jobs(
+            api_context.sessions,
+            owner_id=owner_id,
+        )
+    }
+    for job_id in (
+        "indeed-sales",
+        "jobs_ch-unclear",
+        "linkedin-old-software",
+        "linkedin-software",
+    ):
+        record = records_by_id[job_id]
+        assert record.search_config_id == config_id
+        assert record.search_config_version
+        assert len(record.screening_config_hash or "") == 64
+        assert record.screening_config_snapshot
+        assert record.data["searchConfigId"] == config_id
+    assert records_by_id["manual-job-1"].search_config_id is None
+    assert "searchConfigId" not in records_by_id["manual-job-1"].data
     visible_ids = {
         item["id"]
         for item in api_context.client.get("/jobs", headers=headers).json()

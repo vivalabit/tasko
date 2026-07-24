@@ -20,6 +20,24 @@ class StoredJobRecord(OwnerScoped, Base):
     )
     id: Mapped[str] = mapped_column(String(160), primary_key=True)
     data: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    search_config_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+        index=True,
+    )
+    search_config_version: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    screening_config_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+        index=True,
+    )
+    screening_config_snapshot: Mapped[dict[str, Any] | None] = mapped_column(
+        JSON,
+        nullable=True,
+    )
     status: Mapped[str] = mapped_column(
         String(16),
         nullable=False,

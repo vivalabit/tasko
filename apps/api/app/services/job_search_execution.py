@@ -80,6 +80,14 @@ class NewJobCandidate:
 
 
 @dataclass(frozen=True)
+class JobImportProvenance:
+    search_config_id: str | None
+    search_config_version: str | None
+    screening_config_hash: str
+    screening_config_snapshot: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class ScreeningPipelineResult:
     keep: list[NewJobCandidate]
     decisions: list[JobScreeningDecision] = field(default_factory=list)
@@ -226,6 +234,23 @@ def execute_job_search(
         db,
         jobs=screening_result.keep,
         added_at=persisted_at,
+        provenance=JobImportProvenance(
+            search_config_id=(
+                config.id
+                if config is not None
+                else str(run.config_snapshot.get("id") or "") or None
+            ),
+            search_config_version=(
+                str(run.config_snapshot.get("updatedAt") or "") or None
+            ),
+            screening_config_hash=build_screening_config_hash(
+                normalized_config.screening
+            ),
+            screening_config_snapshot=normalized_config.screening.model_dump(
+                by_alias=True,
+                exclude_none=True,
+            ),
+        ),
     )
     run.jobs_found = len(search_result.jobs)
     run.jobs_already_known = jobs_already_known
@@ -609,6 +634,7 @@ def persist_new_jobs(
     *,
     jobs: list[NewJobCandidate] | list[ParsedJob],
     added_at: datetime,
+    provenance: JobImportProvenance | None = None,
 ) -> list[dict[str, Any]]:
     if jobs and isinstance(jobs[0], ParsedJob):
         candidates, _ = prepare_new_job_candidates(
@@ -652,7 +678,10 @@ def persist_new_jobs(
             job_id=job_id,
             added_at=added_at,
         )
-        db.add(StoredJobRecord(id=job_id, data=data, status="active"))
+        record = StoredJobRecord(id=job_id, data=data, status="active")
+        if provenance is not None:
+            apply_job_import_provenance(record, provenance)
+        db.add(record)
         existing_ids.add(job_id)
         if url_key:
             existing_urls.add(url_key)
@@ -660,6 +689,24 @@ def persist_new_jobs(
             existing_identities.add(identity_key)
         added.append(data)
     return added
+
+
+def apply_job_import_provenance(
+    record: StoredJobRecord,
+    provenance: JobImportProvenance,
+) -> None:
+    snapshot = deepcopy(provenance.screening_config_snapshot)
+    record.search_config_id = provenance.search_config_id
+    record.search_config_version = provenance.search_config_version
+    record.screening_config_hash = provenance.screening_config_hash
+    record.screening_config_snapshot = snapshot
+    record.data = {
+        **record.data,
+        "searchConfigId": provenance.search_config_id,
+        "searchConfigVersion": provenance.search_config_version,
+        "screeningConfigHash": provenance.screening_config_hash,
+        "screeningConfigSnapshot": deepcopy(snapshot),
+    }
 
 
 def combine_warnings(*warnings: str | None) -> str | None:
