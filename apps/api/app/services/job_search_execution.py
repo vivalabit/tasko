@@ -16,6 +16,7 @@ from app.models.job_search import (
     JobSearchConfigRecord,
     JobSearchRunRecord,
     JobSearchScheduleRecord,
+    ScreeningConfig,
     normalize_job_search_config,
 )
 from app.models.jobs import StoredJobRecord
@@ -31,6 +32,21 @@ from app.services.candidate_snapshot import (
     get_candidate_match_snapshot,
 )
 from app.services.job_match_store import persist_job_and_match
+from app.services.job_screening import (
+    JOB_SCREENING_PROMPT_VERSION,
+    JobScreeningDecision,
+    JobScreeningPayload,
+    create_job_screening_ai_facade,
+    normalize_screening_decisions,
+    screening_rule_ids,
+    uncertain_or_keep_decision,
+)
+from app.services.job_screening_store import (
+    build_screening_config_hash,
+    build_screening_vacancy_hash,
+    latest_screening_decision,
+    persist_screening_decision,
+)
 from app.services.job_search_schedule import calculate_next_run_at
 from app.services.vacancy_search import (
     VacancySearchRunResult,
@@ -41,6 +57,9 @@ from app.services.vacancy_search import (
 )
 
 AI_CONSENT_WARNING = "AI Match was skipped because current AI data-processing consent is missing"
+SCREENING_CONSENT_WARNING = (
+    "Vacancy screening was skipped because current AI data-processing consent is missing"
+)
 
 
 class JobSearchExecutionError(RuntimeError):
@@ -50,6 +69,23 @@ class JobSearchExecutionError(RuntimeError):
 @dataclass(frozen=True)
 class JobSearchExecutionResult:
     run: JobSearchRunRecord
+    warning: str | None = None
+
+
+@dataclass(frozen=True)
+class NewJobCandidate:
+    job: ParsedJob
+    job_id: str
+
+
+@dataclass(frozen=True)
+class ScreeningPipelineResult:
+    keep: list[NewJobCandidate]
+    jobs_screened: int = 0
+    jobs_passed: int = 0
+    jobs_rejected: int = 0
+    jobs_uncertain: int = 0
+    screening_errors: int = 0
     warning: str | None = None
 
 
@@ -95,6 +131,17 @@ def execute_job_search(
     else:
         run = reserved_run
         run.status = "running"
+        run.jobs_found = 0
+        run.jobs_already_known = 0
+        run.jobs_screened = 0
+        run.jobs_passed = 0
+        run.jobs_rejected = 0
+        run.jobs_uncertain = 0
+        run.jobs_added = 0
+        run.jobs_analyzed = 0
+        run.screening_errors = 0
+        run.warning = None
+        run.source_errors = {}
         run.started_at = started_at
         run.completed_at = None
     db.commit()
@@ -143,29 +190,38 @@ def execute_job_search(
         db.commit()
         raise
 
-    completed_at = datetime.now(UTC)
-    new_jobs = persist_new_jobs(
+    candidates, jobs_already_known = prepare_new_job_candidates(
         db,
         jobs=search_result.jobs,
-        added_at=completed_at,
+    )
+    screening_result = screen_new_job_candidates(
+        db,
+        candidates=candidates,
+        screening_config=normalized_config.screening,
+        settings=settings,
+    )
+    persisted_at = datetime.now(UTC)
+    new_jobs = persist_new_jobs(
+        db,
+        jobs=screening_result.keep,
+        added_at=persisted_at,
     )
     run.jobs_found = len(search_result.jobs)
-    run.jobs_already_known = max(0, len(search_result.jobs) - len(new_jobs))
-    run.jobs_screened = 0
-    run.jobs_passed = 0
-    run.jobs_rejected = 0
-    run.jobs_uncertain = 0
+    run.jobs_already_known = jobs_already_known
+    run.jobs_screened = screening_result.jobs_screened
+    run.jobs_passed = screening_result.jobs_passed
+    run.jobs_rejected = screening_result.jobs_rejected
+    run.jobs_uncertain = screening_result.jobs_uncertain
     run.jobs_added = len(new_jobs)
     run.jobs_analyzed = 0
-    run.screening_errors = 0
+    run.screening_errors = screening_result.screening_errors
+    run.warning = screening_result.warning
     run.source_errors = search_result.source_errors
-    run.status = run_status(search_result)
-    run.completed_at = completed_at
-    if schedule is not None:
-        schedule.last_run_at = completed_at
-        if recalculate_schedule:
-            recalculate_next_schedule_run(schedule, now=completed_at)
-        schedule.updated_at = completed_at
+    run.status = (
+        "partial"
+        if screening_result.screening_errors
+        else run_status(search_result)
+    )
     db.commit()
 
     analysis_enabled = (
@@ -173,7 +229,7 @@ def execute_job_search(
         if ai_analysis_enabled is not None
         else schedule.ai_analysis_enabled if schedule else False
     )
-    warning = match_new_jobs_if_allowed(
+    match_warning = match_new_jobs_if_allowed(
         db,
         jobs=new_jobs,
         enabled=analysis_enabled,
@@ -182,12 +238,20 @@ def execute_job_search(
     )
     run.jobs_analyzed = (
         len(new_jobs)
-        if analysis_enabled and new_jobs and warning is None
+        if analysis_enabled and new_jobs and match_warning is None
         else 0
     )
+    run.warning = combine_warnings(screening_result.warning, match_warning)
+    completed_at = datetime.now(UTC)
+    run.completed_at = completed_at
+    if schedule is not None:
+        schedule.last_run_at = completed_at
+        if recalculate_schedule:
+            recalculate_next_schedule_run(schedule, now=completed_at)
+        schedule.updated_at = completed_at
     db.commit()
     db.refresh(run)
-    return JobSearchExecutionResult(run=run, warning=warning)
+    return JobSearchExecutionResult(run=run, warning=run.warning)
 
 
 def finish_failed_run(
@@ -199,6 +263,7 @@ def finish_failed_run(
     recalculate_schedule: bool,
 ) -> None:
     run.status = "failed"
+    run.warning = None
     run.source_errors = source_errors
     run.completed_at = completed_at
     if schedule is not None:
@@ -258,12 +323,11 @@ def build_config_snapshot(config: JobSearchConfigRecord) -> dict[str, Any]:
     }
 
 
-def persist_new_jobs(
+def prepare_new_job_candidates(
     db: Session,
     *,
     jobs: list[ParsedJob],
-    added_at: datetime,
-) -> list[dict[str, Any]]:
+) -> tuple[list[NewJobCandidate], int]:
     records = db.scalars(select(StoredJobRecord)).all()
     existing_ids = {record.id for record in records}
     existing_urls = {
@@ -274,10 +338,277 @@ def persist_new_jobs(
     existing_identities = {
         stored_job_identity(record.data) for record in records if stored_job_identity(record.data)
     }
-    added: list[dict[str, Any]] = []
+    candidates: list[NewJobCandidate] = []
 
     for index, job in enumerate(jobs):
         job_id = parsed_job_id(job, index=index)
+        url_key = canonical_job_url(job.url)
+        identity_key = job_identity(job)
+        if (
+            job_id in existing_ids
+            or (url_key and url_key in existing_urls)
+            or (identity_key and identity_key in existing_identities)
+        ):
+            continue
+        candidates.append(NewJobCandidate(job=job, job_id=job_id))
+        existing_ids.add(job_id)
+        if url_key:
+            existing_urls.add(url_key)
+        if identity_key:
+            existing_identities.add(identity_key)
+
+    return candidates, len(jobs) - len(candidates)
+
+
+def screen_new_job_candidates(
+    db: Session,
+    *,
+    candidates: list[NewJobCandidate],
+    screening_config: ScreeningConfig,
+    settings: Settings,
+) -> ScreeningPipelineResult:
+    if not candidates:
+        return ScreeningPipelineResult(keep=[])
+    if not screening_config.enabled:
+        return ScreeningPipelineResult(keep=list(candidates))
+
+    config_hash = build_screening_config_hash(screening_config)
+    model = settings.job_screening_model
+    compact_jobs = {
+        candidate.job_id: compact_screening_job(candidate)
+        for candidate in candidates
+    }
+    vacancy_hashes = {
+        candidate.job_id: build_screening_vacancy_hash(
+            compact_jobs[candidate.job_id],
+            max_description_chars=settings.job_screening_max_description_chars,
+        )
+        for candidate in candidates
+    }
+    decisions_by_id: dict[str, JobScreeningDecision] = {}
+    uncached: list[NewJobCandidate] = []
+
+    for candidate in candidates:
+        cached = latest_screening_decision(
+            db,
+            vacancy_hash=vacancy_hashes[candidate.job_id],
+            config_hash=config_hash,
+            model=model,
+            prompt_version=JOB_SCREENING_PROMPT_VERSION,
+        )
+        if cached is None or cached.reason_code == "screening_error":
+            uncached.append(candidate)
+            continue
+        try:
+            decisions_by_id[candidate.job_id] = JobScreeningDecision(
+                id=candidate.job_id,
+                decision=cached.decision,
+                reasonCode=cached.reason_code,
+                matchedRuleIds=list(cached.matched_rule_ids),
+                reason=cached.reason,
+            )
+        except ValidationError:
+            uncached.append(candidate)
+
+    consent = privacy_settings_record(db, get_bound_owner_id())
+    external_screening_attempted = False
+    missing_consent = bool(
+        uncached and not has_current_ai_consent(consent, settings)
+    )
+    if missing_consent:
+        for candidate in uncached:
+            decisions_by_id[candidate.job_id] = JobScreeningDecision.model_validate(
+                uncertain_or_keep_decision(
+                    candidate.job_id,
+                    reason_code="screening_error",
+                    reason="Current AI data-processing consent is missing",
+                )
+            )
+    elif uncached:
+        external_screening_attempted = True
+        allowed_rule_ids = screening_rule_ids(screening_config)
+        batch_size = settings.job_screening_batch_size
+        try:
+            facade = create_job_screening_ai_facade(settings)
+        except Exception as exc:
+            for candidate in uncached:
+                decisions_by_id[candidate.job_id] = screening_error_decision(
+                    candidate.job_id,
+                    exc,
+                )
+        else:
+            for offset in range(0, len(uncached), batch_size):
+                batch = uncached[offset : offset + batch_size]
+                expected_ids = [candidate.job_id for candidate in batch]
+                try:
+                    raw_decisions = facade.screen(
+                        screening_config,
+                        [compact_jobs[job_id] for job_id in expected_ids],
+                    )
+                    payload = JobScreeningPayload.model_validate(
+                        {"decisions": raw_decisions}
+                    )
+                    normalized = normalize_screening_decisions(
+                        payload,
+                        expected_ids=expected_ids,
+                        allowed_rule_ids=allowed_rule_ids,
+                    )
+                    decisions_by_id.update(
+                        {
+                            decision.id: decision
+                            for decision in (
+                                JobScreeningDecision.model_validate(item)
+                                for item in normalized
+                            )
+                        }
+                    )
+                except Exception as exc:
+                    decisions_by_id.update(
+                        {
+                            candidate.job_id: screening_error_decision(
+                                candidate.job_id,
+                                exc,
+                            )
+                            for candidate in batch
+                        }
+                    )
+
+    if external_screening_attempted and consent is not None:
+        activity_at = datetime.now(UTC)
+        consent.last_ai_activity_at = activity_at
+        consent.ai_data_expires_at = activity_at + timedelta(
+            days=consent.retention_days
+        )
+        consent.updated_at = activity_at
+
+    for candidate in uncached:
+        persist_screening_decision(
+            db,
+            vacancy_hash=vacancy_hashes[candidate.job_id],
+            config_hash=config_hash,
+            decision=decisions_by_id[candidate.job_id],
+            model=model,
+            prompt_version=JOB_SCREENING_PROMPT_VERSION,
+            title=candidate.job.title,
+            company=candidate.job.company,
+            source_url=candidate.job.url or candidate.job.apply_url,
+        )
+
+    ordered_decisions = [
+        decisions_by_id[candidate.job_id]
+        for candidate in candidates
+    ]
+    keep_ids = {
+        decision.id
+        for decision in ordered_decisions
+        if decision.decision == "keep"
+    }
+    error_count = sum(
+        decision.reason_code == "screening_error"
+        for decision in ordered_decisions
+    )
+    warning = None
+    if error_count:
+        warning = (
+            SCREENING_CONSENT_WARNING
+            if missing_consent
+            else (
+                f"Vacancy screening failed for {error_count} "
+                "vacancies; unverified vacancies were skipped"
+            )
+        )
+
+    return ScreeningPipelineResult(
+        keep=[
+            candidate
+            for candidate in candidates
+            if candidate.job_id in keep_ids
+        ],
+        jobs_screened=len(candidates),
+        jobs_passed=sum(
+            decision.decision == "keep" for decision in ordered_decisions
+        ),
+        jobs_rejected=sum(
+            decision.decision == "reject" for decision in ordered_decisions
+        ),
+        jobs_uncertain=sum(
+            decision.decision == "uncertain" for decision in ordered_decisions
+        ),
+        screening_errors=error_count,
+        warning=warning,
+    )
+
+
+def compact_screening_job(candidate: NewJobCandidate) -> dict[str, Any]:
+    job = candidate.job
+    return {
+        "id": candidate.job_id,
+        "title": job.title or "",
+        "company": job.company or "",
+        "location": job.location or "",
+        "description": job.description or "",
+        "employmentType": job.employment_type or "",
+        "seniority": job.seniority or "",
+        "source": job.source,
+        "postedAt": job.posted_at or "",
+        "salaryMin": job.salary_min,
+        "salaryMax": job.salary_max,
+        "salaryCurrency": job.salary_currency or "",
+    }
+
+
+def screening_error_decision(
+    job_id: str,
+    error: Exception,
+) -> JobScreeningDecision:
+    detail = str(error).strip()
+    reason = "Vacancy screening failed"
+    if detail:
+        reason = f"{reason}: {detail[:450]}"
+    return JobScreeningDecision.model_validate(
+        uncertain_or_keep_decision(
+            job_id,
+            reason_code="screening_error",
+            reason=reason[:500],
+        )
+    )
+
+
+def persist_new_jobs(
+    db: Session,
+    *,
+    jobs: list[NewJobCandidate] | list[ParsedJob],
+    added_at: datetime,
+) -> list[dict[str, Any]]:
+    if jobs and isinstance(jobs[0], ParsedJob):
+        candidates, _ = prepare_new_job_candidates(
+            db,
+            jobs=[job for job in jobs if isinstance(job, ParsedJob)],
+        )
+    else:
+        candidates = [
+            candidate
+            for candidate in jobs
+            if isinstance(candidate, NewJobCandidate)
+        ]
+
+    records = db.scalars(select(StoredJobRecord)).all()
+    existing_ids = {record.id for record in records}
+    existing_urls = {
+        canonical_job_url(stored_job_url(record.data))
+        for record in records
+        if canonical_job_url(stored_job_url(record.data))
+    }
+    existing_identities = {
+        stored_job_identity(record.data)
+        for record in records
+        if stored_job_identity(record.data)
+    }
+    added: list[dict[str, Any]] = []
+
+    for candidate in candidates:
+        job = candidate.job
+        job_id = candidate.job_id
         url_key = canonical_job_url(job.url)
         identity_key = job_identity(job)
         if (
@@ -299,6 +630,19 @@ def persist_new_jobs(
             existing_identities.add(identity_key)
         added.append(data)
     return added
+
+
+def combine_warnings(*warnings: str | None) -> str | None:
+    values = list(
+        dict.fromkeys(
+            warning.strip()
+            for warning in warnings
+            if warning and warning.strip()
+        )
+    )
+    if not values:
+        return None
+    return "; ".join(values)[:500]
 
 
 def match_new_jobs_if_allowed(

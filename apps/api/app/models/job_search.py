@@ -198,6 +198,7 @@ class JobSearchRunRecord(OwnerScoped, Base):
         default=0,
         server_default=text("0"),
     )
+    warning: Mapped[str | None] = mapped_column(String(500), nullable=True)
     source_errors: Mapped[dict[str, str]] = mapped_column(
         JSON,
         nullable=False,
@@ -629,7 +630,7 @@ class JobSearchRunPayload(BaseModel):
     source_errors: dict[str, str] = Field(alias="sourceErrors")
     started_at: datetime = Field(alias="startedAt")
     completed_at: datetime | None = Field(alias="completedAt")
-    warning: str | None = None
+    warning: str | None = Field(default=None, max_length=500)
 
     model_config = {"from_attributes": True, "populate_by_name": True}
 

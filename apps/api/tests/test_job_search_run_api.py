@@ -1,5 +1,6 @@
 from collections.abc import Generator
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,8 +12,10 @@ from app.api import job_search as job_search_api
 from app.core.database import Base, get_db
 from app.core.settings import Settings, get_settings
 from app.main import app
+from app.models.job_screening import JobScreeningDecisionRecord
 from app.models.jobs import StoredJobRecord
 from app.models.parsers import ParsedJob, ParserSearchResponse
+from app.models.privacy import AiPrivacySettingsRecord
 from app.services import job_search_execution
 from app.services.job_search_execution import AI_CONSENT_WARNING, parsed_job_id
 from app.services.vacancy_search import VacancySearchRunResult
@@ -64,6 +67,29 @@ class FakeRunner:
     def run(self, **kwargs) -> VacancySearchRunResult:
         self.requests.append(kwargs)
         return self.result
+
+
+class FakeScreeningFacade:
+    def __init__(self, decisions_by_title: dict[str, str]) -> None:
+        self.decisions_by_title = decisions_by_title
+        self.calls: list[list[dict[str, object]]] = []
+
+    def screen(self, _config, jobs):
+        self.calls.append(jobs)
+        return [
+            {
+                "id": job["id"],
+                "decision": self.decisions_by_title[job["title"]],
+                "reasonCode": {
+                    "keep": "target_role_match",
+                    "reject": "excluded_role",
+                    "uncertain": "insufficient_data",
+                }[self.decisions_by_title[job["title"]]],
+                "matchedRuleIds": [],
+                "reason": f"Screened {job['title']}",
+            }
+            for job in jobs
+        ]
 
 
 def test_manual_run_accepts_inline_config_without_creating_schedule(
@@ -126,6 +152,219 @@ def test_manual_run_accepts_inline_config_without_creating_schedule(
         api_context.sessions,
         owner_id="manual-owner",
     )] == ["Manual Backend Engineer"]
+
+
+def test_manual_screening_persists_and_matches_only_keep_and_reuses_cache(
+    api_context: ApiContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_id = "screening-owner"
+    headers = {"X-Rufina-Owner-Id": owner_id}
+    keep = parsed_job(
+        title="Target Software Engineer",
+        url="https://www.linkedin.com/jobs/view/screening-keep",
+    )
+    reject = parsed_job(
+        title="Rejected Sales Manager",
+        url="https://www.linkedin.com/jobs/view/screening-reject",
+    )
+    uncertain = parsed_job(
+        title="Unclear Specialist",
+        url="https://www.linkedin.com/jobs/view/screening-uncertain",
+    )
+    jobs = [keep, reject, uncertain]
+    runner = FakeRunner(
+        VacancySearchRunResult(
+            jobs=jobs,
+            source_results={"linkedin": completed_response("linkedin", jobs)},
+            source_errors={},
+        )
+    )
+    facade = FakeScreeningFacade(
+        {
+            keep.title: "keep",
+            reject.title: "reject",
+            uncertain.title: "uncertain",
+        }
+    )
+    monkeypatch.setattr(
+        job_search_api,
+        "create_vacancy_search_runner",
+        lambda _settings: runner,
+    )
+    monkeypatch.setattr(
+        job_search_execution,
+        "create_job_screening_ai_facade",
+        lambda _settings: facade,
+    )
+    matched_batches: list[list[dict[str, object]]] = []
+
+    def capture_new_jobs(_db, *, jobs, **_kwargs):
+        matched_batches.append(jobs)
+        return None
+
+    monkeypatch.setattr(
+        job_search_execution,
+        "match_new_jobs_if_allowed",
+        capture_new_jobs,
+    )
+    grant_ai_consent(api_context, owner_id=owner_id)
+    _, schedule_id = create_search(
+        api_context.client,
+        headers,
+        filters=screening_filters(),
+    )
+
+    first = api_context.client.post(
+        f"/job-search/schedules/{schedule_id}/run",
+        headers=headers,
+    )
+    second = api_context.client.post(
+        f"/job-search/schedules/{schedule_id}/run",
+        headers=headers,
+    )
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "completed"
+    assert first.json()["jobsFound"] == 3
+    assert first.json()["jobsAlreadyKnown"] == 0
+    assert first.json()["jobsScreened"] == 3
+    assert first.json()["jobsPassed"] == 1
+    assert first.json()["jobsRejected"] == 1
+    assert first.json()["jobsUncertain"] == 1
+    assert first.json()["jobsAdded"] == 1
+    assert first.json()["jobsAnalyzed"] == 1
+    assert first.json()["screeningErrors"] == 0
+    assert first.json()["warning"] is None
+    assert [job["title"] for job in matched_batches[0]] == [keep.title]
+    assert [record.data["title"] for record in stored_jobs(
+        api_context.sessions,
+        owner_id=owner_id,
+    )] == [keep.title]
+    assert len(facade.calls) == 1
+    assert {job["title"] for job in facade.calls[0]} == {
+        keep.title,
+        reject.title,
+        uncertain.title,
+    }
+    assert set(facade.calls[0][0]) == {
+        "id",
+        "title",
+        "company",
+        "location",
+        "description",
+        "employmentType",
+        "seniority",
+        "source",
+        "postedAt",
+        "salaryMin",
+        "salaryMax",
+        "salaryCurrency",
+    }
+
+    assert second.status_code == 200
+    assert second.json()["jobsAlreadyKnown"] == 1
+    assert second.json()["jobsScreened"] == 2
+    assert second.json()["jobsPassed"] == 0
+    assert second.json()["jobsRejected"] == 1
+    assert second.json()["jobsUncertain"] == 1
+    assert second.json()["jobsAdded"] == 0
+    assert second.json()["jobsAnalyzed"] == 0
+    assert len(facade.calls) == 1
+    assert matched_batches[1] == []
+
+    with api_context.sessions() as db:
+        decisions = list(
+            db.scalars(
+                select(JobScreeningDecisionRecord)
+                .where(JobScreeningDecisionRecord.owner_id == owner_id)
+            ).all()
+        )
+    assert len(decisions) == 3
+    assert {decision.decision for decision in decisions} == {
+        "keep",
+        "reject",
+        "uncertain",
+    }
+
+
+def test_manual_screening_error_is_partial_and_fail_closed(
+    api_context: ApiContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_id = "screening-error-owner"
+    headers = {"X-Rufina-Owner-Id": owner_id}
+    job = parsed_job(
+        title="Unchecked Engineer",
+        url="https://www.linkedin.com/jobs/view/screening-error",
+    )
+    runner = FakeRunner(
+        VacancySearchRunResult(
+            jobs=[job],
+            source_results={"linkedin": completed_response("linkedin", [job])},
+            source_errors={},
+        )
+    )
+
+    class FailingScreeningFacade:
+        def screen(self, _config, _jobs):
+            raise RuntimeError("screening backend unavailable")
+
+    monkeypatch.setattr(
+        job_search_api,
+        "create_vacancy_search_runner",
+        lambda _settings: runner,
+    )
+    monkeypatch.setattr(
+        job_search_execution,
+        "create_job_screening_ai_facade",
+        lambda _settings: FailingScreeningFacade(),
+    )
+    matched_batches: list[list[dict[str, object]]] = []
+
+    def capture_new_jobs(_db, *, jobs, **_kwargs):
+        matched_batches.append(jobs)
+        return None
+
+    monkeypatch.setattr(
+        job_search_execution,
+        "match_new_jobs_if_allowed",
+        capture_new_jobs,
+    )
+    grant_ai_consent(api_context, owner_id=owner_id)
+    _, schedule_id = create_search(
+        api_context.client,
+        headers,
+        filters=screening_filters(),
+    )
+
+    response = api_context.client.post(
+        f"/job-search/schedules/{schedule_id}/run",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "partial"
+    assert payload["jobsScreened"] == 1
+    assert payload["jobsPassed"] == 0
+    assert payload["jobsRejected"] == 0
+    assert payload["jobsUncertain"] == 1
+    assert payload["jobsAdded"] == 0
+    assert payload["jobsAnalyzed"] == 0
+    assert payload["screeningErrors"] == 1
+    assert "unverified vacancies were skipped" in payload["warning"]
+    assert stored_jobs(api_context.sessions, owner_id=owner_id) == []
+    assert matched_batches == [[]]
+    with api_context.sessions() as db:
+        decision = db.scalar(
+            select(JobScreeningDecisionRecord).where(
+                JobScreeningDecisionRecord.owner_id == owner_id
+            )
+        )
+    assert decision is not None
+    assert decision.decision == "uncertain"
+    assert decision.reason_code == "screening_error"
 
 
 def test_run_now_persists_jobs_snapshot_and_no_consent_warning(
@@ -487,6 +726,39 @@ def create_search(
     )
     assert schedule_response.status_code == 201
     return config_id, schedule_response.json()["id"]
+
+
+def screening_filters() -> dict[str, object]:
+    return {
+        "schemaVersion": 2,
+        "search": {
+            "keywords": "Software Engineer",
+            "location": "Zurich",
+        },
+        "screening": {
+            "enabled": True,
+            "targetRoles": ["Software Engineer"],
+            "allowedSeniority": [],
+            "excludedSeniority": [],
+            "hardRules": [],
+        },
+    }
+
+
+def grant_ai_consent(context: ApiContext, *, owner_id: str) -> None:
+    now = datetime.now(UTC)
+    with context.sessions() as db:
+        db.add(
+            AiPrivacySettingsRecord(
+                owner_id=owner_id,
+                consent_version=context.settings.ai_consent_version,
+                consent_backend=context.settings.ai_backend_mode,
+                consented_at=now,
+                retention_days=30,
+                updated_at=now,
+            )
+        )
+        db.commit()
 
 
 def parsed_job(*, title: str, url: str) -> ParsedJob:

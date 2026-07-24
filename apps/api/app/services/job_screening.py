@@ -132,6 +132,11 @@ class CompactScreeningJob(BaseModel):
         max_length=MAX_COMPACT_TEXT_CHARS,
         validation_alias=AliasChoices("source", "logo"),
     )
+    posted_at: str = Field(
+        default="",
+        max_length=MAX_COMPACT_TEXT_CHARS,
+        validation_alias=AliasChoices("posted_at", "postedAt", "posted"),
+    )
     salary_min: int | float | str | None = Field(
         default=None,
         validation_alias=AliasChoices("salary_min", "salaryMin"),
@@ -156,6 +161,7 @@ class CompactScreeningJob(BaseModel):
         "employment_type",
         "seniority",
         "source",
+        "posted_at",
         "salary_currency",
         mode="before",
     )
@@ -341,6 +347,9 @@ def validate_compact_jobs(
                             :MAX_COMPACT_TEXT_CHARS
                         ],
                         "source": sanitize_untrusted_text(compact.source)[
+                            :MAX_COMPACT_TEXT_CHARS
+                        ],
+                        "posted_at": sanitize_untrusted_text(compact.posted_at)[
                             :MAX_COMPACT_TEXT_CHARS
                         ],
                         "salary_currency": sanitize_untrusted_text(
