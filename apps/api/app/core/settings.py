@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     openai_api_retry_backoff_seconds: float = Field(default=0.8, ge=0, le=10)
     openclaw_resume_import_enabled: bool = True
     openclaw_command: str = "openclaw"
-    openclaw_agent_id: str = "tasko-assistant"
+    openclaw_agent_id: str = "rufina-assistant"
     openclaw_resume_import_thinking: str = "high"
     openclaw_resume_import_timeout_seconds: int = 120
     openclaw_ai_match_enabled: bool = True
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     openclaw_ai_match_max_jobs: int = 1
     openclaw_ai_match_max_attempts: int = Field(default=2, ge=1, le=4)
     openclaw_assistant_enabled: bool = True
-    openclaw_assistant_agent_id: str = "tasko-assistant"
+    openclaw_assistant_agent_id: str = "rufina-assistant"
     openclaw_assistant_model: str = "openai/gpt-5.6-terra"
     ai_provider_name: str = "OpenAI"
     ai_consent_version: str = "2026-07-18.v2"

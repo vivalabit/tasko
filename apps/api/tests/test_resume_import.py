@@ -441,7 +441,7 @@ def test_openclaw_resume_import_uses_a_fresh_isolated_session() -> None:
             parse_experience_with_openclaw(
                 text="Developer at Rufina",
                 command="openclaw",
-                agent_id="tasko-assistant",
+                agent_id="rufina-assistant",
                 thinking="high",
                 timeout_seconds=120,
             )
@@ -451,7 +451,7 @@ def test_openclaw_resume_import_uses_a_fresh_isolated_session() -> None:
         command = call.args[0]
         session_keys.append(command[command.index("--session-key") + 1])
 
-    assert all(key.startswith("agent:tasko-assistant:resume-import-") for key in session_keys)
+    assert all(key.startswith("agent:rufina-assistant:resume-import-") for key in session_keys)
     assert len(set(session_keys)) == 2
 
 
@@ -476,7 +476,7 @@ def test_resume_import_passes_strict_pydantic_output_model_to_backend() -> None:
     assert parse_experience_with_openclaw(
         text="Developer at Rufina",
         command="openclaw",
-        agent_id="tasko-assistant",
+        agent_id="rufina-assistant",
         thinking="low",
         timeout_seconds=30,
         model="gpt-5.6-terra",

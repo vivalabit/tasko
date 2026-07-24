@@ -167,10 +167,17 @@ def test_run_now_persists_jobs_snapshot_and_no_consent_warning(
     assert payload["jobsAdded"] == 1
     assert payload["warning"] == AI_CONSENT_WARNING
     assert payload["configSnapshot"]["id"] == config_id
-    assert payload["configSnapshot"]["filters"] == {
-        "keywords": "Platform Engineer",
-        "location": "Zurich",
-        "resultsLimit": 25,
+    normalized_config = payload["configSnapshot"]["filters"]
+    assert normalized_config["schemaVersion"] == 2
+    assert normalized_config["search"]["keywords"] == "Platform Engineer"
+    assert normalized_config["search"]["location"] == "Zurich"
+    assert normalized_config["search"]["resultsLimit"] == 25
+    assert normalized_config["screening"] == {
+        "enabled": False,
+        "targetRoles": [],
+        "allowedSeniority": [],
+        "excludedSeniority": [],
+        "hardRules": [],
     }
     assert runner.requests[0]["wait_for_snapshots"] is True
     assert runner.requests[0]["request"].results_limit == 25
@@ -191,6 +198,114 @@ def test_run_now_persists_jobs_snapshot_and_no_consent_warning(
     assert records[0].status == "active"
     assert records[0].data["title"] == "Platform Engineer"
     assert "aiMatch" not in records[0].data
+
+
+def test_manual_run_accepts_v2_config_and_only_sends_search_to_parser(
+    api_context: ApiContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = {"X-Rufina-Owner-Id": "v2-owner"}
+    runner = FakeRunner(
+        VacancySearchRunResult(
+            jobs=[],
+            source_results={"linkedin": completed_response("linkedin", [])},
+            source_errors={},
+        )
+    )
+    monkeypatch.setattr(
+        job_search_api,
+        "create_vacancy_search_runner",
+        lambda _settings: runner,
+    )
+    versioned_config = {
+        "schemaVersion": 2,
+        "search": {
+            "keywords": "Product Manager",
+            "location": "Zurich",
+            "resultsLimit": 100,
+        },
+        "screening": {
+            "enabled": True,
+            "targetRoles": ["Product Manager"],
+            "allowedSeniority": ["entry", "junior", "associate"],
+            "excludedSeniority": ["senior", "lead", "director"],
+            "hardRules": [],
+        },
+    }
+
+    response = api_context.client.post(
+        "/job-search/run",
+        headers=headers,
+        json={
+            "config": {
+                "name": "Versioned search",
+                "filters": versioned_config,
+            },
+            "sources": ["linkedin"],
+            "aiAnalysisEnabled": False,
+        },
+    )
+
+    assert response.status_code == 200
+    parser_request = runner.requests[0]["request"]
+    assert parser_request.keywords == "Product Manager"
+    assert parser_request.location == "Zurich"
+    assert parser_request.results_limit == 100
+    assert "screening" not in parser_request.model_dump()
+    snapshot = response.json()["configSnapshot"]["filters"]
+    assert snapshot["schemaVersion"] == 2
+    assert snapshot["search"]["keywords"] == "Product Manager"
+    assert snapshot["search"]["location"] == "Zurich"
+    assert snapshot["search"]["resultsLimit"] == 100
+    assert snapshot["screening"] == versioned_config["screening"]
+
+
+@pytest.mark.parametrize(
+    "screening",
+    [
+        {"enabled": False, "hardRules": [], "unknown": True},
+        {"enabled": "yes", "hardRules": []},
+        {
+            "enabled": True,
+            "hardRules": [
+                {
+                    "field": "title",
+                    "operator": "unsupported",
+                    "value": "Python",
+                }
+            ],
+        },
+        {
+            "enabled": True,
+            "allowedSeniority": ["senior"],
+            "excludedSeniority": ["senior"],
+            "hardRules": [],
+        },
+        {
+            "enabled": True,
+            "allowedSeniority": ["principal"],
+            "hardRules": [],
+        },
+    ],
+)
+def test_versioned_config_rejects_unknown_or_invalid_screening(
+    api_context: ApiContext,
+    screening: dict[str, object],
+) -> None:
+    response = api_context.client.post(
+        "/job-search/configs",
+        headers={"X-Rufina-Owner-Id": "invalid-screening-owner"},
+        json={
+            "name": "Invalid screening",
+            "filters": {
+                "schemaVersion": 2,
+                "search": {"keywords": "Python"},
+                "screening": screening,
+            },
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_run_now_does_not_restore_existing_or_dismissed_jobs_and_matches_only_new(

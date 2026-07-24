@@ -312,7 +312,7 @@ async def run_ai_assistant(
     for attempt in range(1, attempts + 1):
         session_seed = f"{thread_id}:{session_scope or 'request'}:{attempt}"
         session_token = hashlib.sha256(session_seed.encode("utf-8")).hexdigest()[:24]
-        session_key = f"agent:{agent_id}:tasko-assistant-{session_token}"
+        session_key = f"agent:{agent_id}:rufina-assistant-{session_token}"
         try:
             backend_result = await run_ai_attempt(
                 backend=selected_backend,

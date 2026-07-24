@@ -12,9 +12,11 @@ from sqlalchemy.orm import Session
 from app.core.identity import get_bound_owner_id
 from app.core.settings import Settings
 from app.models.job_search import (
+    JobSearchConfigV2,
     JobSearchConfigRecord,
     JobSearchRunRecord,
     JobSearchScheduleRecord,
+    normalize_job_search_config,
 )
 from app.models.jobs import StoredJobRecord
 from app.models.parsers import LinkedInSearchRequest, ParsedJob
@@ -98,11 +100,21 @@ def execute_job_search(
     db.commit()
 
     try:
-        filters = run.config_snapshot.get(
+        config_data = run.config_snapshot.get(
             "filters",
             config.filters if config is not None else {},
         )
-        request = search_request_from_config(filters)
+        normalized_config = normalize_job_search_config(config_data)
+        run.config_snapshot = {
+            **run.config_snapshot,
+            "filters": normalized_config.model_dump(
+                by_alias=True,
+                exclude_none=True,
+            ),
+        }
+        request = search_request_from_config(
+            run.config_snapshot["filters"],
+        )
         search_result = runner.run(
             sources=list(run.sources),
             request=request,
@@ -199,28 +211,34 @@ def recalculate_next_schedule_run(
     )
 
 
-def search_request_from_config(filters: dict[str, Any]) -> LinkedInSearchRequest:
-    aliases = {
-        "query": "keywords",
-        "experienceLevel": "experience_level",
-        "jobType": "job_type",
-        "datePosted": "date_posted",
-        "resultsLimit": "results_limit",
-        "searchName": "search_name",
+def search_request_from_config(
+    config: dict[str, Any] | JobSearchConfigV2,
+) -> LinkedInSearchRequest:
+    normalized = (
+        config
+        if isinstance(config, JobSearchConfigV2)
+        else normalize_job_search_config(config)
+    )
+    parser_fields = {
+        key: value
+        for key, value in normalized.search.model_dump().items()
+        if key in LinkedInSearchRequest.model_fields
     }
-    normalized = {
-        aliases.get(key, key): value
-        for key, value in filters.items()
-        if key not in {"sources", "parsers"}
-    }
-    return LinkedInSearchRequest.model_validate(normalized)
+    return LinkedInSearchRequest.model_validate(parser_fields)
 
 
 def build_config_snapshot(config: JobSearchConfigRecord) -> dict[str, Any]:
+    try:
+        normalized_config = normalize_job_search_config(config.filters).model_dump(
+            by_alias=True,
+            exclude_none=True,
+        )
+    except ValidationError:
+        normalized_config = deepcopy(config.filters)
     return {
         "id": config.id,
         "name": config.name,
-        "filters": deepcopy(config.filters),
+        "filters": normalized_config,
         "createdAt": serialize_datetime(config.created_at),
         "updatedAt": serialize_datetime(config.updated_at),
     }

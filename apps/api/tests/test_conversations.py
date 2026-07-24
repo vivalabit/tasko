@@ -29,7 +29,7 @@ def test_conversations_are_stored_archived_restored_and_deleted() -> None:
         "title": "Prepare for Figma interview",
         "contextKind": "job",
         "contextId": "job-figma",
-        "providerSessionId": "agent:tasko-assistant:session-one",
+        "providerSessionId": "agent:rufina-assistant:session-one",
         "messages": [
             {
                 "id": "message-user-one",
@@ -82,7 +82,7 @@ def test_conversations_are_stored_archived_restored_and_deleted() -> None:
         app.dependency_overrides.clear()
 
     assert created.status_code == 200
-    assert created.json()["providerSessionId"] == "agent:tasko-assistant:session-one"
+    assert created.json()["providerSessionId"] == "agent:rufina-assistant:session-one"
     assert [message["role"] for message in created.json()["messages"]] == ["user", "assistant"]
     assert listed.status_code == 200
     assert listed.json()[0]["title"] == "Prepare for Figma interview"

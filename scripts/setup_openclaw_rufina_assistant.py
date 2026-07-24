@@ -12,7 +12,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-AGENT_ID = "tasko-assistant"
+AGENT_ID = "rufina-assistant"
+LEGACY_AGENT_ID = "tasko-assistant"
 DEFAULT_MODEL = "openai/gpt-5.6-terra"
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_DIR = REPO_ROOT / "openclaw" / AGENT_ID
@@ -50,6 +51,9 @@ def load_allowed_plugins(command: str) -> list[str]:
 
 def install_workspace(home: Path) -> Path:
     workspace = home / ".openclaw" / f"workspace-{AGENT_ID}"
+    legacy_workspace = home / ".openclaw" / f"workspace-{LEGACY_AGENT_ID}"
+    if not workspace.exists() and legacy_workspace.is_dir():
+        shutil.copytree(legacy_workspace, workspace)
     workspace.mkdir(parents=True, exist_ok=True)
     for template in TEMPLATE_DIR.iterdir():
         if template.is_file():
@@ -141,7 +145,10 @@ def main() -> int:
     )
     parser.add_argument(
         "--model",
-        default=os.environ.get("TASKO_ASSISTANT_MODEL", DEFAULT_MODEL),
+        default=os.environ.get(
+            "RUFINA_ASSISTANT_MODEL",
+            os.environ.get("TASKO_ASSISTANT_MODEL", DEFAULT_MODEL),
+        ),
         help=f"Model for the isolated agent (default: {DEFAULT_MODEL})",
     )
     args = parser.parse_args()

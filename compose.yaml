@@ -23,8 +23,8 @@ services:
       OPENAI_API_MAX_ATTEMPTS: ${OPENAI_API_MAX_ATTEMPTS:-2}
       OPENAI_API_RETRY_BACKOFF_SECONDS: ${OPENAI_API_RETRY_BACKOFF_SECONDS:-0.8}
       OPENCLAW_COMMAND: openclaw
-      OPENCLAW_AGENT_ID: tasko-assistant
-      OPENCLAW_ASSISTANT_AGENT_ID: tasko-assistant
+      OPENCLAW_AGENT_ID: rufina-assistant
+      OPENCLAW_ASSISTANT_AGENT_ID: rufina-assistant
       OPENCLAW_ASSISTANT_MODEL: openai/gpt-5.6-terra
       OPENCLAW_ASSISTANT_THINKING: "off"
       OPENCLAW_ASSISTANT_TIMEOUT_SECONDS: "120"
@@ -42,8 +42,8 @@ services:
       - ${HOME}/.openclaw/state:/root/.openclaw-shared-state:ro
       - openclaw-tasko-state:/root/.openclaw/state
       - ${HOME}/.openclaw/npm:${HOME}/.openclaw/npm
-      - ${HOME}/.openclaw/workspace-tasko-assistant:${HOME}/.openclaw/workspace-tasko-assistant
-      - ${HOME}/.openclaw/agents/tasko-assistant:${HOME}/.openclaw/agents/tasko-assistant
+      - ${HOME}/.openclaw/workspace-rufina-assistant:${HOME}/.openclaw/workspace-rufina-assistant
+      - ${HOME}/.openclaw/agents/rufina-assistant:${HOME}/.openclaw/agents/rufina-assistant
     depends_on:
       postgres:
         condition: service_healthy

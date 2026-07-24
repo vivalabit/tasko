@@ -9,7 +9,7 @@
     "lint:web": "pnpm --filter @rufina/web lint",
     "typecheck:web": "pnpm --filter @rufina/web typecheck",
     "test:e2e:workspace": "bash scripts/run_workspace_e2e.sh",
-    "openclaw:setup": "python3 scripts/setup_openclaw_tasko_assistant.py",
+    "openclaw:setup": "python3 scripts/setup_openclaw_rufina_assistant.py",
     "docker:up": "docker compose up --build",
     "docker:down": "docker compose down",
     "docker:logs": "docker compose logs -f"

@@ -621,7 +621,7 @@ def test_run_openclaw_assistant_uses_isolated_local_agent(
             job=None,
             application=None,
             command="/custom/openclaw",
-            agent_id="tasko-assistant",
+            agent_id="rufina-assistant",
             thinking="off",
             timeout_seconds=30,
         )
@@ -633,7 +633,7 @@ def test_run_openclaw_assistant_uses_isolated_local_agent(
         "agent",
         "--local",
         "--agent",
-        "tasko-assistant",
+        "rufina-assistant",
     ]
 
 
@@ -676,7 +676,7 @@ def test_run_openclaw_assistant_retries_transient_failure_and_reports_metrics(
             job=None,
             application=None,
             command="/custom/openclaw",
-            agent_id="tasko-assistant",
+            agent_id="rufina-assistant",
             thinking="off",
             timeout_seconds=30,
             model="openai/gpt-5.6-terra",
@@ -720,7 +720,7 @@ def test_run_openclaw_assistant_does_not_retry_authentication_failure(
                 job=None,
                 application=None,
                 command="/custom/openclaw",
-                agent_id="tasko-assistant",
+                agent_id="rufina-assistant",
                 thinking="off",
                 timeout_seconds=30,
                 max_attempts=3,
@@ -760,7 +760,7 @@ def test_run_openclaw_assistant_estimates_metrics_and_logs_completion(
             job=None,
             application=None,
             command="/custom/openclaw",
-            agent_id="tasko-assistant",
+            agent_id="rufina-assistant",
             thinking="off",
             timeout_seconds=30,
             model="openai/gpt-5.6-terra",
@@ -823,7 +823,7 @@ def test_run_openclaw_assistant_kills_process_when_cancelled(
                 job=None,
                 application=None,
                 command="/custom/openclaw",
-                agent_id="tasko-assistant",
+                agent_id="rufina-assistant",
                 thinking="off",
                 timeout_seconds=30,
             )
@@ -862,7 +862,7 @@ def test_assistant_facade_propagates_direct_backend_cancellation() -> None:
         facade = AssistantAIFacade(
             backend=backend,
             command="openclaw",
-            agent_id="tasko-assistant",
+            agent_id="rufina-assistant",
             model="gpt-5.6-terra",
             thinking="medium",
             timeout_seconds=30,
@@ -907,7 +907,7 @@ def test_assistant_facade_does_not_retry_direct_backend_refusal() -> None:
     facade = AssistantAIFacade(
         backend=backend,
         command="openclaw",
-        agent_id="tasko-assistant",
+        agent_id="rufina-assistant",
         model="gpt-5.6-terra",
         thinking="medium",
         timeout_seconds=30,
@@ -962,7 +962,7 @@ def test_assistant_facade_uses_neutral_backend_result_metrics() -> None:
     facade = AssistantAIFacade(
         backend=CompletedBackend(),
         command="openclaw",
-        agent_id="tasko-assistant",
+        agent_id="rufina-assistant",
         model="gpt-5.6-terra",
         thinking="high",
         timeout_seconds=75,

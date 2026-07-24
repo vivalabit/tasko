@@ -78,10 +78,10 @@ def test_openclaw_adapter_preserves_cli_and_returns_neutral_result() -> None:
         AIRequest(
             prompt="Return JSON",
             model="openai/gpt-5.6-terra",
-            agent_id="tasko-assistant",
+            agent_id="rufina-assistant",
             thinking="low",
             timeout_seconds=30,
-            session_id="agent:tasko-assistant:test-session",
+            session_id="agent:rufina-assistant:test-session",
             structured=True,
         )
     )
@@ -91,10 +91,10 @@ def test_openclaw_adapter_preserves_cli_and_returns_neutral_result() -> None:
         "agent",
         "--local",
         "--agent",
-        "tasko-assistant",
+        "rufina-assistant",
     ]
     assert captured[captured.index("--session-key") + 1] == (
-        "agent:tasko-assistant:test-session"
+        "agent:rufina-assistant:test-session"
     )
     assert captured[captured.index("--message") + 1] == "Return JSON"
     assert captured[-1] == "--json"
@@ -106,7 +106,7 @@ def test_openclaw_adapter_preserves_cli_and_returns_neutral_result() -> None:
     assert result.usage.output_tokens == 5
     assert result.usage.total_tokens == 25
     assert result.latency_ms >= 0
-    assert result.session_id == "agent:tasko-assistant:test-session"
+    assert result.session_id == "agent:rufina-assistant:test-session"
 
 
 def test_openai_api_adapter_uses_responses_api_and_returns_same_contract() -> None:

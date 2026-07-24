@@ -46,7 +46,7 @@ alembic upgrade head
 
 ## Rufina OpenClaw agent
 
-The AI Assistant uses its own isolated `tasko-assistant` agent instead of the
+The AI Assistant uses its own isolated `rufina-assistant` agent instead of the
 personal `main` agent. Set it up once before starting the API:
 
 ```bash
@@ -56,7 +56,9 @@ pnpm openclaw:setup
 The setup is idempotent. It creates a separate workspace and agent state,
 selects `openai/gpt-5.6-terra`, disables reasoning, caps answers at 1,200
 tokens, and disables all external skills and tools. Rufina conversations and
-memory are therefore kept separate from the personal assistant.
+memory are therefore kept separate from the personal assistant. On the first
+run after the rename, the setup copies an existing `tasko-assistant` workspace
+to `rufina-assistant` so its memory is preserved.
 
 Docker Compose keeps OpenClaw's mutable SQLite plugin state in the dedicated
 `openclaw-tasko-state` volume. On its first start, the API seeds that volume

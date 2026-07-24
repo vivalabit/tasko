@@ -46,6 +46,10 @@ def test_job_search_config_and_schedule_crud_is_owner_scoped(
         config = create_config.json()
         config_id = config["id"]
         assert config["name"] == "Zurich product roles"
+        assert config["filters"] == {
+            "keywords": "Product Manager",
+            "location": "Zurich",
+        }
 
         assert (
             client.get(

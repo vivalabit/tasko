@@ -177,6 +177,215 @@ class JobSearchRunRecord(OwnerScoped, Base):
 
 JobSearchFrequency = Literal["daily", "weekdays", "selected_days"]
 JobSearchSource = Literal["linkedin", "indeed", "jobs_ch"]
+ScreeningField = Literal[
+    "title",
+    "company",
+    "location",
+    "description",
+    "employment_type",
+    "employmentType",
+    "seniority",
+    "salary_min",
+    "salaryMin",
+    "salary_max",
+    "salaryMax",
+    "posted_at",
+    "postedAt",
+    "source",
+]
+ScreeningOperator = Literal[
+    "equals",
+    "not_equals",
+    "notEquals",
+    "contains",
+    "not_contains",
+    "notContains",
+    "starts_with",
+    "startsWith",
+    "ends_with",
+    "endsWith",
+    "greater_than",
+    "greaterThan",
+    "greater_than_or_equal",
+    "greaterThanOrEqual",
+    "less_than",
+    "lessThan",
+    "less_than_or_equal",
+    "lessThanOrEqual",
+    "in",
+    "not_in",
+    "notIn",
+    "matches",
+]
+ScreeningValue = str | int | float | bool | list[str]
+ScreeningSeniority = Literal[
+    "intern",
+    "entry",
+    "junior",
+    "associate",
+    "mid",
+    "senior",
+    "lead",
+    "director",
+    "executive",
+]
+
+
+class SearchFilters(BaseModel):
+    keywords: str = Field(default="", max_length=200)
+    location: str = Field(default="", max_length=160)
+    remote: Literal["Any", "Remote only", "Hybrid", "On-site"] = "Any"
+    experience_level: Literal[
+        "Any",
+        "Entry level",
+        "Associate",
+        "Mid-Senior level",
+        "Director",
+    ] = Field(default="Any", alias="experienceLevel")
+    job_type: Literal[
+        "Any",
+        "Full-time",
+        "Part-time",
+        "Contract",
+        "Internship",
+    ] = Field(default="Any", alias="jobType")
+    date_posted: Literal[
+        "Any time",
+        "Past 24 hours",
+        "Past week",
+        "Past month",
+    ] = Field(default="Any time", alias="datePosted")
+    results_limit: int = Field(default=100, ge=1, le=1000, alias="resultsLimit")
+    country: str = Field(default="Any", max_length=80)
+    deduplicate: bool = True
+    search_name: str = Field(default="", max_length=160, alias="searchName")
+    folder: str = Field(default="", max_length=120)
+    sources: list[JobSearchSource] | None = Field(default=None, max_length=10)
+    parsers: list[JobSearchSource] | None = Field(default=None, max_length=10)
+
+    model_config = {
+        "extra": "forbid",
+        "populate_by_name": True,
+    }
+
+
+class ScreeningRule(BaseModel):
+    field: ScreeningField
+    operator: ScreeningOperator
+    value: ScreeningValue
+    enabled: bool = True
+
+    model_config = {
+        "extra": "forbid",
+        "strict": True,
+    }
+
+
+class ScreeningConfig(BaseModel):
+    enabled: bool = False
+    target_roles: list[str] = Field(
+        default_factory=list,
+        max_length=50,
+        alias="targetRoles",
+    )
+    allowed_seniority: list[ScreeningSeniority] = Field(
+        default_factory=list,
+        max_length=9,
+        alias="allowedSeniority",
+    )
+    excluded_seniority: list[ScreeningSeniority] = Field(
+        default_factory=list,
+        max_length=9,
+        alias="excludedSeniority",
+    )
+    hard_rules: list[ScreeningRule] = Field(
+        default_factory=list,
+        max_length=100,
+        alias="hardRules",
+    )
+
+    model_config = {
+        "extra": "forbid",
+        "populate_by_name": True,
+        "strict": True,
+    }
+
+    @field_validator("target_roles")
+    @classmethod
+    def normalize_target_roles(cls, value: list[str]) -> list[str]:
+        normalized = list(dict.fromkeys(role.strip() for role in value))
+        if any(not role for role in normalized):
+            raise ValueError("targetRoles must not contain empty roles")
+        if any(len(role) > 160 for role in normalized):
+            raise ValueError("targetRoles entries must be at most 160 characters")
+        return normalized
+
+    @field_validator("allowed_seniority", "excluded_seniority")
+    @classmethod
+    def deduplicate_seniority(
+        cls,
+        value: list[ScreeningSeniority],
+    ) -> list[ScreeningSeniority]:
+        return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def reject_conflicting_seniority(self) -> "ScreeningConfig":
+        overlap = set(self.allowed_seniority).intersection(self.excluded_seniority)
+        if overlap:
+            conflicting = ", ".join(sorted(overlap))
+            raise ValueError(
+                "allowedSeniority and excludedSeniority must not overlap: "
+                f"{conflicting}"
+            )
+        return self
+
+
+class JobSearchConfigV2(BaseModel):
+    schema_version: Literal[2] = Field(alias="schemaVersion")
+    search: SearchFilters
+    screening: ScreeningConfig = Field(default_factory=ScreeningConfig)
+
+    model_config = {
+        "extra": "forbid",
+        "populate_by_name": True,
+        "strict": True,
+    }
+
+
+LEGACY_SEARCH_ALIASES = {
+    "query": "keywords",
+    "experienceLevel": "experience_level",
+    "jobType": "job_type",
+    "datePosted": "date_posted",
+    "resultsLimit": "results_limit",
+    "searchName": "search_name",
+}
+VERSIONED_CONFIG_FIELDS = {"schemaVersion", "schema_version", "search", "screening"}
+
+
+def normalize_job_search_config(config: dict[str, Any]) -> JobSearchConfigV2:
+    if VERSIONED_CONFIG_FIELDS.intersection(config):
+        return JobSearchConfigV2.model_validate(config)
+
+    search_field_names = set(SearchFilters.model_fields)
+    normalized_search = {
+        normalized_key: value
+        for key, value in config.items()
+        if (normalized_key := LEGACY_SEARCH_ALIASES.get(key, key)) in search_field_names
+    }
+    return JobSearchConfigV2(
+        schema_version=2,
+        search=SearchFilters.model_validate(normalized_search),
+    )
+
+
+def validate_versioned_job_search_config(config: dict[str, Any]) -> dict[str, Any]:
+    if not VERSIONED_CONFIG_FIELDS.intersection(config):
+        return config
+    return normalize_job_search_config(config).model_dump(
+        by_alias=True,
+        exclude_none=True,
+    )
 
 
 class JobSearchConfigCreateRequest(BaseModel):
@@ -192,6 +401,11 @@ class JobSearchConfigCreateRequest(BaseModel):
         if not normalized:
             raise ValueError("name must not be empty")
         return normalized
+
+    @field_validator("filters")
+    @classmethod
+    def validate_filters(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return validate_versioned_job_search_config(value)
 
 
 class JobSearchConfigUpdateRequest(BaseModel):
@@ -209,6 +423,13 @@ class JobSearchConfigUpdateRequest(BaseModel):
         if not normalized:
             raise ValueError("name must not be empty")
         return normalized
+
+    @field_validator("filters")
+    @classmethod
+    def validate_filters(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        return validate_versioned_job_search_config(value)
 
 
 class JobSearchConfigPayload(BaseModel):

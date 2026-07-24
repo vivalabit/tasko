@@ -642,7 +642,7 @@ def test_ai_match_passes_strict_pydantic_output_model_to_backend() -> None:
             )
         ],
         command="openclaw",
-        agent_id="tasko-assistant",
+        agent_id="rufina-assistant",
         thinking="low",
         timeout_seconds=30,
         model="gpt-5.6-terra",
