@@ -1003,10 +1003,31 @@ def test_existing_imported_jobs_require_dry_run_and_can_be_rescreened(
         lambda _settings: facade,
     )
 
-    dry_run = api_context.client.post(
+    skipped_dry_run = api_context.client.post(
         f"/job-search/configs/{config_id}/rescreen",
         headers=headers,
         json={"dryRun": True},
+    )
+    assert skipped_dry_run.status_code == 200
+    skipped_preview = skipped_dry_run.json()
+    assert skipped_preview["eligibleJobs"] == 4
+    assert skipped_preview["jobsScreened"] == 0
+    assert skipped_preview["jobsSkipped"] == 4
+    assert skipped_preview["jobsUsingFallback"] == 0
+    assert skipped_preview["skippedReasons"] == {
+        "missing_source_config": 4,
+    }
+    assert skipped_preview["configGroups"] == []
+    assert "no fallback was selected" in skipped_preview["warning"]
+    assert facade.calls == []
+
+    dry_run = api_context.client.post(
+        f"/job-search/configs/{config_id}/rescreen",
+        headers=headers,
+        json={
+            "dryRun": True,
+            "useSelectedConfigAsFallback": True,
+        },
     )
 
     assert dry_run.status_code == 200
@@ -1018,6 +1039,23 @@ def test_existing_imported_jobs_require_dry_run_and_can_be_rescreened(
     assert preview["jobsPassed"] == 2
     assert preview["jobsRejected"] == 1
     assert preview["jobsUncertain"] == 1
+    assert preview["jobsSkipped"] == 0
+    assert preview["jobsUsingFallback"] == 4
+    assert preview["skippedReasons"] == {}
+    assert preview["configGroups"] == [
+        {
+            "configId": config_id,
+            "configHash": preview["configHash"],
+            "usedAsFallback": True,
+            "fallbackJobs": 4,
+            "jobs": 4,
+            "jobsScreened": 4,
+            "jobsPassed": 2,
+            "jobsRejected": 1,
+            "jobsUncertain": 1,
+            "screeningErrors": 0,
+        }
+    ]
     assert preview["jobsToHide"] == 2
     assert preview["jobsToRestore"] == 1
     assert preview["jobsHidden"] == 0
@@ -1035,7 +1073,10 @@ def test_existing_imported_jobs_require_dry_run_and_can_be_rescreened(
     unconfirmed = api_context.client.post(
         f"/job-search/configs/{config_id}/rescreen",
         headers=headers,
-        json={"dryRun": False},
+        json={
+            "dryRun": False,
+            "useSelectedConfigAsFallback": True,
+        },
     )
     assert unconfirmed.status_code == 409
 
@@ -1045,6 +1086,7 @@ def test_existing_imported_jobs_require_dry_run_and_can_be_rescreened(
         json={
             "dryRun": False,
             "confirm": True,
+            "useSelectedConfigAsFallback": True,
             "confirmationToken": preview["confirmationToken"],
         },
     )
@@ -1172,7 +1214,10 @@ def test_existing_imported_jobs_require_dry_run_and_can_be_rescreened(
     changed_preview = api_context.client.post(
         f"/job-search/configs/{config_id}/rescreen",
         headers=headers,
-        json={"dryRun": True},
+        json={
+            "dryRun": True,
+            "useSelectedConfigAsFallback": True,
+        },
     )
     assert changed_preview.status_code == 200
     assert changed_preview.json()["jobsToHide"] == 0
@@ -1184,6 +1229,7 @@ def test_existing_imported_jobs_require_dry_run_and_can_be_rescreened(
         json={
             "dryRun": False,
             "confirm": True,
+            "useSelectedConfigAsFallback": True,
             "confirmationToken": preview["confirmationToken"],
         },
     )
@@ -1194,6 +1240,7 @@ def test_existing_imported_jobs_require_dry_run_and_can_be_rescreened(
         json={
             "dryRun": False,
             "confirm": True,
+            "useSelectedConfigAsFallback": True,
             "confirmationToken": changed_preview.json()["confirmationToken"],
         },
     )
@@ -1203,6 +1250,186 @@ def test_existing_imported_jobs_require_dry_run_and_can_be_rescreened(
         api_context,
         owner_id=owner_id,
     )["indeed-sales"] == "active"
+
+
+def test_rescreen_groups_jobs_by_original_config_and_uses_explicit_fallback(
+    api_context: ApiContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_id = "grouped-rescreen-owner"
+    headers = {"X-Rufina-Owner-Id": owner_id}
+    software_config_id, _ = create_search(
+        api_context.client,
+        headers,
+        filters=screening_filters(),
+    )
+    sales_filters = screening_filters()
+    sales_filters["screening"]["targetRoles"] = ["Sales Manager"]
+    sales_config_id, _ = create_search(
+        api_context.client,
+        headers,
+        filters=sales_filters,
+    )
+    grant_ai_consent(api_context, owner_id=owner_id)
+
+    with api_context.sessions() as db:
+        db.add_all(
+            [
+                StoredJobRecord(
+                    owner_id=owner_id,
+                    id="linkedin-grouped-software",
+                    data=imported_stored_job(
+                        "Software Engineer",
+                        source="linkedin",
+                    ),
+                    search_config_id=software_config_id,
+                    status="active",
+                ),
+                StoredJobRecord(
+                    owner_id=owner_id,
+                    id="indeed-grouped-sales",
+                    data=imported_stored_job(
+                        "Sales Manager",
+                        source="indeed",
+                    ),
+                    search_config_id=sales_config_id,
+                    status="active",
+                ),
+                StoredJobRecord(
+                    owner_id=owner_id,
+                    id="linkedin-grouped-legacy",
+                    data=imported_stored_job(
+                        "Legacy Software Engineer",
+                        source="linkedin",
+                    ),
+                    status="active",
+                ),
+                StoredJobRecord(
+                    owner_id=owner_id,
+                    id="jobs_ch-grouped-missing-config",
+                    data=imported_stored_job(
+                        "Cashier",
+                        source="jobs_ch",
+                    ),
+                    search_config_id="deleted-config",
+                    status="active",
+                ),
+            ]
+        )
+        db.commit()
+
+    class GroupAwareScreeningFacade:
+        def __init__(self) -> None:
+            self.calls: list[tuple[tuple[str, ...], list[str]]] = []
+
+        def screen(self, screening_config, jobs):
+            roles = tuple(screening_config.target_roles)
+            self.calls.append((roles, [job["id"] for job in jobs]))
+            return [
+                {
+                    "id": job["id"],
+                    "decision": (
+                        "keep"
+                        if any(role in job["title"] for role in roles)
+                        else "reject"
+                    ),
+                    "reasonCode": (
+                        "target_role_match"
+                        if any(role in job["title"] for role in roles)
+                        else "target_role_mismatch"
+                    ),
+                    "matchedRuleIds": [],
+                    "reason": f"Screened with {', '.join(roles)}",
+                }
+                for job in jobs
+            ]
+
+    facade = GroupAwareScreeningFacade()
+    monkeypatch.setattr(
+        job_search_execution,
+        "create_job_screening_ai_facade",
+        lambda _settings: facade,
+    )
+
+    without_fallback = api_context.client.post(
+        f"/job-search/configs/{software_config_id}/rescreen",
+        headers=headers,
+        json={"dryRun": True},
+    )
+    assert without_fallback.status_code == 200
+    assert without_fallback.json()["eligibleJobs"] == 4
+    assert without_fallback.json()["jobsScreened"] == 2
+    assert without_fallback.json()["jobsPassed"] == 2
+    assert without_fallback.json()["jobsSkipped"] == 2
+    assert without_fallback.json()["jobsUsingFallback"] == 0
+    assert without_fallback.json()["skippedReasons"] == {
+        "missing_source_config": 1,
+        "source_config_not_found": 1,
+    }
+    calls_by_roles = {
+        roles: ids
+        for roles, ids in facade.calls
+    }
+    assert calls_by_roles == {
+        ("Software Engineer",): ["linkedin-grouped-software"],
+        ("Sales Manager",): ["indeed-grouped-sales"],
+    }
+
+    with_fallback = api_context.client.post(
+        f"/job-search/configs/{software_config_id}/rescreen",
+        headers=headers,
+        json={
+            "dryRun": True,
+            "useSelectedConfigAsFallback": True,
+        },
+    )
+    assert with_fallback.status_code == 200
+    fallback_preview = with_fallback.json()
+    assert fallback_preview["jobsScreened"] == 4
+    assert fallback_preview["jobsPassed"] == 3
+    assert fallback_preview["jobsRejected"] == 1
+    assert fallback_preview["jobsSkipped"] == 0
+    assert fallback_preview["jobsUsingFallback"] == 2
+    groups = {
+        group["configId"]: group
+        for group in fallback_preview["configGroups"]
+    }
+    assert groups[software_config_id]["jobs"] == 3
+    assert groups[software_config_id]["usedAsFallback"] is True
+    assert groups[software_config_id]["fallbackJobs"] == 2
+    assert groups[sales_config_id]["jobs"] == 1
+    assert groups[sales_config_id]["usedAsFallback"] is False
+    assert groups[sales_config_id]["fallbackJobs"] == 0
+
+    applied = api_context.client.post(
+        f"/job-search/configs/{software_config_id}/rescreen",
+        headers=headers,
+        json={
+            "dryRun": False,
+            "confirm": True,
+            "useSelectedConfigAsFallback": True,
+            "confirmationToken": fallback_preview["confirmationToken"],
+        },
+    )
+    assert applied.status_code == 200
+    records = {
+        record.id: record
+        for record in stored_jobs(
+            api_context.sessions,
+            owner_id=owner_id,
+        )
+    }
+    assert records["linkedin-grouped-software"].search_config_id == (
+        software_config_id
+    )
+    assert records["indeed-grouped-sales"].search_config_id == sales_config_id
+    assert records["linkedin-grouped-legacy"].search_config_id == (
+        software_config_id
+    )
+    assert records["jobs_ch-grouped-missing-config"].search_config_id == (
+        software_config_id
+    )
+    assert records["jobs_ch-grouped-missing-config"].status == "screened_out"
 
 
 def test_run_now_persists_jobs_snapshot_and_no_consent_warning(

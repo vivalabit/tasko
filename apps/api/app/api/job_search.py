@@ -251,6 +251,9 @@ def rescreen_config_jobs(
             settings=settings,
             dry_run=request.dry_run,
             confirm=request.confirm,
+            use_selected_config_as_fallback=(
+                request.use_selected_config_as_fallback
+            ),
             confirmation_token=request.confirmation_token,
         )
         db.commit()

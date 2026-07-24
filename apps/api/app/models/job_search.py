@@ -583,6 +583,10 @@ class JobSearchConfigPayload(BaseModel):
 class JobSearchRescreenRequest(BaseModel):
     dry_run: bool = Field(default=True, alias="dryRun")
     confirm: bool = False
+    use_selected_config_as_fallback: bool = Field(
+        default=False,
+        alias="useSelectedConfigAsFallback",
+    )
     confirmation_token: str | None = Field(
         default=None,
         min_length=64,
@@ -591,6 +595,21 @@ class JobSearchRescreenRequest(BaseModel):
     )
 
     model_config = {"extra": "forbid", "populate_by_name": True}
+
+
+class JobSearchRescreenConfigGroupPayload(BaseModel):
+    config_id: str = Field(alias="configId")
+    config_hash: str = Field(alias="configHash")
+    used_as_fallback: bool = Field(alias="usedAsFallback")
+    fallback_jobs: int = Field(alias="fallbackJobs", ge=0)
+    jobs: int = Field(ge=0)
+    jobs_screened: int = Field(alias="jobsScreened", ge=0)
+    jobs_passed: int = Field(alias="jobsPassed", ge=0)
+    jobs_rejected: int = Field(alias="jobsRejected", ge=0)
+    jobs_uncertain: int = Field(alias="jobsUncertain", ge=0)
+    screening_errors: int = Field(alias="screeningErrors", ge=0)
+
+    model_config = {"populate_by_name": True}
 
 
 class JobSearchRescreenPayload(BaseModel):
@@ -604,6 +623,16 @@ class JobSearchRescreenPayload(BaseModel):
     jobs_rejected: int = Field(alias="jobsRejected", ge=0)
     jobs_uncertain: int = Field(alias="jobsUncertain", ge=0)
     screening_errors: int = Field(alias="screeningErrors", ge=0)
+    jobs_skipped: int = Field(alias="jobsSkipped", ge=0)
+    jobs_using_fallback: int = Field(alias="jobsUsingFallback", ge=0)
+    skipped_reasons: dict[str, int] = Field(
+        default_factory=dict,
+        alias="skippedReasons",
+    )
+    config_groups: list[JobSearchRescreenConfigGroupPayload] = Field(
+        default_factory=list,
+        alias="configGroups",
+    )
     jobs_to_hide: int = Field(alias="jobsToHide", ge=0)
     jobs_to_restore: int = Field(alias="jobsToRestore", ge=0)
     jobs_hidden: int = Field(alias="jobsHidden", ge=0)
