@@ -580,6 +580,44 @@ class JobSearchConfigPayload(BaseModel):
         return as_utc(value)
 
 
+class JobSearchRescreenRequest(BaseModel):
+    dry_run: bool = Field(default=True, alias="dryRun")
+    confirm: bool = False
+    confirmation_token: str | None = Field(
+        default=None,
+        min_length=64,
+        max_length=64,
+        alias="confirmationToken",
+    )
+
+    model_config = {"extra": "forbid", "populate_by_name": True}
+
+
+class JobSearchRescreenPayload(BaseModel):
+    config_id: str = Field(alias="configId")
+    config_hash: str = Field(alias="configHash")
+    dry_run: bool = Field(alias="dryRun")
+    applied: bool
+    eligible_jobs: int = Field(alias="eligibleJobs", ge=0)
+    jobs_screened: int = Field(alias="jobsScreened", ge=0)
+    jobs_passed: int = Field(alias="jobsPassed", ge=0)
+    jobs_rejected: int = Field(alias="jobsRejected", ge=0)
+    jobs_uncertain: int = Field(alias="jobsUncertain", ge=0)
+    screening_errors: int = Field(alias="screeningErrors", ge=0)
+    jobs_to_hide: int = Field(alias="jobsToHide", ge=0)
+    jobs_to_restore: int = Field(alias="jobsToRestore", ge=0)
+    jobs_hidden: int = Field(alias="jobsHidden", ge=0)
+    jobs_restored: int = Field(alias="jobsRestored", ge=0)
+    confirmation_token: str = Field(
+        min_length=64,
+        max_length=64,
+        alias="confirmationToken",
+    )
+    warning: str | None = Field(default=None, max_length=500)
+
+    model_config = {"populate_by_name": True}
+
+
 class JobSearchManualRunRequest(BaseModel):
     config_id: str | None = Field(
         default=None,

@@ -1,6 +1,7 @@
 from collections.abc import Generator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from unittest.mock import Mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.api import job_search as job_search_api
+from app.api import jobs as jobs_api
 from app.core.database import Base, get_db
 from app.core.settings import Settings, get_settings
 from app.main import app
@@ -365,6 +367,305 @@ def test_manual_screening_error_is_partial_and_fail_closed(
     assert decision is not None
     assert decision.decision == "uncertain"
     assert decision.reason_code == "screening_error"
+
+
+def test_existing_imported_jobs_require_dry_run_and_can_be_rescreened(
+    api_context: ApiContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_id = "rescreen-owner"
+    headers = {"X-Rufina-Owner-Id": owner_id}
+    config_response = api_context.client.post(
+        "/job-search/configs",
+        headers=headers,
+        json={
+            "name": "Software roles",
+            "filters": screening_filters(),
+        },
+    )
+    assert config_response.status_code == 201
+    config_id = config_response.json()["id"]
+    grant_ai_consent(api_context, owner_id=owner_id)
+
+    with api_context.sessions() as db:
+        db.add_all(
+            [
+                StoredJobRecord(
+                    owner_id=owner_id,
+                    id="linkedin-software",
+                    data=imported_stored_job(
+                        "Software Engineer",
+                        source="linkedin",
+                    ),
+                    status="active",
+                ),
+                StoredJobRecord(
+                    owner_id=owner_id,
+                    id="indeed-sales",
+                    data=imported_stored_job(
+                        "Sales Manager",
+                        source="indeed",
+                    ),
+                    status="active",
+                ),
+                StoredJobRecord(
+                    owner_id=owner_id,
+                    id="jobs_ch-unclear",
+                    data=imported_stored_job(
+                        "Unclear Specialist",
+                        source="jobs_ch",
+                    ),
+                    status="active",
+                ),
+                StoredJobRecord(
+                    owner_id=owner_id,
+                    id="linkedin-old-software",
+                    data=imported_stored_job(
+                        "Old Software Engineer",
+                        source="linkedin",
+                    ),
+                    status="screened_out",
+                ),
+                StoredJobRecord(
+                    owner_id=owner_id,
+                    id="manual-job-1",
+                    data={
+                        "id": "manual-job-1",
+                        "title": "Manual Sales Manager",
+                        "company": "Manual AG",
+                        "logo": "manual",
+                    },
+                    status="active",
+                ),
+                StoredJobRecord(
+                    owner_id=owner_id,
+                    id="linkedin-dismissed",
+                    data=imported_stored_job(
+                        "Dismissed Software Engineer",
+                        source="linkedin",
+                    ),
+                    status="dismissed",
+                ),
+            ]
+        )
+        db.commit()
+
+    class ConfigAwareScreeningFacade:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def screen(self, screening_config, jobs):
+            self.calls.append([job["id"] for job in jobs])
+            sales_allowed = "Sales Manager" in screening_config.target_roles
+            decisions = []
+            for job in jobs:
+                title = job["title"]
+                if title == "Unclear Specialist":
+                    decision = "uncertain"
+                    reason_code = "insufficient_data"
+                elif title == "Sales Manager" and not sales_allowed:
+                    decision = "reject"
+                    reason_code = "excluded_role"
+                else:
+                    decision = "keep"
+                    reason_code = "target_role_match"
+                decisions.append(
+                    {
+                        "id": job["id"],
+                        "decision": decision,
+                        "reasonCode": reason_code,
+                        "matchedRuleIds": [],
+                        "reason": f"Screened {title}",
+                    }
+                )
+            return decisions
+
+    facade = ConfigAwareScreeningFacade()
+    monkeypatch.setattr(
+        job_search_execution,
+        "create_job_screening_ai_facade",
+        lambda _settings: facade,
+    )
+
+    dry_run = api_context.client.post(
+        f"/job-search/configs/{config_id}/rescreen",
+        headers=headers,
+        json={"dryRun": True},
+    )
+
+    assert dry_run.status_code == 200
+    preview = dry_run.json()
+    assert preview["dryRun"] is True
+    assert preview["applied"] is False
+    assert preview["eligibleJobs"] == 4
+    assert preview["jobsScreened"] == 4
+    assert preview["jobsPassed"] == 2
+    assert preview["jobsRejected"] == 1
+    assert preview["jobsUncertain"] == 1
+    assert preview["jobsToHide"] == 2
+    assert preview["jobsToRestore"] == 1
+    assert preview["jobsHidden"] == 0
+    assert preview["jobsRestored"] == 0
+    assert len(preview["confirmationToken"]) == 64
+    assert stored_job_statuses(api_context, owner_id=owner_id) == {
+        "indeed-sales": "active",
+        "jobs_ch-unclear": "active",
+        "linkedin-dismissed": "dismissed",
+        "linkedin-old-software": "screened_out",
+        "linkedin-software": "active",
+        "manual-job-1": "active",
+    }
+
+    unconfirmed = api_context.client.post(
+        f"/job-search/configs/{config_id}/rescreen",
+        headers=headers,
+        json={"dryRun": False},
+    )
+    assert unconfirmed.status_code == 409
+
+    applied = api_context.client.post(
+        f"/job-search/configs/{config_id}/rescreen",
+        headers=headers,
+        json={
+            "dryRun": False,
+            "confirm": True,
+            "confirmationToken": preview["confirmationToken"],
+        },
+    )
+
+    assert applied.status_code == 200
+    assert applied.json()["jobsHidden"] == 2
+    assert applied.json()["jobsRestored"] == 1
+    assert len(facade.calls) == 1
+    statuses = stored_job_statuses(api_context, owner_id=owner_id)
+    assert statuses["indeed-sales"] == "screened_out"
+    assert statuses["jobs_ch-unclear"] == "screened_out"
+    assert statuses["linkedin-old-software"] == "active"
+    assert statuses["manual-job-1"] == "active"
+    assert statuses["linkedin-dismissed"] == "dismissed"
+    visible_ids = {
+        item["id"]
+        for item in api_context.client.get("/jobs", headers=headers).json()
+    }
+    assert visible_ids == {
+        "linkedin-software",
+        "linkedin-old-software",
+        "manual-job-1",
+    }
+    stale_client_upsert = api_context.client.put(
+        "/jobs",
+        headers=headers,
+        json={
+            "jobs": [
+                {
+                    "id": "indeed-sales",
+                    "data": imported_stored_job(
+                        "Sales Manager",
+                        source="indeed",
+                    ),
+                }
+            ]
+        },
+    )
+    assert stale_client_upsert.status_code == 200
+    assert "indeed-sales" not in {
+        item["id"] for item in stale_client_upsert.json()
+    }
+    assert stored_job_statuses(
+        api_context,
+        owner_id=owner_id,
+    )["indeed-sales"] == "screened_out"
+
+    full_match = Mock(
+        side_effect=AssertionError("hidden job reached full AI Match")
+    )
+    monkeypatch.setattr(
+        jobs_api,
+        "create_vacancy_matching_ai_facade",
+        full_match,
+    )
+    hidden_match = api_context.client.post(
+        "/jobs/ai-match",
+        headers=headers,
+        json={
+            "jobs": [
+                {
+                    "id": "indeed-sales",
+                    "data": imported_stored_job(
+                        "Sales Manager",
+                        source="indeed",
+                    ),
+                }
+            ]
+        },
+    )
+    assert hidden_match.status_code == 200
+    assert hidden_match.json() == []
+    hidden_async_match = api_context.client.post(
+        "/jobs/ai-match/run",
+        headers=headers,
+        json={
+            "jobs": [
+                {
+                    "id": "jobs_ch-unclear",
+                    "data": imported_stored_job(
+                        "Unclear Specialist",
+                        source="jobs_ch",
+                    ),
+                }
+            ]
+        },
+    )
+    assert hidden_async_match.status_code == 202
+    assert hidden_async_match.json()["status"] == "completed"
+    assert full_match.call_count == 0
+
+    changed_filters = screening_filters()
+    changed_filters["screening"]["targetRoles"] = [
+        "Software Engineer",
+        "Sales Manager",
+    ]
+    changed = api_context.client.patch(
+        f"/job-search/configs/{config_id}",
+        headers=headers,
+        json={"filters": changed_filters},
+    )
+    assert changed.status_code == 200
+
+    changed_preview = api_context.client.post(
+        f"/job-search/configs/{config_id}/rescreen",
+        headers=headers,
+        json={"dryRun": True},
+    )
+    assert changed_preview.status_code == 200
+    assert changed_preview.json()["jobsToHide"] == 0
+    assert changed_preview.json()["jobsToRestore"] == 1
+    assert len(facade.calls) == 2
+    stale_confirmation = api_context.client.post(
+        f"/job-search/configs/{config_id}/rescreen",
+        headers=headers,
+        json={
+            "dryRun": False,
+            "confirm": True,
+            "confirmationToken": preview["confirmationToken"],
+        },
+    )
+    assert stale_confirmation.status_code == 409
+    changed_apply = api_context.client.post(
+        f"/job-search/configs/{config_id}/rescreen",
+        headers=headers,
+        json={
+            "dryRun": False,
+            "confirm": True,
+            "confirmationToken": changed_preview.json()["confirmationToken"],
+        },
+    )
+    assert changed_apply.status_code == 200
+    assert changed_apply.json()["jobsRestored"] == 1
+    assert stored_job_statuses(
+        api_context,
+        owner_id=owner_id,
+    )["indeed-sales"] == "active"
 
 
 def test_run_now_persists_jobs_snapshot_and_no_consent_warning(
@@ -788,6 +1089,46 @@ def screening_filters() -> dict[str, object]:
             "hardRules": [],
         },
     }
+
+
+def imported_stored_job(
+    title: str,
+    *,
+    source: str,
+) -> dict[str, object]:
+    source_label = {
+        "linkedin": "LinkedIn",
+        "indeed": "Indeed",
+        "jobs_ch": "jobs.ch",
+    }[source]
+    return {
+        "title": title,
+        "company": "Imported Test AG",
+        "location": "Zurich",
+        "type": "Full-time",
+        "experience": "Mid",
+        "overview": f"{title} description",
+        "posted": "Today",
+        "logo": source,
+        "department": f"{source_label} import",
+        "sourceUrl": f"https://example.test/{source}/{title}",
+    }
+
+
+def stored_job_statuses(
+    context: ApiContext,
+    *,
+    owner_id: str,
+) -> dict[str, str]:
+    with context.sessions() as db:
+        records = list(
+            db.scalars(
+                select(StoredJobRecord).where(
+                    StoredJobRecord.owner_id == owner_id
+                )
+            ).all()
+        )
+    return {record.id: record.status for record in records}
 
 
 def grant_ai_consent(context: ApiContext, *, owner_id: str) -> None:

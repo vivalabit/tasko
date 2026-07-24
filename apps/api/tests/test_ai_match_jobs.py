@@ -1,4 +1,5 @@
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +9,67 @@ from app.services import ai_match as ai_match_service
 from app.services import ai_match_jobs as ai_match_jobs_service
 from app.services.ai_match import OpenClawAiMatchError
 from app.services.ai_match_jobs import AiMatchJobManager
+
+
+class EmptyStoredJobsSession:
+    def get(self, _model, _key):
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+def test_background_match_skips_job_hidden_after_queueing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def fake_calculate_ai_matches(
+        _profile: ProfilePayload,
+        jobs: list[dict],
+        **_: object,
+    ) -> list[dict]:
+        calls.append([str(job["id"]) for job in jobs])
+        return jobs
+
+    class ScreenedOutSession:
+        def get(self, _model, _key):
+            return SimpleNamespace(status="screened_out")
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        ai_match_service,
+        "calculate_ai_matches",
+        fake_calculate_ai_matches,
+    )
+    manager = AiMatchJobManager()
+    started, _ = manager.start(
+        owner_id="hidden-after-queue-owner",
+        profile=ProfilePayload(),
+        jobs=[{"id": "linkedin-hidden"}],
+        profile_hash="a" * 64,
+        candidate_snapshot={},
+        settings=Settings(
+            openclaw_ai_match_enabled=True,
+            openclaw_ai_match_max_jobs=1,
+        ),
+        session_factory=ScreenedOutSession,
+        force=True,
+    )
+    assert started is True
+
+    for _ in range(100):
+        status = manager.status("hidden-after-queue-owner")
+        if status.status in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+
+    assert status.status == "completed"
+    assert status.processed == status.total == 1
+    assert status.updated_jobs == []
+    assert calls == []
 
 
 def test_bulk_ai_match_continues_after_one_vacancy_fails(
@@ -55,7 +117,7 @@ def test_bulk_ai_match_continues_after_one_vacancy_fails(
             openclaw_ai_match_max_jobs=2,
             openclaw_ai_match_max_attempts=1,
         ),
-        session_factory=lambda: None,
+        session_factory=EmptyStoredJobsSession,
         force=True,
     )
     assert started is True
@@ -127,7 +189,7 @@ def test_background_match_pins_backend_and_model_before_thread_start(
         profile_hash="a" * 64,
         candidate_snapshot={},
         settings=settings,
-        session_factory=lambda: None,
+        session_factory=EmptyStoredJobsSession,
         force=True,
     )
     assert started is True

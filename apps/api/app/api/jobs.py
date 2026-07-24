@@ -81,7 +81,7 @@ def upsert_jobs(request: StoredJobsRequest, db: Session = Depends(get_db)) -> li
         now = datetime.now(UTC).isoformat()
         for job in request.jobs:
             record = db.get(StoredJobRecord, (get_bound_owner_id(), job.id))
-            if record and record.status == DISMISSED_JOB_STATUS:
+            if record and record.status != ACTIVE_JOB_STATUS:
                 continue
             job_data = prepare_job_data(job.data, record, now)
             if record:
@@ -120,7 +120,7 @@ def match_jobs(
         jobs_to_match = []
         for job in request.jobs:
             record = db.get(StoredJobRecord, (get_bound_owner_id(), job.id))
-            if record and record.status == DISMISSED_JOB_STATUS:
+            if record and record.status != ACTIVE_JOB_STATUS:
                 continue
             jobs_to_match.append(prepare_job_data(job.data, record, now))
         if not jobs_to_match:
@@ -198,7 +198,7 @@ def run_match_jobs(
         jobs_to_match = []
         for job in request.jobs:
             record = db.get(StoredJobRecord, (get_bound_owner_id(), job.id))
-            if record and record.status == DISMISSED_JOB_STATUS:
+            if record and record.status != ACTIVE_JOB_STATUS:
                 continue
             jobs_to_match.append(prepare_job_data(job.data, record, now))
         if not jobs_to_match:
@@ -364,7 +364,7 @@ def save_match_feedback(
 ) -> StoredJobPayload:
     try:
         record = db.get(StoredJobRecord, (get_bound_owner_id(), job_id))
-        if not record or record.status == DISMISSED_JOB_STATUS:
+        if not record or record.status != ACTIVE_JOB_STATUS:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Job was not found",

@@ -1,5 +1,5 @@
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import re
 from typing import Any, Literal
@@ -76,11 +76,13 @@ class JobSearchExecutionResult:
 class NewJobCandidate:
     job: ParsedJob
     job_id: str
+    compact_data: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class ScreeningPipelineResult:
     keep: list[NewJobCandidate]
+    decisions: list[JobScreeningDecision] = field(default_factory=list)
     jobs_screened: int = 0
     jobs_passed: int = 0
     jobs_rejected: int = 0
@@ -524,6 +526,7 @@ def screen_new_job_candidates(
             for candidate in candidates
             if candidate.job_id in keep_ids
         ],
+        decisions=ordered_decisions,
         jobs_screened=len(candidates),
         jobs_passed=sum(
             decision.decision == "keep" for decision in ordered_decisions
@@ -540,6 +543,11 @@ def screen_new_job_candidates(
 
 
 def compact_screening_job(candidate: NewJobCandidate) -> dict[str, Any]:
+    if candidate.compact_data is not None:
+        return {
+            **candidate.compact_data,
+            "id": candidate.job_id,
+        }
     job = candidate.job
     return {
         "id": candidate.job_id,

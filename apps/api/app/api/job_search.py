@@ -16,12 +16,20 @@ from app.models.job_search import (
     JobSearchConfigRecord,
     JobSearchConfigUpdateRequest,
     JobSearchManualRunRequest,
+    JobSearchRescreenPayload,
+    JobSearchRescreenRequest,
     JobSearchRunPayload,
     JobSearchRunRecord,
     JobSearchScheduleCreateRequest,
     JobSearchSchedulePayload,
     JobSearchScheduleRecord,
     JobSearchScheduleUpdateRequest,
+)
+from app.services.job_rescreening import (
+    JobRescreeningConfirmationRequired,
+    JobRescreeningError,
+    JobRescreeningPlanChanged,
+    rescreen_stored_jobs,
 )
 from app.services.job_search_execution import (
     JobSearchExecutionError,
@@ -124,6 +132,51 @@ def update_config(
         db.commit()
         db.refresh(record)
         return record
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+
+
+@router.post(
+    "/configs/{config_id}/rescreen",
+    response_model=JobSearchRescreenPayload,
+)
+def rescreen_config_jobs(
+    config_id: str,
+    request: JobSearchRescreenRequest,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> JobSearchRescreenPayload:
+    try:
+        config = require_config(db, config_id)
+        result = rescreen_stored_jobs(
+            db,
+            config=config,
+            settings=settings,
+            dry_run=request.dry_run,
+            confirm=request.confirm,
+            confirmation_token=request.confirmation_token,
+        )
+        db.commit()
+        return result
+    except (
+        JobRescreeningConfirmationRequired,
+        JobRescreeningPlanChanged,
+    ) as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except JobRescreeningError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     except HTTPException:
         db.rollback()
         raise

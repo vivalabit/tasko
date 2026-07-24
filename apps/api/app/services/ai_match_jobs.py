@@ -11,7 +11,12 @@ from sqlalchemy.orm import Session
 
 from app.core.identity import current_owner_id
 from app.core.settings import Settings
-from app.models.jobs import AiMatchJobFailure, AiMatchJobStatus, StoredJobPayload
+from app.models.jobs import (
+    AiMatchJobFailure,
+    AiMatchJobStatus,
+    StoredJobPayload,
+    StoredJobRecord,
+)
 from app.models.profile import ProfilePayload
 from app.services.ai_match import (
     AiMatchError,
@@ -131,6 +136,14 @@ class AiMatchJobManager:
         session_factory: SessionFactory,
         force: bool,
     ) -> None:
+        batch = self._active_jobs_only(
+            owner_id=owner_id,
+            run_id=run_id,
+            batch=batch,
+            session_factory=session_factory,
+        )
+        if not batch:
+            return
         try:
             matched_jobs = facade.match(
                 profile,
@@ -197,6 +210,32 @@ class AiMatchJobManager:
         except SQLAlchemyError:
             db.rollback()
             raise
+        finally:
+            db.close()
+
+    def _active_jobs_only(
+        self,
+        *,
+        owner_id: str,
+        run_id: str,
+        batch: list[dict[str, Any]],
+        session_factory: SessionFactory,
+    ) -> list[dict[str, Any]]:
+        db = session_factory()
+        try:
+            active: list[dict[str, Any]] = []
+            for job in batch:
+                job_id = str(job.get("id") or "")
+                record = (
+                    db.get(StoredJobRecord, (owner_id, job_id))
+                    if job_id
+                    else None
+                )
+                if record is not None and record.status != "active":
+                    self._increment(owner_id, run_id)
+                    continue
+                active.append(job)
+            return active
         finally:
             db.close()
 

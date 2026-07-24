@@ -137,7 +137,7 @@ def persist_job_and_match(db: Session, *, job: dict[str, Any], profile_hash: str
 
     job_data = strip_ai_match(job)
     record = db.get(StoredJobRecord, (get_bound_owner_id(), job_id))
-    if record and record.status == "dismissed":
+    if record and record.status != "active":
         return
     if record:
         record.data = job_data
