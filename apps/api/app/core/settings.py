@@ -36,10 +36,17 @@ class Settings(BaseSettings):
     openclaw_ai_match_timeout_seconds: int = 120
     openclaw_ai_match_max_jobs: int = 1
     openclaw_ai_match_max_attempts: int = Field(default=2, ge=1, le=4)
+    ai_match_model: str | None = Field(default=None, min_length=1, max_length=256)
+    ai_match_reasoning: Literal[
+        "off", "none", "low", "medium", "high", "xhigh", "max"
+    ] | None = None
+    ai_match_batch_size: int | None = Field(default=None, ge=1, le=100)
+    ai_match_timeout_seconds: int | None = Field(default=None, ge=10, le=600)
+    ai_match_max_attempts: int | None = Field(default=None, ge=1, le=4)
     job_screening_model: str = Field(default="openai/gpt-5-mini", min_length=1, max_length=256)
     job_screening_reasoning: Literal[
-        "none", "low", "medium", "high", "xhigh", "max"
-    ] = "none"
+        "off", "none", "low", "medium", "high", "xhigh", "max"
+    ] = "off"
     job_screening_batch_size: int = Field(default=10, ge=1, le=100)
     job_screening_timeout_seconds: int = Field(default=60, ge=10, le=600)
     job_screening_max_attempts: int = Field(default=2, ge=1, le=4)
@@ -113,6 +120,39 @@ class Settings(BaseSettings):
             self.openai_api_retry_backoff_seconds
             if self.ai_backend_mode == "openai_api"
             else openclaw_retry_backoff_seconds
+        )
+
+    def normalize_reasoning_for_backend(self, reasoning: str) -> str:
+        if reasoning == "none":
+            return "off"
+        return reasoning
+
+    def ai_match_model_value(self) -> str:
+        if self.ai_match_model:
+            return self.ai_match_model
+        return (
+            self.openai_api_model
+            if self.ai_backend_mode == "openai_api"
+            else self.openclaw_ai_match_model
+        )
+
+    def ai_match_reasoning_value(self) -> str:
+        reasoning = self.ai_match_reasoning or self.ai_reasoning_for(
+            self.openclaw_ai_match_thinking
+        )
+        return self.normalize_reasoning_for_backend(reasoning)
+
+    def ai_match_batch_size_value(self) -> int:
+        return self.ai_match_batch_size or self.openclaw_ai_match_max_jobs
+
+    def ai_match_timeout_seconds_value(self) -> int:
+        return self.ai_match_timeout_seconds or self.ai_timeout_for(
+            self.openclaw_ai_match_timeout_seconds
+        )
+
+    def ai_match_max_attempts_value(self) -> int:
+        return self.ai_match_max_attempts or self.ai_max_attempts_for(
+            self.openclaw_ai_match_max_attempts
         )
 
     @model_validator(mode="after")

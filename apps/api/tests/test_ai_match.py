@@ -723,6 +723,28 @@ def test_matching_facade_uses_direct_api_configuration() -> None:
     assert facade.max_jobs == 4
 
 
+def test_matching_facade_prefers_dedicated_ai_match_configuration() -> None:
+    facade = create_vacancy_matching_ai_facade(
+        Settings(
+            ai_backend_mode="openai_api",
+            openai_api_key="test-key",
+            openai_api_model="gpt-default",
+            openai_api_reasoning_effort="medium",
+            ai_match_model="openai/gpt-dedicated",
+            ai_match_reasoning="high",
+            ai_match_batch_size=6,
+            ai_match_timeout_seconds=180,
+            ai_match_max_attempts=4,
+        )
+    )
+
+    assert facade.model == "openai/gpt-dedicated"
+    assert facade.thinking == "high"
+    assert facade.max_jobs == 6
+    assert facade.timeout_seconds == 180
+    assert facade.max_attempts == 4
+
+
 def test_openclaw_candidate_snapshot_reads_top_level_payloads_text() -> None:
     payload = extract_openclaw_candidate_snapshot_payload(
         json.dumps(

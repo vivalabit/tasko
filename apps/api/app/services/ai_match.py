@@ -315,20 +315,12 @@ def create_vacancy_matching_ai_facade(settings: Settings) -> VacancyMatchingAIFa
         backend=create_configured_ai_backend(settings),
         command=settings.openclaw_command,
         agent_id=settings.openclaw_agent_id,
-        thinking=settings.ai_reasoning_for(settings.openclaw_ai_match_thinking),
-        timeout_seconds=settings.ai_timeout_for(
-            settings.openclaw_ai_match_timeout_seconds
-        ),
+        thinking=settings.ai_match_reasoning_value(),
+        timeout_seconds=settings.ai_match_timeout_seconds_value(),
         enabled=settings.openclaw_ai_match_enabled,
-        max_jobs=settings.openclaw_ai_match_max_jobs,
-        model=(
-            settings.openai_api_model
-            if settings.ai_backend_mode == "openai_api"
-            else settings.openclaw_ai_match_model
-        ),
-        max_attempts=settings.ai_max_attempts_for(
-            settings.openclaw_ai_match_max_attempts
-        ),
+        max_jobs=settings.ai_match_batch_size_value(),
+        model=settings.ai_match_model_value(),
+        max_attempts=settings.ai_match_max_attempts_value(),
         retry_backoff_seconds=settings.ai_retry_backoff_for(0),
     )
 

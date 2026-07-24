@@ -95,12 +95,15 @@ def test_job_screening_settings_have_independent_defaults() -> None:
     settings = Settings()
 
     assert settings.job_screening_model == "openai/gpt-5-mini"
-    assert settings.job_screening_reasoning == "none"
+    assert settings.job_screening_reasoning == "off"
     assert settings.job_screening_batch_size == 10
     assert settings.job_screening_timeout_seconds == 60
     assert settings.job_screening_max_attempts == 2
     assert settings.job_screening_max_description_chars == 12_000
     assert settings.openclaw_ai_match_model == "openai/gpt-5.6-terra"
+    assert settings.ai_match_model_value() == "openai/gpt-5.6-terra"
+    assert settings.ai_match_reasoning_value() == "low"
+    assert settings.ai_match_batch_size_value() == 1
 
 
 def test_job_screening_settings_use_dedicated_environment_variables(monkeypatch) -> None:
@@ -244,11 +247,52 @@ def test_job_screening_settings_api_updates_only_screening_configuration(
     assert 'JOB_SCREENING_MODEL="openai/gpt-screening"' in env_text
 
 
+def test_ai_match_settings_api_persists_backend_neutral_overrides(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(settings_api, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("AI_BACKEND", "openclaw_codex")
+    monkeypatch.setenv("AI_MATCH_MODEL", "openai/gpt-5.6-terra")
+    monkeypatch.setenv("AI_MATCH_REASONING", "low")
+    monkeypatch.setenv("AI_MATCH_BATCH_SIZE", "1")
+    monkeypatch.setenv("AI_MATCH_TIMEOUT_SECONDS", "120")
+    monkeypatch.setenv("AI_MATCH_MAX_ATTEMPTS", "2")
+    get_settings.cache_clear()
+
+    try:
+        response = TestClient(app).put(
+            "/settings",
+            json={
+                "ai_match_model": "openai/gpt-main",
+                "ai_match_reasoning": "high",
+                "ai_match_batch_size": 4,
+                "ai_match_timeout_seconds": 180,
+                "ai_match_max_attempts": 3,
+            },
+        )
+        refreshed = get_settings()
+    finally:
+        get_settings.cache_clear()
+
+    assert response.status_code == 200
+    assert response.json()["ai_match_model"] == "openai/gpt-main"
+    assert response.json()["ai_match_reasoning"] == "high"
+    assert response.json()["ai_match_batch_size"] == 4
+    assert response.json()["ai_match_timeout_seconds"] == 180
+    assert response.json()["ai_match_max_attempts"] == 3
+    assert refreshed.ai_match_model_value() == "openai/gpt-main"
+    assert refreshed.ai_match_batch_size_value() == 4
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert 'AI_MATCH_MODEL="openai/gpt-main"' in env_text
+    assert "AI_MATCH_REASONING=high" in env_text
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
         ("job_screening_model", "  "),
-        ("job_screening_reasoning", "off"),
+        ("job_screening_reasoning", "adaptive"),
         ("job_screening_batch_size", 0),
         ("job_screening_timeout_seconds", 9),
         ("job_screening_max_attempts", 5),

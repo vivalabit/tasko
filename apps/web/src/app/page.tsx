@@ -270,6 +270,7 @@ type ApplicationTimelineItem = {
 
 type AIBackendName = AiBackend;
 type OpenAIReasoningEffort = "none" | "low" | "medium" | "high" | "xhigh" | "max";
+type AIWorkloadReasoningEffort = "off" | OpenAIReasoningEffort;
 
 type AppSettings = {
   has_brightdata_api_key: boolean;
@@ -282,6 +283,17 @@ type AppSettings = {
   openai_api_timeout_seconds: number;
   openai_api_max_attempts: number;
   openai_api_retry_backoff_seconds: number;
+  ai_match_model: string;
+  ai_match_reasoning: AIWorkloadReasoningEffort;
+  ai_match_batch_size: number;
+  ai_match_timeout_seconds: number;
+  ai_match_max_attempts: number;
+  job_screening_model: string;
+  job_screening_reasoning: AIWorkloadReasoningEffort;
+  job_screening_batch_size: number;
+  job_screening_timeout_seconds: number;
+  job_screening_max_attempts: number;
+  job_screening_max_description_chars: number;
 };
 
 type AppSettingsUpdate = Partial<{
@@ -293,6 +305,17 @@ type AppSettingsUpdate = Partial<{
   openai_api_timeout_seconds: number;
   openai_api_max_attempts: number;
   openai_api_retry_backoff_seconds: number;
+  ai_match_model: string;
+  ai_match_reasoning: AIWorkloadReasoningEffort;
+  ai_match_batch_size: number;
+  ai_match_timeout_seconds: number;
+  ai_match_max_attempts: number;
+  job_screening_model: string;
+  job_screening_reasoning: AIWorkloadReasoningEffort;
+  job_screening_batch_size: number;
+  job_screening_timeout_seconds: number;
+  job_screening_max_attempts: number;
+  job_screening_max_description_chars: number;
 }>;
 
 const defaultAppSettings: AppSettings = {
@@ -306,6 +329,17 @@ const defaultAppSettings: AppSettings = {
   openai_api_timeout_seconds: 120,
   openai_api_max_attempts: 2,
   openai_api_retry_backoff_seconds: 0.8,
+  ai_match_model: "openai/gpt-5.6-terra",
+  ai_match_reasoning: "low",
+  ai_match_batch_size: 1,
+  ai_match_timeout_seconds: 120,
+  ai_match_max_attempts: 2,
+  job_screening_model: "openai/gpt-5-mini",
+  job_screening_reasoning: "off",
+  job_screening_batch_size: 10,
+  job_screening_timeout_seconds: 60,
+  job_screening_max_attempts: 2,
+  job_screening_max_description_chars: 12_000,
 };
 
 type BrightDataApiKeyResponse = {
@@ -8525,24 +8559,65 @@ function SettingsView({
   const [openAiTimeoutDraft, setOpenAiTimeoutDraft] = useState(settings.openai_api_timeout_seconds);
   const [openAiAttemptsDraft, setOpenAiAttemptsDraft] = useState(settings.openai_api_max_attempts);
   const [openAiBackoffDraft, setOpenAiBackoffDraft] = useState(settings.openai_api_retry_backoff_seconds);
+  const [aiMatchModelDraft, setAiMatchModelDraft] = useState(settings.ai_match_model);
+  const [aiMatchReasoningDraft, setAiMatchReasoningDraft] = useState<AIWorkloadReasoningEffort>(
+    settings.ai_match_reasoning,
+  );
+  const [aiMatchBatchSizeDraft, setAiMatchBatchSizeDraft] = useState(settings.ai_match_batch_size);
+  const [aiMatchTimeoutDraft, setAiMatchTimeoutDraft] = useState(settings.ai_match_timeout_seconds);
+  const [aiMatchAttemptsDraft, setAiMatchAttemptsDraft] = useState(settings.ai_match_max_attempts);
+  const [screeningModelDraft, setScreeningModelDraft] = useState(settings.job_screening_model);
+  const [screeningReasoningDraft, setScreeningReasoningDraft] = useState<AIWorkloadReasoningEffort>(
+    settings.job_screening_reasoning,
+  );
+  const [screeningBatchSizeDraft, setScreeningBatchSizeDraft] = useState(settings.job_screening_batch_size);
+  const [screeningTimeoutDraft, setScreeningTimeoutDraft] = useState(settings.job_screening_timeout_seconds);
+  const [screeningAttemptsDraft, setScreeningAttemptsDraft] = useState(settings.job_screening_max_attempts);
+  const [screeningDescriptionLimitDraft, setScreeningDescriptionLimitDraft] = useState(
+    settings.job_screening_max_description_chars,
+  );
   const [isCurrentKeyVisible, setIsCurrentKeyVisible] = useState(false);
   const [revealedCurrentKey, setRevealedCurrentKey] = useState("");
   const [isCurrentKeyLoading, setIsCurrentKeyLoading] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
   const hasUsableOpenAiKey = settings.openai_api_key_configured || Boolean(openAiApiKeyDraft.trim());
-  const aiValidationMessage = aiBackendDraft === "openai_api"
+  const aiConnectionValidationMessage = aiBackendDraft === "openai_api"
     ? !hasUsableOpenAiKey
       ? "Add an OpenAI API key before enabling this mode."
       : !openAiModelDraft.trim()
-        ? "Enter an OpenAI model before enabling this mode."
+        ? "Enter a default OpenAI model before enabling this mode."
         : !Number.isFinite(openAiTimeoutDraft) || openAiTimeoutDraft < 10 || openAiTimeoutDraft > 600
-          ? "Timeout must be between 10 and 600 seconds."
+          ? "OpenAI timeout must be between 10 and 600 seconds."
           : !Number.isInteger(openAiAttemptsDraft) || openAiAttemptsDraft < 1 || openAiAttemptsDraft > 4
-            ? "Max attempts must be between 1 and 4."
+            ? "OpenAI max attempts must be between 1 and 4."
             : !Number.isFinite(openAiBackoffDraft) || openAiBackoffDraft < 0 || openAiBackoffDraft > 10
-              ? "Retry backoff must be between 0 and 10 seconds."
+              ? "OpenAI retry backoff must be between 0 and 10 seconds."
               : ""
     : "";
+  const aiMatchValidationMessage = !aiMatchModelDraft.trim()
+    ? "Enter a model for Full AI Match."
+    : !Number.isInteger(aiMatchBatchSizeDraft) || aiMatchBatchSizeDraft < 1 || aiMatchBatchSizeDraft > 100
+      ? "Full AI Match batch size must be between 1 and 100."
+      : !Number.isFinite(aiMatchTimeoutDraft) || aiMatchTimeoutDraft < 10 || aiMatchTimeoutDraft > 600
+        ? "Full AI Match timeout must be between 10 and 600 seconds."
+        : !Number.isInteger(aiMatchAttemptsDraft) || aiMatchAttemptsDraft < 1 || aiMatchAttemptsDraft > 4
+          ? "Full AI Match max attempts must be between 1 and 4."
+          : "";
+  const screeningValidationMessage = !screeningModelDraft.trim()
+    ? "Enter a model for vacancy pre-screening."
+    : !Number.isInteger(screeningBatchSizeDraft) || screeningBatchSizeDraft < 1 || screeningBatchSizeDraft > 100
+      ? "Pre-screening batch size must be between 1 and 100."
+      : !Number.isFinite(screeningTimeoutDraft) || screeningTimeoutDraft < 10 || screeningTimeoutDraft > 600
+        ? "Pre-screening timeout must be between 10 and 600 seconds."
+        : !Number.isInteger(screeningAttemptsDraft) || screeningAttemptsDraft < 1 || screeningAttemptsDraft > 4
+          ? "Pre-screening max attempts must be between 1 and 4."
+          : !Number.isInteger(screeningDescriptionLimitDraft)
+              || screeningDescriptionLimitDraft < 1_000
+              || screeningDescriptionLimitDraft > 200_000
+            ? "Pre-screening description limit must be between 1,000 and 200,000 characters."
+            : "";
+  const aiValidationMessage =
+    aiConnectionValidationMessage || aiMatchValidationMessage || screeningValidationMessage;
   const currentKeyPreview = settings.brightdata_api_key_preview || "No key saved";
   const displayedCurrentKey =
     settings.has_brightdata_api_key && isCurrentKeyVisible
@@ -8573,8 +8648,30 @@ function SettingsView({
     setOpenAiTimeoutDraft(settings.openai_api_timeout_seconds);
     setOpenAiAttemptsDraft(settings.openai_api_max_attempts);
     setOpenAiBackoffDraft(settings.openai_api_retry_backoff_seconds);
+    setAiMatchModelDraft(settings.ai_match_model);
+    setAiMatchReasoningDraft(settings.ai_match_reasoning);
+    setAiMatchBatchSizeDraft(settings.ai_match_batch_size);
+    setAiMatchTimeoutDraft(settings.ai_match_timeout_seconds);
+    setAiMatchAttemptsDraft(settings.ai_match_max_attempts);
+    setScreeningModelDraft(settings.job_screening_model);
+    setScreeningReasoningDraft(settings.job_screening_reasoning);
+    setScreeningBatchSizeDraft(settings.job_screening_batch_size);
+    setScreeningTimeoutDraft(settings.job_screening_timeout_seconds);
+    setScreeningAttemptsDraft(settings.job_screening_max_attempts);
+    setScreeningDescriptionLimitDraft(settings.job_screening_max_description_chars);
   }, [
+    settings.ai_match_batch_size,
+    settings.ai_match_max_attempts,
+    settings.ai_match_model,
+    settings.ai_match_reasoning,
+    settings.ai_match_timeout_seconds,
     settings.ai_backend,
+    settings.job_screening_batch_size,
+    settings.job_screening_max_attempts,
+    settings.job_screening_max_description_chars,
+    settings.job_screening_model,
+    settings.job_screening_reasoning,
+    settings.job_screening_timeout_seconds,
     settings.openai_api_key_configured,
     settings.openai_api_key_preview,
     settings.openai_api_max_attempts,
@@ -8593,6 +8690,17 @@ function SettingsView({
       openai_api_timeout_seconds: openAiTimeoutDraft,
       openai_api_max_attempts: openAiAttemptsDraft,
       openai_api_retry_backoff_seconds: openAiBackoffDraft,
+      ai_match_model: aiMatchModelDraft.trim(),
+      ai_match_reasoning: aiMatchReasoningDraft,
+      ai_match_batch_size: aiMatchBatchSizeDraft,
+      ai_match_timeout_seconds: aiMatchTimeoutDraft,
+      ai_match_max_attempts: aiMatchAttemptsDraft,
+      job_screening_model: screeningModelDraft.trim(),
+      job_screening_reasoning: screeningReasoningDraft,
+      job_screening_batch_size: screeningBatchSizeDraft,
+      job_screening_timeout_seconds: screeningTimeoutDraft,
+      job_screening_max_attempts: screeningAttemptsDraft,
+      job_screening_max_description_chars: screeningDescriptionLimitDraft,
     });
   }
 
@@ -8838,6 +8946,178 @@ function SettingsView({
                 </Button>
               </div>
             ) : null}
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              <section className="grid content-start gap-5 rounded-xl border border-amber-300/20 bg-amber-300/[0.045] p-4 sm:p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="text-sm font-bold text-white 2xl:text-base">Vacancy pre-screening</h3>
+                      <span className="rounded-full border border-amber-300/25 bg-amber-300/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-amber-200">
+                        Cheap model
+                      </span>
+                    </div>
+                    <p className="mt-1.5 text-xs leading-5 text-muted">
+                      Runs first and hides rejected vacancies from the client. Decisions follow only each search config.
+                    </p>
+                  </div>
+                </div>
+
+                <label className="grid gap-2">
+                  <span className="text-sm font-bold text-[#d8dee8]">Model</span>
+                  <input
+                    aria-label="Vacancy pre-screening model"
+                    value={screeningModelDraft}
+                    onChange={(event) => setScreeningModelDraft(event.target.value)}
+                    placeholder="openai/gpt-5-mini"
+                    className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/60 focus:border-amber-300/60"
+                  />
+                </label>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="grid gap-2">
+                    <span className="text-sm font-bold text-[#d8dee8]">Reasoning</span>
+                    <select
+                      aria-label="Vacancy pre-screening reasoning"
+                      value={screeningReasoningDraft}
+                      onChange={(event) => setScreeningReasoningDraft(event.target.value as AIWorkloadReasoningEffort)}
+                      className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-amber-300/60"
+                    >
+                      {(["off", "low", "medium", "high", "xhigh", "max"] as AIWorkloadReasoningEffort[]).map((effort) => (
+                        <option key={effort} value={effort}>{effort}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="grid gap-2">
+                    <span className="text-sm font-bold text-[#d8dee8]">Jobs per request</span>
+                    <input
+                      type="number"
+                      aria-label="Vacancy pre-screening batch size"
+                      min={1}
+                      max={100}
+                      value={screeningBatchSizeDraft}
+                      onChange={(event) => setScreeningBatchSizeDraft(Number(event.target.value))}
+                      className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-amber-300/60"
+                    />
+                  </label>
+                  <label className="grid gap-2">
+                    <span className="text-sm font-bold text-[#d8dee8]">Timeout, seconds</span>
+                    <input
+                      type="number"
+                      aria-label="Vacancy pre-screening timeout seconds"
+                      min={10}
+                      max={600}
+                      value={screeningTimeoutDraft}
+                      onChange={(event) => setScreeningTimeoutDraft(Number(event.target.value))}
+                      className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-amber-300/60"
+                    />
+                  </label>
+                  <label className="grid gap-2">
+                    <span className="text-sm font-bold text-[#d8dee8]">Max attempts</span>
+                    <input
+                      type="number"
+                      aria-label="Vacancy pre-screening max attempts"
+                      min={1}
+                      max={4}
+                      value={screeningAttemptsDraft}
+                      onChange={(event) => setScreeningAttemptsDraft(Number(event.target.value))}
+                      className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-amber-300/60"
+                    />
+                  </label>
+                </div>
+
+                <label className="grid gap-2">
+                  <span className="text-sm font-bold text-[#d8dee8]">Description limit, characters</span>
+                  <input
+                    type="number"
+                    aria-label="Vacancy pre-screening description limit"
+                    min={1_000}
+                    max={200_000}
+                    step={1_000}
+                    value={screeningDescriptionLimitDraft}
+                    onChange={(event) => setScreeningDescriptionLimitDraft(Number(event.target.value))}
+                    className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-amber-300/60"
+                  />
+                </label>
+              </section>
+
+              <section className="grid content-start gap-5 rounded-xl border border-accent/25 bg-accent/[0.045] p-4 sm:p-5">
+                <div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="text-sm font-bold text-white 2xl:text-base">Full AI Match</h3>
+                    <span className="rounded-full border border-accent/30 bg-accent/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-[0.08em] text-orange-200">
+                      Main model
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-xs leading-5 text-muted">
+                    Runs only for vacancies that passed pre-screening and builds the detailed match analysis.
+                  </p>
+                </div>
+
+                <label className="grid gap-2">
+                  <span className="text-sm font-bold text-[#d8dee8]">Model</span>
+                  <input
+                    aria-label="Full AI Match model"
+                    value={aiMatchModelDraft}
+                    onChange={(event) => setAiMatchModelDraft(event.target.value)}
+                    placeholder="openai/gpt-5.6-terra"
+                    className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none placeholder:text-muted/60 focus:border-accent/70"
+                  />
+                </label>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="grid gap-2">
+                    <span className="text-sm font-bold text-[#d8dee8]">Reasoning</span>
+                    <select
+                      aria-label="Full AI Match reasoning"
+                      value={aiMatchReasoningDraft}
+                      onChange={(event) => setAiMatchReasoningDraft(event.target.value as AIWorkloadReasoningEffort)}
+                      className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                    >
+                      {(["off", "low", "medium", "high", "xhigh", "max"] as AIWorkloadReasoningEffort[]).map((effort) => (
+                        <option key={effort} value={effort}>{effort}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="grid gap-2">
+                    <span className="text-sm font-bold text-[#d8dee8]">Jobs per request</span>
+                    <input
+                      type="number"
+                      aria-label="Full AI Match batch size"
+                      min={1}
+                      max={100}
+                      value={aiMatchBatchSizeDraft}
+                      onChange={(event) => setAiMatchBatchSizeDraft(Number(event.target.value))}
+                      className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                    />
+                  </label>
+                  <label className="grid gap-2">
+                    <span className="text-sm font-bold text-[#d8dee8]">Timeout, seconds</span>
+                    <input
+                      type="number"
+                      aria-label="Full AI Match timeout seconds"
+                      min={10}
+                      max={600}
+                      value={aiMatchTimeoutDraft}
+                      onChange={(event) => setAiMatchTimeoutDraft(Number(event.target.value))}
+                      className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                    />
+                  </label>
+                  <label className="grid gap-2">
+                    <span className="text-sm font-bold text-[#d8dee8]">Max attempts</span>
+                    <input
+                      type="number"
+                      aria-label="Full AI Match max attempts"
+                      min={1}
+                      max={4}
+                      value={aiMatchAttemptsDraft}
+                      onChange={(event) => setAiMatchAttemptsDraft(Number(event.target.value))}
+                      className="h-11 rounded-md border border-border bg-[#0d131a] px-3 text-sm font-semibold text-white outline-none focus:border-accent/70"
+                    />
+                  </label>
+                </div>
+              </section>
+            </div>
 
             {aiValidationMessage ? <p role="alert" className="text-sm font-semibold text-red-300">{aiValidationMessage}</p> : null}
 

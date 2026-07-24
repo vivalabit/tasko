@@ -17,6 +17,11 @@ OPENAI_API_REASONING_EFFORT_ENV = "OPENAI_API_REASONING_EFFORT"
 OPENAI_API_TIMEOUT_SECONDS_ENV = "OPENAI_API_TIMEOUT_SECONDS"
 OPENAI_API_MAX_ATTEMPTS_ENV = "OPENAI_API_MAX_ATTEMPTS"
 OPENAI_API_RETRY_BACKOFF_SECONDS_ENV = "OPENAI_API_RETRY_BACKOFF_SECONDS"
+AI_MATCH_MODEL_ENV = "AI_MATCH_MODEL"
+AI_MATCH_REASONING_ENV = "AI_MATCH_REASONING"
+AI_MATCH_BATCH_SIZE_ENV = "AI_MATCH_BATCH_SIZE"
+AI_MATCH_TIMEOUT_SECONDS_ENV = "AI_MATCH_TIMEOUT_SECONDS"
+AI_MATCH_MAX_ATTEMPTS_ENV = "AI_MATCH_MAX_ATTEMPTS"
 JOB_SCREENING_MODEL_ENV = "JOB_SCREENING_MODEL"
 JOB_SCREENING_REASONING_ENV = "JOB_SCREENING_REASONING"
 JOB_SCREENING_BATCH_SIZE_ENV = "JOB_SCREENING_BATCH_SIZE"
@@ -25,7 +30,7 @@ JOB_SCREENING_MAX_ATTEMPTS_ENV = "JOB_SCREENING_MAX_ATTEMPTS"
 JOB_SCREENING_MAX_DESCRIPTION_CHARS_ENV = "JOB_SCREENING_MAX_DESCRIPTION_CHARS"
 
 AIBackendName = Literal["openclaw_codex", "openai_api"]
-ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh", "max"]
+ReasoningEffort = Literal["off", "none", "low", "medium", "high", "xhigh", "max"]
 
 
 class AppSettingsResponse(BaseModel):
@@ -39,6 +44,11 @@ class AppSettingsResponse(BaseModel):
     openai_api_timeout_seconds: int
     openai_api_max_attempts: int
     openai_api_retry_backoff_seconds: float
+    ai_match_model: str
+    ai_match_reasoning: ReasoningEffort
+    ai_match_batch_size: int
+    ai_match_timeout_seconds: int
+    ai_match_max_attempts: int
     job_screening_model: str
     job_screening_reasoning: ReasoningEffort
     job_screening_batch_size: int
@@ -60,6 +70,11 @@ class AppSettingsUpdateRequest(BaseModel):
     openai_api_timeout_seconds: int | None = Field(default=None, ge=10, le=600)
     openai_api_max_attempts: int | None = Field(default=None, ge=1, le=4)
     openai_api_retry_backoff_seconds: float | None = Field(default=None, ge=0, le=10)
+    ai_match_model: str | None = Field(default=None, max_length=256)
+    ai_match_reasoning: ReasoningEffort | None = None
+    ai_match_batch_size: int | None = Field(default=None, ge=1, le=100)
+    ai_match_timeout_seconds: int | None = Field(default=None, ge=10, le=600)
+    ai_match_max_attempts: int | None = Field(default=None, ge=1, le=4)
     job_screening_model: str | None = Field(default=None, max_length=256)
     job_screening_reasoning: ReasoningEffort | None = None
     job_screening_batch_size: int | None = Field(default=None, ge=1, le=100)
@@ -141,8 +156,15 @@ def build_settings_response() -> AppSettingsResponse:
         openai_api_timeout_seconds=settings.openai_api_timeout_seconds,
         openai_api_max_attempts=settings.openai_api_max_attempts,
         openai_api_retry_backoff_seconds=settings.openai_api_retry_backoff_seconds,
+        ai_match_model=settings.ai_match_model_value(),
+        ai_match_reasoning=settings.ai_match_reasoning_value(),
+        ai_match_batch_size=settings.ai_match_batch_size_value(),
+        ai_match_timeout_seconds=settings.ai_match_timeout_seconds_value(),
+        ai_match_max_attempts=settings.ai_match_max_attempts_value(),
         job_screening_model=settings.job_screening_model,
-        job_screening_reasoning=settings.job_screening_reasoning,
+        job_screening_reasoning=settings.normalize_reasoning_for_backend(
+            settings.job_screening_reasoning
+        ),
         job_screening_batch_size=settings.job_screening_batch_size,
         job_screening_timeout_seconds=settings.job_screening_timeout_seconds,
         job_screening_max_attempts=settings.job_screening_max_attempts,
@@ -200,6 +222,22 @@ def update_app_settings(payload: AppSettingsUpdateRequest) -> AppSettingsRespons
         updates[OPENAI_API_RETRY_BACKOFF_SECONDS_ENV] = str(
             payload.openai_api_retry_backoff_seconds
         )
+    if payload.ai_match_model is not None:
+        ai_match_model = payload.ai_match_model.strip()
+        if not ai_match_model:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail="AI Match model cannot be empty",
+            )
+        updates[AI_MATCH_MODEL_ENV] = ai_match_model
+    if payload.ai_match_reasoning is not None:
+        updates[AI_MATCH_REASONING_ENV] = payload.ai_match_reasoning
+    if payload.ai_match_batch_size is not None:
+        updates[AI_MATCH_BATCH_SIZE_ENV] = str(payload.ai_match_batch_size)
+    if payload.ai_match_timeout_seconds is not None:
+        updates[AI_MATCH_TIMEOUT_SECONDS_ENV] = str(payload.ai_match_timeout_seconds)
+    if payload.ai_match_max_attempts is not None:
+        updates[AI_MATCH_MAX_ATTEMPTS_ENV] = str(payload.ai_match_max_attempts)
     if payload.job_screening_model is not None:
         screening_model = payload.job_screening_model.strip()
         if not screening_model:

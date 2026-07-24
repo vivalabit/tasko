@@ -15,6 +15,17 @@ const configuredAppSettings = {
   openai_api_timeout_seconds: 120,
   openai_api_max_attempts: 2,
   openai_api_retry_backoff_seconds: 0.8,
+  ai_match_model: "openai/gpt-5.6-terra",
+  ai_match_reasoning: "low",
+  ai_match_batch_size: 1,
+  ai_match_timeout_seconds: 120,
+  ai_match_max_attempts: 2,
+  job_screening_model: "openai/gpt-5-mini",
+  job_screening_reasoning: "off",
+  job_screening_batch_size: 10,
+  job_screening_timeout_seconds: 60,
+  job_screening_max_attempts: 2,
+  job_screening_max_description_chars: 12_000,
 };
 
 function importedJobData({
@@ -161,14 +172,33 @@ it("saves a selectable AI backend without overwriting unrelated settings", async
   fireEvent.click(openClawMode);
   expect(screen.queryByLabelText("OpenAI API key")).not.toBeInTheDocument();
   expect(screen.getByText("OpenAI API key saved but not in use")).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Vacancy pre-screening model"), {
+    target: { value: "openai/gpt-5-mini-fast" },
+  });
+  fireEvent.change(screen.getByRole("combobox", { name: "Vacancy pre-screening reasoning" }), {
+    target: { value: "low" },
+  });
+  fireEvent.change(screen.getByLabelText("Full AI Match model"), {
+    target: { value: "openai/gpt-5.6-sol" },
+  });
+  fireEvent.change(screen.getByRole("spinbutton", { name: "Full AI Match batch size" }), {
+    target: { value: "4" },
+  });
   fireEvent.click(screen.getByRole("button", { name: "Save AI settings" }));
   await waitFor(() => {
     expect(requests.filter((request) => request.path === "/settings" && request.method === "PUT")).toHaveLength(1);
   });
   const openClawUpdate = requests.filter((request) => request.path === "/settings" && request.method === "PUT").at(-1)?.body;
-  expect(openClawUpdate).toMatchObject({ ai_backend: "openclaw_codex" });
+  expect(openClawUpdate).toMatchObject({
+    ai_backend: "openclaw_codex",
+    ai_match_model: "openai/gpt-5.6-sol",
+    ai_match_batch_size: 4,
+    job_screening_model: "openai/gpt-5-mini-fast",
+    job_screening_reasoning: "low",
+  });
   expect(openClawUpdate).not.toHaveProperty("openai_api_key");
-  fireEvent.click(openAiMode);
+  await screen.findByText("AI backend settings saved and activated");
+  fireEvent.click(screen.getByRole("radio", { name: /OpenAI API/ }));
   fireEvent.change(screen.getByRole("combobox", { name: "OpenAI reasoning effort" }), {
     target: { value: "high" },
   });
@@ -188,6 +218,17 @@ it("saves a selectable AI backend without overwriting unrelated settings", async
     openai_api_timeout_seconds: 90,
     openai_api_max_attempts: 2,
     openai_api_retry_backoff_seconds: 0.8,
+    ai_match_model: "openai/gpt-5.6-sol",
+    ai_match_reasoning: "low",
+    ai_match_batch_size: 4,
+    ai_match_timeout_seconds: 120,
+    ai_match_max_attempts: 2,
+    job_screening_model: "openai/gpt-5-mini-fast",
+    job_screening_reasoning: "low",
+    job_screening_batch_size: 10,
+    job_screening_timeout_seconds: 60,
+    job_screening_max_attempts: 2,
+    job_screening_max_description_chars: 12_000,
   });
   expect(update).not.toHaveProperty("openai_api_key");
   expect(update).not.toHaveProperty("brightdata_api_key");
@@ -238,7 +279,7 @@ it("validates OpenAI API mode before saving", async () => {
 
   fireEvent.change(screen.getByLabelText("OpenAI API key"), { target: { value: "sk-test-key" } });
   fireEvent.change(screen.getByRole("spinbutton", { name: "OpenAI timeout seconds" }), { target: { value: "5" } });
-  expect(screen.getByRole("alert")).toHaveTextContent("Timeout must be between 10 and 600 seconds.");
+  expect(screen.getByRole("alert")).toHaveTextContent("OpenAI timeout must be between 10 and 600 seconds.");
   expect(saveButton).toBeDisabled();
 
   fireEvent.change(screen.getByRole("spinbutton", { name: "OpenAI timeout seconds" }), { target: { value: "90" } });
