@@ -25,6 +25,17 @@ from app.models.job_search import (
     JobSearchScheduleRecord,
     JobSearchScheduleUpdateRequest,
 )
+from app.models.job_screening import (
+    JobScreeningAuditPayload,
+    JobScreeningDecisionRecord,
+)
+from app.services.job_screening_audit import (
+    JobScreeningAuditActionUnavailable,
+    JobScreeningAuditError,
+    allow_screening_decision_manually,
+    list_screening_audit,
+    recheck_screening_decision,
+)
 from app.services.job_rescreening import (
     JobRescreeningConfirmationRequired,
     JobRescreeningError,
@@ -58,6 +69,88 @@ SCHEDULE_FIELDS = {
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+@router.get(
+    "/screening-audit",
+    response_model=list[JobScreeningAuditPayload],
+)
+def get_screening_audit(
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[JobScreeningAuditPayload]:
+    try:
+        return list_screening_audit(db, limit=limit)
+    except SQLAlchemyError as exc:
+        raise database_unavailable(exc) from exc
+
+
+@router.post(
+    "/screening-audit/{decision_id}/recheck",
+    response_model=JobScreeningAuditPayload,
+)
+def recheck_audit_decision(
+    decision_id: str,
+    db: Session = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> JobScreeningAuditPayload:
+    try:
+        record = require_screening_decision(db, decision_id)
+        payload = recheck_screening_decision(
+            db,
+            record=record,
+            settings=settings,
+        )
+        db.commit()
+        return payload
+    except JobScreeningAuditActionUnavailable as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except JobScreeningAuditError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
+
+
+@router.post(
+    "/screening-audit/{decision_id}/allow",
+    response_model=JobScreeningAuditPayload,
+)
+def allow_audit_decision(
+    decision_id: str,
+    db: Session = Depends(get_db),
+) -> JobScreeningAuditPayload:
+    try:
+        record = require_screening_decision(db, decision_id)
+        payload = allow_screening_decision_manually(
+            db,
+            record=record,
+        )
+        db.commit()
+        return payload
+    except JobScreeningAuditActionUnavailable as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except HTTPException:
+        db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise database_unavailable(exc) from exc
 
 
 @router.get("/configs", response_model=list[JobSearchConfigPayload])
@@ -494,6 +587,19 @@ def require_config(db: Session, config_id: str) -> JobSearchConfigRecord:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Job search config not found",
+        )
+    return record
+
+
+def require_screening_decision(
+    db: Session,
+    decision_id: str,
+) -> JobScreeningDecisionRecord:
+    record = db.get(JobScreeningDecisionRecord, decision_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Screening audit entry not found",
         )
     return record
 

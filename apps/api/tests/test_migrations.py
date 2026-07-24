@@ -120,7 +120,7 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "20260724_0017"
+            assert revision == "20260724_0018"
         assert inspect(engine).get_pk_constraint("stored_jobs")["constrained_columns"] == [
             "owner_id",
             "id",
@@ -145,6 +145,8 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
         }
         assert screening_columns == {
             "id",
+            "job_id",
+            "search_config_id",
             "vacancy_hash",
             "config_hash",
             "decision",
@@ -156,6 +158,9 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             "title",
             "company",
             "source_url",
+            "vacancy_data",
+            "invalidated_at",
+            "manually_allowed_at",
             "created_at",
             "owner_id",
         }
@@ -511,7 +516,7 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260724_0017"
+        assert revision == "20260724_0018"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))

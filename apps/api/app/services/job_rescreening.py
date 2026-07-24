@@ -78,6 +78,7 @@ def rescreen_stored_jobs(
         candidates=[item.candidate for item in eligible],
         screening_config=normalized_config.screening,
         settings=settings,
+        search_config_id=config.id,
     )
     if len(screening_result.decisions) != len(eligible):
         raise JobRescreeningError(

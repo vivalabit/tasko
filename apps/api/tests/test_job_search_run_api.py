@@ -290,6 +290,354 @@ def test_manual_screening_persists_and_matches_only_keep_and_reuses_cache(
     }
 
 
+def test_screening_audit_is_owner_scoped_rechecks_and_allows_without_full_match(
+    api_context: ApiContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_id = "audit-owner"
+    headers = {"X-Rufina-Owner-Id": owner_id}
+    other_headers = {"X-Rufina-Owner-Id": "other-owner"}
+    cashier = parsed_job(
+        title="Cashier",
+        url="https://www.linkedin.com/jobs/view/audit-cashier",
+    )
+    salesperson = parsed_job(
+        title="Salesperson",
+        url="https://www.linkedin.com/jobs/view/audit-salesperson",
+    )
+    jobs = [cashier, salesperson]
+    runner = FakeRunner(
+        VacancySearchRunResult(
+            jobs=jobs,
+            source_results={"linkedin": completed_response("linkedin", jobs)},
+            source_errors={},
+        )
+    )
+
+    class MutableScreeningFacade:
+        def __init__(self) -> None:
+            self.allowed_titles: set[str] = set()
+            self.calls: list[list[str]] = []
+
+        def screen(self, _config, compact_jobs):
+            self.calls.append([job["title"] for job in compact_jobs])
+            return [
+                {
+                    "id": job["id"],
+                    "decision": (
+                        "keep"
+                        if job["title"] in self.allowed_titles
+                        else "reject"
+                    ),
+                    "reasonCode": (
+                        "target_role_match"
+                        if job["title"] in self.allowed_titles
+                        else "excluded_role"
+                    ),
+                    "matchedRuleIds": (
+                        []
+                        if job["title"] in self.allowed_titles
+                        else ["rule-1"]
+                    ),
+                    "reason": (
+                        "Product responsibility now matches the config"
+                        if job["title"] in self.allowed_titles
+                        else f"{job['title']} is explicitly excluded"
+                    ),
+                }
+                for job in compact_jobs
+            ]
+
+    facade = MutableScreeningFacade()
+    expensive_match = Mock(
+        side_effect=AssertionError("audit action reached full AI Match")
+    )
+    monkeypatch.setattr(
+        job_search_api,
+        "create_vacancy_search_runner",
+        lambda _settings: runner,
+    )
+    monkeypatch.setattr(
+        job_search_execution,
+        "create_job_screening_ai_facade",
+        lambda _settings: facade,
+    )
+    monkeypatch.setattr(
+        job_search_execution,
+        "create_vacancy_matching_ai_facade",
+        expensive_match,
+    )
+    grant_ai_consent(api_context, owner_id=owner_id)
+    filters = screening_filters()
+    filters["screening"]["hardRules"] = [
+        {
+            "id": "rule-1",
+            "field": "title",
+            "operator": "contains",
+            "value": "Cashier",
+        }
+    ]
+    _, schedule_id = create_search(
+        api_context.client,
+        headers,
+        filters=filters,
+    )
+
+    run = api_context.client.post(
+        f"/job-search/schedules/{schedule_id}/run",
+        headers=headers,
+    )
+    assert run.status_code == 200
+    assert run.json()["jobsRejected"] == 2
+    assert api_context.client.get("/jobs", headers=headers).json() == []
+    assert expensive_match.call_count == 0
+
+    audit = api_context.client.get(
+        "/job-search/screening-audit",
+        headers=headers,
+    )
+    assert audit.status_code == 200
+    entries = audit.json()
+    assert {entry["title"] for entry in entries} == {
+        "Cashier",
+        "Salesperson",
+    }
+    cashier_entry = next(
+        entry for entry in entries if entry["title"] == "Cashier"
+    )
+    salesperson_entry = next(
+        entry for entry in entries if entry["title"] == "Salesperson"
+    )
+    assert cashier_entry["reason"] == "Cashier is explicitly excluded"
+    assert cashier_entry["matchedRuleIds"] == ["rule-1"]
+    assert cashier_entry["configId"]
+    assert cashier_entry["model"] == api_context.settings.job_screening_model
+    assert cashier_entry["checkedAt"]
+    assert cashier_entry["canRecheck"] is True
+    assert cashier_entry["canAllowManually"] is True
+    assert api_context.client.get(
+        "/job-search/screening-audit",
+        headers=other_headers,
+    ).json() == []
+    assert api_context.client.post(
+        f"/job-search/screening-audit/{cashier_entry['id']}/recheck",
+        headers=other_headers,
+    ).status_code == 404
+
+    facade.allowed_titles.add("Cashier")
+    rechecked = api_context.client.post(
+        f"/job-search/screening-audit/{cashier_entry['id']}/recheck",
+        headers=headers,
+    )
+    assert rechecked.status_code == 200
+    assert rechecked.json()["decision"] == "keep"
+    assert len(facade.calls) == 2
+
+    allowed = api_context.client.post(
+        f"/job-search/screening-audit/{salesperson_entry['id']}/allow",
+        headers=headers,
+    )
+    assert allowed.status_code == 200
+    assert allowed.json()["manuallyAllowedAt"]
+    assert allowed.json()["canAllowManually"] is False
+    assert {
+        item["data"]["title"]
+        for item in api_context.client.get("/jobs", headers=headers).json()
+    } == {"Cashier", "Salesperson"}
+    assert expensive_match.call_count == 0
+
+
+def test_final_screening_matrix_only_persists_and_analyzes_entry_product_manager(
+    api_context: ApiContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_id = "screening-matrix-owner"
+    headers = {"X-Rufina-Owner-Id": owner_id}
+    jobs = [
+        parsed_job(
+            title="Cashier",
+            url="https://www.linkedin.com/jobs/view/matrix-cashier",
+        ),
+        parsed_job(
+            title="Salesperson",
+            url="https://www.linkedin.com/jobs/view/matrix-salesperson",
+        ),
+        ParsedJob(
+            source="linkedin",
+            title="Senior Product Manager",
+            company="Senior AG",
+            seniority="senior",
+            description="Lead the product organization",
+            url="https://www.linkedin.com/jobs/view/matrix-senior-pm",
+        ),
+        ParsedJob(
+            source="linkedin",
+            title="Product Manager",
+            company="Product AG",
+            seniority="entry",
+            description="Own product discovery and delivery",
+            url="https://www.linkedin.com/jobs/view/matrix-entry-pm",
+        ),
+    ]
+    runner = FakeRunner(
+        VacancySearchRunResult(
+            jobs=jobs,
+            source_results={"linkedin": completed_response("linkedin", jobs)},
+            source_errors={},
+        )
+    )
+
+    class MatrixScreeningFacade:
+        def screen(self, _config, compact_jobs):
+            decisions = []
+            for job in compact_jobs:
+                if job["title"] == "Product Manager":
+                    decision = "keep"
+                    reason_code = "target_role_match"
+                elif job["title"] == "Senior Product Manager":
+                    decision = "reject"
+                    reason_code = "seniority_not_allowed"
+                else:
+                    decision = "reject"
+                    reason_code = "excluded_role"
+                decisions.append(
+                    {
+                        "id": job["id"],
+                        "decision": decision,
+                        "reasonCode": reason_code,
+                        "matchedRuleIds": [],
+                        "reason": f"Matrix decision for {job['title']}",
+                    }
+                )
+            return decisions
+
+    analyzed_batches: list[list[str]] = []
+
+    def capture_analysis(_db, *, jobs, **_kwargs):
+        analyzed_batches.append([job["title"] for job in jobs])
+        return None
+
+    monkeypatch.setattr(
+        job_search_api,
+        "create_vacancy_search_runner",
+        lambda _settings: runner,
+    )
+    monkeypatch.setattr(
+        job_search_execution,
+        "create_job_screening_ai_facade",
+        lambda _settings: MatrixScreeningFacade(),
+    )
+    monkeypatch.setattr(
+        job_search_execution,
+        "match_new_jobs_if_allowed",
+        capture_analysis,
+    )
+    grant_ai_consent(api_context, owner_id=owner_id)
+    filters = screening_filters()
+    filters["search"]["keywords"] = "Product Manager"
+    filters["screening"] = {
+        "enabled": True,
+        "targetRoles": ["Product Manager"],
+        "excludedRoles": ["Cashier", "Salesperson"],
+        "allowedSeniority": ["entry"],
+        "excludedSeniority": ["senior"],
+        "hardRules": [],
+    }
+    _, schedule_id = create_search(
+        api_context.client,
+        headers,
+        filters=filters,
+    )
+
+    response = api_context.client.post(
+        f"/job-search/schedules/{schedule_id}/run",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["jobsPassed"] == 1
+    assert response.json()["jobsRejected"] == 3
+    assert response.json()["jobsAdded"] == 1
+    assert response.json()["jobsAnalyzed"] == 1
+    assert analyzed_batches == [["Product Manager"]]
+    visible_titles = [
+        item["data"]["title"]
+        for item in api_context.client.get("/jobs", headers=headers).json()
+    ]
+    assert visible_titles == ["Product Manager"]
+    assert "Cashier" not in visible_titles
+    assert "Salesperson" not in visible_titles
+    assert "Senior Product Manager" not in visible_titles
+
+
+def test_screening_without_consent_is_uncertain_and_never_calls_models(
+    api_context: ApiContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    owner_id = "screening-no-consent-owner"
+    headers = {"X-Rufina-Owner-Id": owner_id}
+    job = parsed_job(
+        title="Product Manager",
+        url="https://www.linkedin.com/jobs/view/no-consent-pm",
+    )
+    runner = FakeRunner(
+        VacancySearchRunResult(
+            jobs=[job],
+            source_results={"linkedin": completed_response("linkedin", [job])},
+            source_errors={},
+        )
+    )
+    cheap_model = Mock(
+        side_effect=AssertionError("screening model called without consent")
+    )
+    expensive_model = Mock(
+        side_effect=AssertionError("full match called without consent")
+    )
+    monkeypatch.setattr(
+        job_search_api,
+        "create_vacancy_search_runner",
+        lambda _settings: runner,
+    )
+    monkeypatch.setattr(
+        job_search_execution,
+        "create_job_screening_ai_facade",
+        cheap_model,
+    )
+    monkeypatch.setattr(
+        job_search_execution,
+        "create_vacancy_matching_ai_facade",
+        expensive_model,
+    )
+    _, schedule_id = create_search(
+        api_context.client,
+        headers,
+        filters=screening_filters(),
+    )
+
+    response = api_context.client.post(
+        f"/job-search/schedules/{schedule_id}/run",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "partial"
+    assert response.json()["jobsUncertain"] == 1
+    assert response.json()["screeningErrors"] == 1
+    assert response.json()["jobsAdded"] == 0
+    assert response.json()["jobsAnalyzed"] == 0
+    assert "consent is missing" in response.json()["warning"]
+    assert api_context.client.get("/jobs", headers=headers).json() == []
+    assert cheap_model.call_count == 0
+    assert expensive_model.call_count == 0
+    audit = api_context.client.get(
+        "/job-search/screening-audit",
+        headers=headers,
+    ).json()
+    assert len(audit) == 1
+    assert audit[0]["decision"] == "uncertain"
+    assert audit[0]["reasonCode"] == "screening_error"
+
+
 def test_manual_screening_error_is_partial_and_fail_closed(
     api_context: ApiContext,
     monkeypatch: pytest.MonkeyPatch,
@@ -367,6 +715,13 @@ def test_manual_screening_error_is_partial_and_fail_closed(
     assert decision is not None
     assert decision.decision == "uncertain"
     assert decision.reason_code == "screening_error"
+    audit = api_context.client.get(
+        "/job-search/screening-audit",
+        headers=headers,
+    ).json()
+    assert len(audit) == 1
+    assert audit[0]["decision"] == "uncertain"
+    assert audit[0]["reasonCode"] == "screening_error"
 
 
 def test_existing_imported_jobs_require_dry_run_and_can_be_rescreened(

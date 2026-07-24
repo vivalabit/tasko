@@ -60,6 +60,8 @@ def persist_screening_decision(
     title: str | None,
     company: str | None,
     source_url: str | None,
+    search_config_id: str | None = None,
+    vacancy_data: dict[str, Any] | None = None,
     created_at: datetime | None = None,
 ) -> JobScreeningDecisionRecord:
     validated_decision = (
@@ -78,6 +80,11 @@ def persist_screening_decision(
     record = JobScreeningDecisionRecord(
         id=uuid4().hex,
         owner_id=get_bound_owner_id(),
+        job_id=validated_decision.id,
+        search_config_id=normalize_optional_metadata(
+            search_config_id,
+            max_length=36,
+        ),
         vacancy_hash=vacancy_hash,
         config_hash=config_hash,
         decision=validated_decision.decision,
@@ -89,6 +96,7 @@ def persist_screening_decision(
         title=normalize_metadata(title, max_length=500),
         company=normalize_metadata(company, max_length=500),
         source_url=normalize_metadata(source_url, max_length=8_000),
+        vacancy_data=dict(vacancy_data or {}),
         created_at=as_utc(created_at or datetime.now(UTC)),
     )
     db.add(record)
@@ -120,6 +128,7 @@ def latest_screening_decision(
             JobScreeningDecisionRecord.model == normalized_model,
             JobScreeningDecisionRecord.prompt_version
             == normalized_prompt_version,
+            JobScreeningDecisionRecord.invalidated_at.is_(None),
         )
         .order_by(
             JobScreeningDecisionRecord.created_at.desc(),
@@ -167,6 +176,15 @@ def normalize_metadata(
     max_length: int,
 ) -> str:
     return (value or "").strip()[:max_length]
+
+
+def normalize_optional_metadata(
+    value: str | None,
+    *,
+    max_length: int,
+) -> str | None:
+    normalized = normalize_metadata(value, max_length=max_length)
+    return normalized or None
 
 
 def as_utc(value: datetime) -> datetime:

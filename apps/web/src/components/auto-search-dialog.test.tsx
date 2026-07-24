@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   AutoSearchDialog,
+  type JobScreeningAuditEntry,
   type JobSearchConfig,
   type JobSearchSchedule,
 } from "@/components/auto-search-dialog";
@@ -104,6 +105,103 @@ describe("AutoSearchDialog", () => {
     expect(
       await screen.findByText(/12 found · 7 added/),
     ).toBeInTheDocument();
+  });
+
+  it("keeps rejected vacancies in a separate actionable screening audit", async () => {
+    const requests: Array<{ path: string; method: string }> = [];
+    const onVacanciesChanged = vi.fn();
+    let auditEntry: JobScreeningAuditEntry = {
+      id: "decision-salesperson",
+      jobId: "linkedin-salesperson",
+      decision: "reject",
+      reasonCode: "excluded_role",
+      reason: "Salesperson conflicts with the target Product Manager role",
+      matchedRuleIds: ["rule-1"],
+      configHash: "a".repeat(64),
+      configId: config.id,
+      model: "gpt-5-nano",
+      promptVersion: "job-screening-prompt-v1",
+      title: "Salesperson",
+      company: "Retail AG",
+      sourceUrl: "https://example.test/salesperson",
+      checkedAt: "2026-07-24T10:00:00Z",
+      invalidatedAt: null,
+      manuallyAllowedAt: null,
+      canRecheck: true,
+      canAllowManually: true,
+    };
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const path = new URL(String(input)).pathname;
+        const method = init?.method ?? "GET";
+        requests.push({ path, method });
+        if (path === "/job-search/configs") return response([config]);
+        if (path === "/job-search/schedules") return response([schedule]);
+        if (path === "/job-search/screening-audit" && method === "GET") {
+          return response([auditEntry]);
+        }
+        if (
+          path ===
+            `/job-search/screening-audit/${auditEntry.id}/allow` &&
+          method === "POST"
+        ) {
+          auditEntry = {
+            ...auditEntry,
+            invalidatedAt: "2026-07-24T10:05:00Z",
+            manuallyAllowedAt: "2026-07-24T10:05:00Z",
+            canRecheck: false,
+            canAllowManually: false,
+          };
+          return response(auditEntry);
+        }
+        throw new Error(`Unexpected request: ${method} ${path}`);
+      }),
+    );
+
+    render(
+      <AutoSearchDialog
+        open
+        onClose={vi.fn()}
+        onVacanciesChanged={onVacanciesChanged}
+      />,
+    );
+    await screen.findByText(schedule.name);
+    expect(screen.queryByText("Salesperson")).not.toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Screening audit" }),
+    );
+
+    expect(
+      await screen.findByRole("dialog", { name: "Screening audit" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Salesperson")).toBeInTheDocument();
+    expect(screen.getByText("Retail AG")).toBeInTheDocument();
+    expect(screen.getByText("excluded_role")).toBeInTheDocument();
+    expect(screen.getByText("Matched rules: rule-1")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Recheck" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Allow manually" }),
+    );
+
+    await waitFor(() => {
+      expect(requests).toContainEqual({
+        path: `/job-search/screening-audit/${auditEntry.id}/allow`,
+        method: "POST",
+      });
+    });
+    expect(onVacanciesChanged).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByText(
+        "Vacancy allowed manually and added to the client list",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Allowed manually")).toBeInTheDocument();
   });
 
   it("duplicates a rule with a different source and time", async () => {

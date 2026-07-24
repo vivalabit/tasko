@@ -7,10 +7,13 @@ import {
   Check,
   Copy,
   Edit3,
+  ExternalLink,
   LoaderCircle,
   Play,
   Plus,
   Power,
+  RotateCcw,
+  ShieldCheck,
   Trash2,
   X,
 } from "lucide-react";
@@ -120,6 +123,27 @@ export type JobSearchSchedule = {
   updatedAt: string;
 };
 
+export type JobScreeningAuditEntry = {
+  id: string;
+  jobId: string;
+  decision: "keep" | "reject" | "uncertain";
+  reasonCode: string;
+  reason: string;
+  matchedRuleIds: string[];
+  configHash: string;
+  configId: string | null;
+  model: string;
+  promptVersion: string;
+  title: string;
+  company: string;
+  sourceUrl: string;
+  checkedAt: string;
+  invalidatedAt: string | null;
+  manuallyAllowedAt: string | null;
+  canRecheck: boolean;
+  canAllowManually: boolean;
+};
+
 type AutoSearchDialogProps = {
   open: boolean;
   onClose: () => void;
@@ -187,9 +211,10 @@ export function AutoSearchDialog({
   onClose,
   onVacanciesChanged,
 }: AutoSearchDialogProps) {
-  const [view, setView] = useState<"list" | "form">("list");
+  const [view, setView] = useState<"list" | "form" | "audit">("list");
   const [configs, setConfigs] = useState<JobSearchConfig[]>([]);
   const [schedules, setSchedules] = useState<JobSearchSchedule[]>([]);
+  const [auditEntries, setAuditEntries] = useState<JobScreeningAuditEntry[]>([]);
   const [draft, setDraft] = useState<ScheduleDraft>(defaultDraft);
   const [status, setStatus] = useState<"idle" | "loading" | "saving" | "error">(
     "idle",
@@ -197,6 +222,8 @@ export function AutoSearchDialog({
   const [message, setMessage] = useState("");
   const [runningScheduleId, setRunningScheduleId] = useState("");
   const [busyScheduleId, setBusyScheduleId] = useState("");
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [busyAuditId, setBusyAuditId] = useState("");
 
   const configById = useMemo(
     () => new Map(configs.map((config) => [config.id, config])),
@@ -214,7 +241,7 @@ export function AutoSearchDialog({
     if (!open) return;
     function closeOnEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
-      if (view === "form") {
+      if (view !== "list") {
         setView("list");
         setMessage("");
       } else {
@@ -240,6 +267,67 @@ export function AutoSearchDialog({
     } catch (error) {
       setStatus("error");
       setMessage(errorMessage(error));
+    }
+  }
+
+  async function openAudit() {
+    setView("audit");
+    setMessage("");
+    setAuditLoading(true);
+    try {
+      setAuditEntries(
+        await requestJson<JobScreeningAuditEntry[]>(
+          "/job-search/screening-audit?limit=200",
+        ),
+      );
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setAuditLoading(false);
+    }
+  }
+
+  async function runAuditAction(
+    entry: JobScreeningAuditEntry,
+    action: "recheck" | "allow",
+  ) {
+    if (
+      action === "allow" &&
+      !window.confirm(`Allow “${entry.title || entry.jobId}” manually?`)
+    ) {
+      return;
+    }
+    setBusyAuditId(entry.id);
+    setMessage("");
+    try {
+      const updated = await requestJson<JobScreeningAuditEntry>(
+        `/job-search/screening-audit/${encodeURIComponent(entry.id)}/${action}`,
+        { method: "POST" },
+      );
+      setAuditEntries((current) =>
+        current.map((item) => (item.id === updated.id ? updated : item)),
+      );
+      let refreshFailed = false;
+      try {
+        await onVacanciesChanged?.();
+      } catch {
+        refreshFailed = true;
+      }
+      await openAudit();
+      setMessage(
+        [
+          action === "allow"
+            ? "Vacancy allowed manually and added to the client list"
+            : `Screening completed: ${updated.decision}`,
+          refreshFailed ? "Vacancies could not be refreshed" : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      );
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setBusyAuditId("");
     }
   }
 
@@ -417,7 +505,7 @@ export function AutoSearchDialog({
       >
         <header className="flex shrink-0 items-start justify-between gap-4 border-b border-border px-4 py-4 sm:px-6">
           <div className="flex min-w-0 items-start gap-3">
-            {view === "form" ? (
+            {view !== "list" ? (
               <button
                 type="button"
                 aria-label="Back to auto-searches"
@@ -441,16 +529,20 @@ export function AutoSearchDialog({
               >
                 {view === "list"
                   ? "Automatic searches"
-                  : draft.mode === "edit"
-                    ? "Edit auto-search"
-                    : draft.mode === "duplicate"
-                      ? "Duplicate auto-search"
-                      : "New auto-search"}
+                  : view === "audit"
+                    ? "Screening audit"
+                    : draft.mode === "edit"
+                      ? "Edit auto-search"
+                      : draft.mode === "duplicate"
+                        ? "Duplicate auto-search"
+                        : "New auto-search"}
               </h2>
               <p className="mt-1 text-xs font-medium text-muted sm:text-sm">
                 {view === "list"
                   ? "Run vacancy searches on your schedule."
-                  : "Each rule has one local run time. Duplicate it to add another time."}
+                  : view === "audit"
+                    ? "Internal screening decisions are kept separate from the vacancy list."
+                    : "Each rule has one local run time. Duplicate it to add another time."}
               </p>
             </div>
           </div>
@@ -477,8 +569,9 @@ export function AutoSearchDialog({
             onRunNow={(schedule) => void runNow(schedule)}
             onDelete={(schedule) => void deleteRule(schedule)}
             onToggleEnabled={(schedule) => void toggleEnabled(schedule)}
+            onOpenAudit={() => void openAudit()}
           />
-        ) : (
+        ) : view === "form" ? (
           <AutoSearchForm
             draft={draft}
             configs={configs}
@@ -489,6 +582,14 @@ export function AutoSearchDialog({
               setMessage("");
             }}
             onSave={() => void saveRule()}
+          />
+        ) : (
+          <ScreeningAudit
+            entries={auditEntries}
+            loading={auditLoading}
+            busyId={busyAuditId}
+            onRecheck={(entry) => void runAuditAction(entry, "recheck")}
+            onAllow={(entry) => void runAuditAction(entry, "allow")}
           />
         )}
 
@@ -522,6 +623,7 @@ function AutoSearchList({
   onRunNow,
   onDelete,
   onToggleEnabled,
+  onOpenAudit,
 }: {
   configs: Map<string, JobSearchConfig>;
   schedules: JobSearchSchedule[];
@@ -534,6 +636,7 @@ function AutoSearchList({
   onRunNow: (schedule: JobSearchSchedule) => void;
   onDelete: (schedule: JobSearchSchedule) => void;
   onToggleEnabled: (schedule: JobSearchSchedule) => void;
+  onOpenAudit: () => void;
 }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -541,10 +644,16 @@ function AutoSearchList({
         <p className="text-xs font-semibold text-muted">
           {schedules.length} {schedules.length === 1 ? "rule" : "rules"}
         </p>
-        <Button size="sm" onClick={onCreate}>
-          <Plus className="h-4 w-4" />
-          New auto-search
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="ghost" onClick={onOpenAudit}>
+            <ShieldCheck className="h-4 w-4" />
+            Screening audit
+          </Button>
+          <Button size="sm" onClick={onCreate}>
+            <Plus className="h-4 w-4" />
+            New auto-search
+          </Button>
+        </div>
       </div>
 
       <div className="job-scroll min-h-0 flex-1 overflow-y-auto px-4 pb-5 sm:px-6">
@@ -680,6 +789,147 @@ function AutoSearchList({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function ScreeningAudit({
+  entries,
+  loading,
+  busyId,
+  onRecheck,
+  onAllow,
+}: {
+  entries: JobScreeningAuditEntry[];
+  loading: boolean;
+  busyId: string;
+  onRecheck: (entry: JobScreeningAuditEntry) => void;
+  onAllow: (entry: JobScreeningAuditEntry) => void;
+}) {
+  if (loading) {
+    return (
+      <div className="grid min-h-[320px] flex-1 place-items-center text-muted">
+        <LoaderCircle className="h-6 w-6 animate-spin" />
+      </div>
+    );
+  }
+  return (
+    <div className="job-scroll min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-6">
+      {entries.length === 0 ? (
+        <div className="grid min-h-[300px] place-items-center rounded-xl border border-dashed border-border text-center">
+          <div>
+            <ShieldCheck className="mx-auto h-9 w-9 text-muted" />
+            <h3 className="mt-3 text-lg font-bold text-white">
+              No screening decisions yet
+            </h3>
+            <p className="mt-1 text-sm text-muted">
+              Decisions appear here after a screening-enabled search.
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="grid gap-3">
+          {entries.map((entry) => {
+            const busy = busyId === entry.id;
+            return (
+              <article
+                key={entry.id}
+                className="rounded-xl border border-border bg-white/[0.025] p-4"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={cn(
+                          "rounded-full px-2 py-0.5 text-[10px] font-black uppercase",
+                          entry.decision === "keep"
+                            ? "bg-emerald-500/15 text-emerald-300"
+                            : entry.decision === "reject"
+                              ? "bg-red-500/15 text-red-300"
+                              : "bg-amber-500/15 text-amber-200",
+                        )}
+                      >
+                        {entry.decision}
+                      </span>
+                      {entry.manuallyAllowedAt ? (
+                        <span className="text-[10px] font-bold text-violet-300">
+                          Allowed manually
+                        </span>
+                      ) : null}
+                    </div>
+                    <h3 className="mt-2 text-sm font-bold text-white">
+                      {entry.title || entry.jobId}
+                    </h3>
+                    <p className="mt-0.5 text-xs text-muted">
+                      {entry.company || "Unknown company"}
+                    </p>
+                  </div>
+                  <time className="text-[10px] text-muted">
+                    {formatAuditTime(entry.checkedAt)}
+                  </time>
+                </div>
+                <div className="mt-3 rounded-lg border border-white/[0.06] bg-black/10 p-3">
+                  <p className="text-xs font-bold text-[#dde4ee]">
+                    {entry.reasonCode}
+                  </p>
+                  <p className="mt-1 text-xs leading-5 text-muted">
+                    {entry.reason}
+                  </p>
+                  {entry.matchedRuleIds.length ? (
+                    <p className="mt-2 text-[10px] text-violet-300">
+                      Matched rules: {entry.matchedRuleIds.join(", ")}
+                    </p>
+                  ) : null}
+                </div>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-[10px] text-muted">
+                    {entry.model} · config {entry.configHash.slice(0, 10)} ·{" "}
+                    {entry.promptVersion}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {entry.sourceUrl ? (
+                      <a
+                        href={entry.sourceUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-border px-2.5 text-[10px] font-bold text-muted hover:text-white"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        Source
+                      </a>
+                    ) : null}
+                    {entry.canRecheck ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy}
+                        onClick={() => onRecheck(entry)}
+                      >
+                        {busy ? (
+                          <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <RotateCcw className="h-3.5 w-3.5" />
+                        )}
+                        Recheck
+                      </Button>
+                    ) : null}
+                    {entry.canAllowManually ? (
+                      <Button
+                        size="sm"
+                        disabled={busy}
+                        onClick={() => onAllow(entry)}
+                      >
+                        <Check className="h-3.5 w-3.5" />
+                        Allow manually
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1896,6 +2146,16 @@ function splitList(value: string): string[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function formatAuditTime(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(date);
 }
 
 const jsonHeaders = { "Content-Type": "application/json" };

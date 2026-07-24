@@ -201,6 +201,11 @@ def execute_job_search(
         candidates=candidates,
         screening_config=normalized_config.screening,
         settings=settings,
+        search_config_id=(
+            config.id
+            if config is not None
+            else str(run.config_snapshot.get("id") or "") or None
+        ),
     )
     persisted_at = datetime.now(UTC)
     new_jobs = persist_new_jobs(
@@ -368,6 +373,7 @@ def screen_new_job_candidates(
     candidates: list[NewJobCandidate],
     screening_config: ScreeningConfig,
     settings: Settings,
+    search_config_id: str | None = None,
 ) -> ScreeningPipelineResult:
     if not candidates:
         return ScreeningPipelineResult(keep=[])
@@ -494,6 +500,8 @@ def screen_new_job_candidates(
             title=candidate.job.title,
             company=candidate.job.company,
             source_url=candidate.job.url or candidate.job.apply_url,
+            search_config_id=search_config_id,
+            vacancy_data=compact_jobs[candidate.job_id],
         )
 
     ordered_decisions = [
