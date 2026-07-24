@@ -150,7 +150,14 @@ def execute_job_search(
         added_at=completed_at,
     )
     run.jobs_found = len(search_result.jobs)
+    run.jobs_already_known = max(0, len(search_result.jobs) - len(new_jobs))
+    run.jobs_screened = 0
+    run.jobs_passed = 0
+    run.jobs_rejected = 0
+    run.jobs_uncertain = 0
     run.jobs_added = len(new_jobs)
+    run.jobs_analyzed = 0
+    run.screening_errors = 0
     run.source_errors = search_result.source_errors
     run.status = run_status(search_result)
     run.completed_at = completed_at
@@ -161,17 +168,24 @@ def execute_job_search(
         schedule.updated_at = completed_at
     db.commit()
 
+    analysis_enabled = (
+        ai_analysis_enabled
+        if ai_analysis_enabled is not None
+        else schedule.ai_analysis_enabled if schedule else False
+    )
     warning = match_new_jobs_if_allowed(
         db,
         jobs=new_jobs,
-        enabled=(
-            ai_analysis_enabled
-            if ai_analysis_enabled is not None
-            else schedule.ai_analysis_enabled if schedule else False
-        ),
+        enabled=analysis_enabled,
         settings=settings,
         owner_id=get_bound_owner_id(),
     )
+    run.jobs_analyzed = (
+        len(new_jobs)
+        if analysis_enabled and new_jobs and warning is None
+        else 0
+    )
+    db.commit()
     db.refresh(run)
     return JobSearchExecutionResult(run=run, warning=warning)
 

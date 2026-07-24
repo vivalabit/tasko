@@ -102,6 +102,7 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             "job_search_configs",
             "job_search_schedules",
             "job_search_runs",
+            "job_screening_decisions",
         }
         for table_name in owner_tables:
             owner_column = next(
@@ -119,7 +120,7 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "20260723_0015"
+            assert revision == "20260724_0016"
         assert inspect(engine).get_pk_constraint("stored_jobs")["constrained_columns"] == [
             "owner_id",
             "id",
@@ -136,6 +137,58 @@ def test_baseline_migration_matches_current_schema(tmp_path) -> None:
             "scheduled_for",
         ]
         assert automatic_run_index["unique"] == 1
+        screening_columns = {
+            column["name"]
+            for column in inspect(engine).get_columns(
+                "job_screening_decisions"
+            )
+        }
+        assert screening_columns == {
+            "id",
+            "vacancy_hash",
+            "config_hash",
+            "decision",
+            "reason_code",
+            "reason",
+            "matched_rule_ids",
+            "model",
+            "prompt_version",
+            "title",
+            "company",
+            "source_url",
+            "created_at",
+            "owner_id",
+        }
+        screening_indexes = {
+            index["name"]: index
+            for index in inspect(engine).get_indexes(
+                "job_screening_decisions"
+            )
+        }
+        assert screening_indexes[
+            "ix_job_screening_decisions_cache"
+        ]["column_names"] == [
+            "owner_id",
+            "vacancy_hash",
+            "config_hash",
+            "model",
+            "prompt_version",
+        ]
+        run_columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("job_search_runs")
+        }
+        assert run_columns >= {
+            "jobs_found",
+            "jobs_already_known",
+            "jobs_screened",
+            "jobs_passed",
+            "jobs_rejected",
+            "jobs_uncertain",
+            "jobs_added",
+            "jobs_analyzed",
+            "screening_errors",
+        }
     finally:
         engine.dispose()
 
@@ -147,6 +200,44 @@ def test_upgrade_database_can_run_again_at_head(tmp_path) -> None:
 
     upgrade_database(database_url)
     upgrade_database(database_url)
+
+
+def test_screening_persistence_migration_backfills_run_statistics(
+    tmp_path,
+) -> None:
+    database_url = f"sqlite:///{tmp_path / 'screening-persistence.sqlite'}"
+    config = get_alembic_config(database_url)
+    command.upgrade(config, "20260723_0015")
+    now = datetime.now(UTC).isoformat()
+
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "INSERT INTO job_search_runs "
+                    "(id, schedule_id, run_type, scheduled_for, config_snapshot, "
+                    "sources, status, jobs_found, jobs_added, source_errors, "
+                    "started_at, completed_at, owner_id) VALUES "
+                    "('legacy-run', NULL, 'manual', NULL, '{}', '[]', "
+                    "'completed', 8, 3, '{}', :now, :now, 'legacy-owner')"
+                ),
+                {"now": now},
+            )
+        command.upgrade(config, "head")
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "SELECT jobs_found, jobs_already_known, jobs_screened, "
+                    "jobs_passed, jobs_rejected, jobs_uncertain, jobs_added, "
+                    "jobs_analyzed, screening_errors "
+                    "FROM job_search_runs WHERE id = 'legacy-run'"
+                )
+            ).one()
+        assert tuple(row) == (8, 5, 0, 0, 0, 0, 3, 0, 0)
+        assert "job_screening_decisions" in inspect(engine).get_table_names()
+    finally:
+        engine.dispose()
 
 
 def test_backend_aware_consent_migration_preserves_openclaw_consent(tmp_path) -> None:
@@ -419,7 +510,7 @@ def test_upgrade_database_bootstraps_legacy_baseline(tmp_path) -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-        assert revision == "20260723_0015"
+        assert revision == "20260724_0016"
     finally:
         engine.dispose()
     command.check(get_alembic_config(database_url))

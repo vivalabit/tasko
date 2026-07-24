@@ -369,7 +369,14 @@ type JobSearchConfigPayload = {
 type JobSearchRunPayload = {
   status: string;
   jobsFound: number;
+  jobsAlreadyKnown: number;
+  jobsScreened: number;
+  jobsPassed: number;
+  jobsRejected: number;
+  jobsUncertain: number;
   jobsAdded: number;
+  jobsAnalyzed: number;
+  screeningErrors: number;
   sourceErrors: Record<string, string>;
   warning?: string | null;
 };

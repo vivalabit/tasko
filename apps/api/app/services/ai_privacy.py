@@ -15,6 +15,7 @@ from app.models.documents import (
     DocumentValidationArtifactRecord,
     utc_now,
 )
+from app.models.job_screening import JobScreeningDecisionRecord
 from app.models.jobs import JobMatchRecord
 from app.models.privacy import AiPrivacySettingsRecord
 from app.models.profile import CandidateMatchSnapshotRecord
@@ -77,6 +78,7 @@ def delete_ai_data_for_owner(db: Session, owner_id: str) -> int:
         DocumentValidationArtifactRecord,
         DocumentPackJobRecord,
         DocumentRecord,
+        JobScreeningDecisionRecord,
         JobMatchRecord,
         CandidateMatchSnapshotRecord,
     )

@@ -14,6 +14,7 @@ from app.main import app
 from app.models.assistant import AppliedAssistantActionRecord
 from app.models.conversations import ConversationRecord
 from app.models.documents import DocumentRecord, DocumentTemplateRecord
+from app.models.job_screening import JobScreeningDecisionRecord
 from app.models.jobs import JobMatchRecord
 from app.models.privacy import AiPrivacySettingsRecord
 from app.models.profile import CandidateMatchSnapshotRecord, ProfilePayload, ProfileRecord
@@ -302,6 +303,22 @@ def test_expired_ttl_deletes_only_the_owners_ai_data() -> None:
                         provider_error=None,
                         created_at=now,
                     ),
+                    JobScreeningDecisionRecord(
+                        id=f"screening-{owner_id}",
+                        owner_id=owner_id,
+                        vacancy_hash="c" * 64,
+                        config_hash="d" * 64,
+                        decision="reject",
+                        reason_code="target_role_mismatch",
+                        reason="Vacancy does not match the configured role",
+                        matched_rule_ids=[],
+                        model="openai/gpt-5-mini",
+                        prompt_version="job-screening-prompt-v1",
+                        title="Unrelated vacancy",
+                        company="Example AG",
+                        source_url="https://example.test/job",
+                        created_at=now,
+                    ),
                     DocumentTemplateRecord(
                         id=f"template-{owner_id}",
                         owner_id=owner_id,
@@ -332,10 +349,14 @@ def test_expired_ttl_deletes_only_the_owners_ai_data() -> None:
         expired_owners, deleted_records = cleanup_expired_ai_data(db, now=now)
 
         assert expired_owners == 1
-        assert deleted_records == 5
+        assert deleted_records == 6
         assert db.get(ConversationRecord, "conversation-expired-owner") is None
         assert db.get(DocumentRecord, "document-expired-owner") is None
         assert db.get(JobMatchRecord, "match-expired-owner") is None
+        assert db.get(
+            JobScreeningDecisionRecord,
+            "screening-expired-owner",
+        ) is None
         assert db.get(DocumentTemplateRecord, "template-expired-owner") is not None
         assert db.get(
             CandidateConfirmationRecord,
@@ -344,6 +365,10 @@ def test_expired_ttl_deletes_only_the_owners_ai_data() -> None:
         assert db.get(ConversationRecord, "conversation-active-owner") is not None
         assert db.get(DocumentRecord, "document-active-owner") is not None
         assert db.get(JobMatchRecord, "match-active-owner") is not None
+        assert db.get(
+            JobScreeningDecisionRecord,
+            "screening-active-owner",
+        ) is not None
         expired_settings = db.get(AiPrivacySettingsRecord, "expired-owner")
         assert expired_settings is not None
         assert expired_settings.consent_version == "privacy-v1"

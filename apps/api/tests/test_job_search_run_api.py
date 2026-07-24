@@ -110,7 +110,14 @@ def test_manual_run_accepts_inline_config_without_creating_schedule(
     assert payload["scheduleId"] is None
     assert payload["runType"] == "manual"
     assert payload["jobsFound"] == 1
+    assert payload["jobsAlreadyKnown"] == 0
+    assert payload["jobsScreened"] == 0
+    assert payload["jobsPassed"] == 0
+    assert payload["jobsRejected"] == 0
+    assert payload["jobsUncertain"] == 0
     assert payload["jobsAdded"] == 1
+    assert payload["jobsAnalyzed"] == 0
+    assert payload["screeningErrors"] == 0
     assert payload["configSnapshot"]["name"] == "Unsaved manual search"
     assert runner.requests[0]["wait_for_snapshots"] is True
     assert runner.requests[0]["request"].results_limit == 15
@@ -164,7 +171,10 @@ def test_run_now_persists_jobs_snapshot_and_no_consent_warning(
     assert payload["runType"] == "manual"
     assert payload["status"] == "completed"
     assert payload["jobsFound"] == 1
+    assert payload["jobsAlreadyKnown"] == 0
     assert payload["jobsAdded"] == 1
+    assert payload["jobsAnalyzed"] == 0
+    assert payload["screeningErrors"] == 0
     assert payload["warning"] == AI_CONSENT_WARNING
     assert payload["configSnapshot"]["id"] == config_id
     normalized_config = payload["configSnapshot"]["filters"]
@@ -387,10 +397,14 @@ def test_run_now_does_not_restore_existing_or_dismissed_jobs_and_matches_only_ne
 
     assert first.status_code == 200
     assert first.json()["jobsFound"] == 3
+    assert first.json()["jobsAlreadyKnown"] == 2
     assert first.json()["jobsAdded"] == 1
+    assert first.json()["jobsAnalyzed"] == 1
     assert [job["title"] for job in matched_batches[0]] == ["New Engineer"]
     assert second.status_code == 200
+    assert second.json()["jobsAlreadyKnown"] == 3
     assert second.json()["jobsAdded"] == 0
+    assert second.json()["jobsAnalyzed"] == 0
     assert matched_batches[1] == []
 
     records = stored_jobs(api_context.sessions, owner_id="dedup-owner")
